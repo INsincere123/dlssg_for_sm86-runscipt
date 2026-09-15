@@ -1,10 +1,16 @@
-# DLSSG for SM86 (proxy) - 0.3.0 Version
+# DLSSG for SM86 (proxy) - 0.3.1 Version
 
 [中文](README.md) · **English**
 
-Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86). Windows x64 / D3D12; the runtime files are `version.dll` and `dlssg_sm86.ini`.
+Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20-series (SM75). Windows x64 / D3D12; the runtime files are `version.dll` and `dlssg_sm86.ini`.
 
 ## Changes in this release
+
+### 0.3.1
+
+- Fixed frame generation not enabling on RTX 20-series (Turing). RTX 20 now works with the factory `dlssg_sm86.ini` like RTX 30, including 6X (310.9 build, `MaxGeneratedFrames=5`, game plugin permitting).
+- Factory `MaxGeneratedFrames` is now `3` (4X); set `5` for 6X.
+### 0.3.0
 
 - Reverted from the native build to the proxy build. The native approach (a self-built NGX host) had game-compatibility problems that were hard to fix; this build uses a proxy DLL around the unmodified factory runtime, leaving the game's calls to NGX unchanged, which is more compatible.
 - The 310.9 runtime adds 6X (`MaxGeneratedFrames` ceiling raised from 3 to 5). On games that themselves support Dynamic MFG, selecting "Dynamic / Auto" frame generation reaches 6X.
@@ -19,7 +25,7 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86). Windows x
 ## Requirements
 
 - OS/game: Windows 10/11 x64, D3D12.
-- GPU: RTX 30-series (SM86). The full offline benchmark was run on a 3080 Ti; development validation on a 3070.
+- GPU: RTX 30-series (SM86) or RTX 20-series (Turing / SM75). The full offline benchmark was run on a 3080 Ti and development validation on a 3070; RTX 20 was confirmed working on a 2080 Ti, with image quality and performance not yet measured.
 - Driver: an NVIDIA driver with the NGX / NVAPI / CUDA interfaces; tested on 591.86 and 610.74. The cubins need roughly R580+; older drivers fall back to PTX automatically (one extra JIT on the first frame only).
 - No CUDA Toolkit and no Python.
 
@@ -54,7 +60,7 @@ The same height at different widths is similar (it tracks output pixel count). T
 5. Upgrade: exit the game and overwrite `version.dll`; `dlssg_sm86.ini` usually needs no change.
 6. Uninstall: overwrite `version.dll` with the backed-up original (or delete it) and delete `dlssg_sm86.ini`.
 
-The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (`1` uses the optimized kernels, output bit-identical to stock; `0` uses stock numerics) and `[FrameGeneration] MaxGeneratedFrames` (`5` is 6X, `3` is 4X; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.md`](docs/INSTALL.md).
+The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (`1` uses the optimized kernels, output bit-identical to stock; `0` uses stock numerics) and `[FrameGeneration] MaxGeneratedFrames` (factory `3` = 4X; `5` = 6X on the 310.9 build only; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## Antivirus & signing
 

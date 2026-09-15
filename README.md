@@ -1,10 +1,16 @@
-# DLSSG for SM86（Proxy）- 0.3.0 版本
+# DLSSG for SM86（Proxy）- 0.3.1 版本
 
 **中文** · [English](README.en.md)
 
-在 RTX 30 系列（SM86）上启用 NVIDIA DLSS 帧生成（DLSS-G）。Windows x64 / D3D12，运行文件为 `version.dll` 和 `dlssg_sm86.ini`。
+在 RTX 30 系列（SM86）和 RTX 20 系列（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G）。Windows x64 / D3D12，运行文件为 `version.dll` 和 `dlssg_sm86.ini`。
 
 ## 本次更新说明
+
+### 0.3.1
+
+- 修复 RTX 20 系（Turing）开不了帧生成的问题。20 系现在和 30 系一样直接用出厂 `dlssg_sm86.ini`，同样支持 6X（310.9 版，`MaxGeneratedFrames=5`，需游戏自带插件支持）。
+- 出厂 `MaxGeneratedFrames` 改为 `3`（4X），要 6X 改成 `5`。
+### 0.3.0
 
 - 由 native 模式回退到代理模式。native 化（自建 NGX host）在部分游戏上存在难以修复的兼容问题；本版改用代理 DLL 内嵌未修改的原厂运行库，游戏对 NGX 的调用不变，兼容性更好。
 - 310.9 运行库新增 6X（`MaxGeneratedFrames` 上限由 3 提到 5）。在自身支持 Dynamic MFG 的游戏上，帧生成选「动态 / 自动」时会跑到 6X。
@@ -19,7 +25,7 @@
 ## 运行要求
 
 - 系统与游戏：Windows 10/11 x64、D3D12。
-- GPU：RTX 30 系列（SM86）。3080 Ti 上完成整套离线基准；3070 上做开发验证。
+- GPU：RTX 30 系列（SM86）或 RTX 20 系列（Turing / SM75）。3080 Ti 上完成整套离线基准，3070 上做开发验证；RTX 20 在 2080 Ti 上实测可用，画质与性能尚未测量。
 - 驱动：带 NGX / NVAPI / CUDA 接口的 NVIDIA 驱动，591.86 与 610.74 实测可用。cubin 需约 R580+ 驱动，更旧的驱动自动回退 PTX（仅首帧多一次 JIT）。
 - 不需要 CUDA Toolkit，不需要 Python。
 
@@ -53,7 +59,7 @@
 5. 升级：退出游戏后用新版 `version.dll` 覆盖即可，`dlssg_sm86.ini` 一般无需改动。
 6. 卸载：用备份的原 `version.dll` 覆盖回去（或删除），并删除 `dlssg_sm86.ini`。
 
-出厂 `dlssg_sm86.ini` 只保留两个决定性开关：`[FrameGeneration] Optimized`（`1` 用最优内核，输出与原厂逐位一致；`0` 用原厂数值不优化）与 `[FrameGeneration] MaxGeneratedFrames`（`5` 对应 6X、`3` 对应 4X，实际生成帧数由游戏请求、并钳到运行库上限）。其余诊断/兼容项取安全默认、不在出厂文件中，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+出厂 `dlssg_sm86.ini` 只保留两个决定性开关：`[FrameGeneration] Optimized`（`1` 用最优内核，输出与原厂逐位一致；`0` 用原厂数值不优化）与 `[FrameGeneration] MaxGeneratedFrames`（出厂 `3` 对应 4X；改成 `5` 对应 6X，仅 310.9 版，实际生成帧数由游戏请求、并钳到运行库上限）。其余诊断/兼容项取安全默认、不在出厂文件中，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。
 
 ## 杀软误报与签名
 
