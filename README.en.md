@@ -30,7 +30,7 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 
 - Kernel-level work on frame generation (DLSS-G) has essentially reached the best this project can do at this stage; kernel optimization is paused, and later releases will carry compatibility and bug fixes only.
 - The next release focuses on INT8 optimization of several Transformer super-resolution models, to raise the base frame rate on RTX 30 / RTX 20.
-- Vulkan support is hard to continue in the project's current state: the existing Vulkan wrapper layer has poor game compatibility and too little coverage testing. If you need it, use one of the community patch builds.
+- Vulkan support is hard to continue in the project's current state: the wrapper layer itself still has weak game compatibility and little coverage testing, and adding Vulkan on top would only bring more compatibility problems. If you need it, use one of the community patch builds.
 
 ## Requirements
 
