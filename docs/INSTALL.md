@@ -65,19 +65,27 @@ Mode=Bundled
 CacheDirectory=
 ```
 
-只有一个决定“怎么跑帧生成”的开关：`[FrameGeneration] Optimized`。
+只有一个决定“怎么跑帧生成”的开关：`[FrameGeneration] Optimized`。它是一个**一致性档位**，判据只有一条：
+**允许生成的画面偏离官方 NVIDIA 运行库多远**。档位越高越快、离官方画面越远；其余所有旋钮都由档位决定，
+普通用户不需要逐个理解。
 
-| 模式 | 设置 | 含义 |
-|---|---|---|
-| **优化（默认，推荐）** | `Optimized=1` | 启用经过验证的最快内核集：重写的 SM86 内核 + 全部跨内核合并 + 图像内核补丁，输出与原厂逐位一致。这是发布默认，等价于“最佳集”（`OptimizedKernels=1, KernelImage=PTX/Auto, ImagePatches=1, HardwareBilinear=0, ChainBlock0=0, LaunchChains=0, PlainVariant=0, DisableFusions=0`）。 |
-| **原厂数值（stock）** | `Optimized=0` | 不做任何内核优化，走运行库自己的原始数值。**注意：这不是“不替换内核”**：SM86 路线仍然生效，后端替换进去的是从运行库里提取出来的**原厂内核镜像**（真 SM86 卡用 cubin，其它架构用 PTX），数值与运行库完全一致。它不等于 `KernelImage=Original`——在 **310.9 构建 + Ampere** 上尤其重要：310.9.1 的原厂图像内核是 sm_89 blob，在 Ampere 上根本创建不出来，所以 Ampere 上的“原厂数值”只能靠这条“提取内核的 PTX/cubin 替换”路径，而不是让运行库加载它自己的 sm_89 内核。 |
+| 档位 | 设置 | 一致性保证 | 这一档打开了什么 |
+|---|---|---|---|
+| **0 原厂（stock）** | `Optimized=0` | **与官方运行库逐位一致** | 什么加速都不做。**注意这不是“不替换内核”**：SM86 路线仍然生效，后端替换进去的是从运行库里提取出来的**原厂内核镜像**（真 SM86 卡用 cubin，其它架构用 PTX），数值与运行库完全一致。它不等于 `KernelImage=Original`——在 **310.9 构建 + Ampere** 上尤其重要：310.9.1 的原厂图像内核是 sm_89 blob，在 Ampere 上根本创建不出来，所以 Ampere 上的“原厂数值”只能靠这条路径。 |
+| **1 逐位一致（默认，推荐）** | `Optimized=1` | **与官方运行库逐位一致**（两份真实游戏抓取、320 张图实测） | 全部**可证明不改变输出**的加速：63 个重写内核变体 + 全部跨内核合并、精确图像内核补丁（310.9：P1/P3/P4/P7）、`SkipRepeatedRealCopy=1`（同一组里重复的全分辨率 `OutputReal` 拷贝是死存储）。等价于 `OptimizedKernels=1, ImagePatches=1, SkipRepeatedRealCopy=1, HardwareBilinear=0, ChainBlock0=0, LaunchChains=0, PlainVariant=0, DisableFusions=0`。 |
+| **2 快（有损）** | `Optimized=2` | **不再逐位一致**；实测最差 PSNR 仍在约 50 dB 以上（两份抓取） | 档位 1 + 达到 PSNR 门槛的有损图像内核行。**仅 310.9 构建**；310.1 构建上没有这些内核，会自动退回档位 1 并记一条 `kernel_selection_unsupported`。 |
+| **3 最快（有损）** | `Optimized=3` | **不再逐位一致**，画质代价最大 | 全部仍然更快的有损加速：每一行有损图像内核；在 **310.1** 构建上另外打开 `HardwareBilinear=1`（纹理单元双线性，旋转时最底一行可差 12 LSB）。慢的或有结构性伪影的变体已永久退役，任何档位都不会启用。 |
+
+档位是**累加且单调**的：更高的档位只会再加东西，不会撤回低档位的加速。想逐个覆盖某一项，用下面“高级 / 诊断键”
+里的 `ImagePatches` / `SkipRepeatedRealCopy` / `HardwareBilinear` / `ImageApprox` / `ImageApproxMask`——它们在档位
+之后生效，可以把档位打开的东西再关掉，也可以在低档位上单独打开某一项。
 
 其余出厂键：
 
 | 配置项 | 节 | 默认值 | 说明 |
 |---|---|---|---|
 | `Enabled` | `[General]` | `1` | `1` 启用 DLSSG 重定向、适配和帧生成；`0` 关闭：游戏原样加载它自己的 DLSSG（在 Ampere 上就意味着没有帧生成）。代理仍转发系统 DLL 的原有导出。 |
-| `Optimized` | `[FrameGeneration]` | `1` | 见上表。`[Compatibility] OptimizedKernels` 是它的**向后兼容别名**：两者都在时 `Optimized` 优先，只有别名时用别名，都没有时默认关闭。 |
+| `Optimized` | `[FrameGeneration]` | `1` | 一致性档位 `0`–`3`，见上表。`[Compatibility] OptimizedKernels` 是它的**向后兼容别名**（同样接受 `0`–`3`，所以老 INI 里的 `OptimizedKernels=1` 仍然是档位 1）：两者都在时 `Optimized` 优先，只有别名时用别名，都没有时默认档位 0。**值写错或超范围时回退到档位 1** 并记一条 `configuration_warning`——写了这个键的人本意是要打开加速，不该被静默退回原厂。 |
 | `MaxGeneratedFrames` | `[FrameGeneration]` | `3` | 上报的最大“额外生成帧”数量的上限：`5`=最多 6×，`3`=最多 4×，`2`=3×，`1`=2×，`0`=保留运行库原有上报。**实际生成数量由游戏请求决定**。出厂值是 `3`（4×）：自带 Dynamic MFG 的游戏默认会直接跑到这里给出的上限，`5` 对多数人偏高（公开 issue #497/#499），所以 6× 改成**按需手动开**——在 310.9 构建上把这一行改成 `5` 即可（310.1 构建即使写 5 也会被钳回 3，并记一条 `limit_clamped`）。自带旧版 4X Streamline 插件的游戏无论写几都只有 4×。 |
 | `Preset` | `[Compatibility]` | `Auto` | DLSSG 渲染预设（UI 重组），**仅 310.9**。`Auto` 让游戏 / 驱动配置决定（默认）；`A` 强制关闭 UI 重组；`B` 强制开启（生成帧里 HUD/UI 更干净）——**但 B 只在游戏同时向 DLSS-G 交出 HUD-less 图和 UI 平面时才生效**，多数游戏不提供、此时为空操作。310.1 忽略本键。 |
 | `Level` | `[Logging]` | `1` | `0` 关闭日志；`1` 只记错误；`2` 增加配置、加载和能力信息；`3` 再增加内核创建、Evaluate 和标记信息。日志文件名为 `loader_<PID>.jsonl` 和 `backend_<PID>.jsonl`。 |
@@ -85,7 +93,8 @@ CacheDirectory=
 | `Mode` | `[Runtime]` | `Bundled` | 运行库来源。`Bundled` 始终使用代理内嵌的运行库和配套后端（普通安装用这个，无须版本匹配）。`Auto`/`Pinned` 是高级用法，见下。 |
 | `CacheDirectory` | `[Runtime]` | 空 | 空值使用 `%LOCALAPPDATA%\DlssgSm86\bundles`；非空时作为缓存根目录（相对 INI 目录）。 |
 
-一般安装保留出厂 INI 不动即可。想对比原厂数值时把 `Optimized` 改成 `0`，其它一律不用碰。
+一般安装保留出厂 INI 不动即可。想对比原厂数值时把 `Optimized` 改成 `0`，想再快一点（并接受画面不再逐位一致）
+改成 `2`，其它一律不用碰。
 
 ## 高级 / 诊断键（不在出厂 INI 里）
 
@@ -98,7 +107,9 @@ CacheDirectory=
 
 | 配置项 | 值 | 默认 | 说明 |
 |---|---|---|---|
-| `SkipRepeatedRealCopy` | `0/1` | `0` | `1` 跳过运行库在同一组里**重复**发出的那次全分辨率 `OutputReal` 拷贝（第一帧之后逐字节相同，是死存储）。4K 6× 每真实帧约 −566 µs，1080p 6× 约 −164 µs，2× 为 0。默认 `0` 是兼容性前提：极少数会在同组两次 Evaluate 之间重画真实帧的游戏会看到滞后一帧；出现 `real_copy_mismatch` 就改回 `0`。详见下面小节。两个模型都支持。 |
+| `SkipRepeatedRealCopy` | `0/1` | **档位决定**（档位 ≥1 为 `1`） | `1` 跳过运行库在同一组里**重复**发出的那次全分辨率 `OutputReal` 拷贝（第一帧之后逐字节相同，是死存储）。4K 6× 每真实帧约 −566 µs，1080p 6× 约 −164 µs，2× 为 0。**它是构造上逐位一致的**，两份真实抓取重放的 `OutputReal` 60/60 与 20/20 逐位一致、输出 180/180 与 140/140 逐位一致，所以档位 1 起默认打开。极少数会在同组两次 Evaluate 之间重画真实帧的游戏理论上会看到滞后一帧；后端有防护，任何疑点都照常转发并记 `real_copy_mismatch`——真出现了就把这一行显式写成 `0`。详见下面小节。两个模型都支持。 |
+| `ImageApprox` | `0/1` | **档位决定**（档位 ≥2 为 `1`） | 有损图像内核行的显式开关，覆盖档位的答案：在档位 1 上写 `1` 就只加有损图像行，在档位 2/3 上写 `0` 就只留逐位一致的部分。**仅 310.9**：310.1 没有这些内核，写了会被握手裁掉并记 `kernel_selection_unsupported`。 |
+| `ImageApproxMask` | 位掩码 | **档位决定**（档位 2 = 默认集，档位 3 = 全部） | 精确指定启用哪几行有损图像内核，每一位对应一个固定槽位。槽位**一次分配、永不回收**：退役的行留下空位，所以老文档里写下的掩码值永远指同一批行；掩码里出现未分配的位会被忽略并记一条 `image_approx_mask_unassigned`。同一个内核有多行时只启用位号最小的那一行，另一行记 `image_approx_row_shadowed`。armed 的行、槽位与资源号都在后端 `image_approx` 记录里。 |
 | `ForceGeneratedFrames` | `0`–`16` | `0` | **诊断实验（会降低体验）**。让 `DLSSG.MultiFrameCount` 及 NVIDIA App 覆盖通道的**每一次 getter** 返回这个数（夹到 `MaxGeneratedFrames` 与后端上限），不动 setter。只有当游戏 Streamline 插件会**读回**帧数时才有作用；否则只会让插值相位错乱、画面发抖。配合 `[Debug] MfgProbe=1` 判定，方法见 `docs/MFG_PROBE.md`。用完改回 `0`。 |
 | `ForcePluginFrames` | `0`/`2`–`5` | `0` | **实验性**。给自带**旧版 4X** Streamline 插件的游戏（悟空 `sl.dlss_g.dll` 2.7.4、赛博朋克 2077 2.7.1）在内存里打补丁跑 6X：把插件硬编码的 4X 上限（`min(MultiFrameCountMax,3)` 里的 `3`）与默认初值改成 N，并钩住插件的逐帧常量下发把 `numFramesToGenerate` 强制成 N，使运行库视图、插件循环、资源分配都落在 N（这正是 `ForceGeneratedFrames` 单改 getter 会失步的原因）。仅在按 SHA-256/FileVersion + 唯一字节特征**精确识别**到已知版本时才动，否则不动并记 `plugin_mfg_unrecognized`。须同时设 `MaxGeneratedFrames=N`。补丁在插件验签**之后**、CreateFeature 计算上限**之前**施加。310.1 上会夹到 3（空操作）。**实测结论（悟空 2.7.4，2026-09-14）：补丁机制成功**（日志 `plugin_mfg_install` 上限 3→5、`plugin_mfg_force` 把 `numFramesToGenerate` 强制成 5），**但游戏跑几帧 6X 后整个 DLSS-G 硬失败关闭**（连 4X 也没了）——4X 集成的交换链后备缓冲按 4X 一次性建好，强制第 5 帧无缓冲可呈现，Streamline 不优雅退回而是关掉整个帧生成。**故本键对 4X 游戏不可用、且有害**，默认关。真 6X 需要游戏自带 ≥2.11.1 的 `sl.dlss_g.dll`（如 A Plague Tale 的 2.11.1，实测原生 6X 干净）。见 `docs/MFG_PROBE.md`。 |
 
@@ -136,7 +147,7 @@ CacheDirectory=
 
 | 配置项 | 值 | 默认 | 说明 |
 |---|---|---|---|
-| `OptimizedKernels` | `0/1` | 关（见别名说明） | `[FrameGeneration] Optimized` 的**向后兼容别名**；两者都在时 `Optimized` 优先。行为与 `Optimized` 一致。 |
+| `OptimizedKernels` | `0`–`3` | 档位 0（见别名说明） | `[FrameGeneration] Optimized` 的**向后兼容别名**，接受同样的档位范围；两者都在时 `Optimized` 优先。老 INI 里的 `OptimizedKernels=1` 仍然是档位 1。 |
 | `KernelImage` | `Auto/PTX/Cubin/Original` | `Auto` | 内核加载格式，见下表。**cubin 被驱动拒绝时自动回退到同一内核的 PTX**（见“驱动版本要求与 cubin → PTX 自动回退”）。`Original` 只装钩子不替换任何内核（本机取原厂数值参考；**310.9 构建在 Ampere 上用不了这一项**——它的原厂图像内核是 sm_89，Ampere 上创建失败，本机参考请用 `Optimized=0`+`KernelImage=PTX`）。 |
 | `Router` | `Auto/SM86/SM75` | `Auto` | 内核族。`Auto` 按物理 GPU 选（SM86 及以上走 SM86，Turing 走 SM75）。**SM75 是实验项**，**两种构建都有**。`Optimized=1` 时两边都创建 63 个变体行、跨内核合并与图像补丁全开，日志记一条 `sm75_route_limits`（`variant_rows=63`、`image_patches_partial` 为空）；区别只在补丁的来源与 `HardwareBilinear`：310.1 是两个图像补丁 + 纹理探针（`HardwareBilinear` 可用），310.9 是 3 个按 310.9.1 RVA 重新推导的补丁（63 = 60 + 3），纹理探针的那个内核 310.9.1 已删除，所以 `HardwareBilinear` 在该构建上强制 0。3070 前向 JIT 上两种构建都与各自的 SM86 原厂路线逐位一致（310.9 上含 6×），**真实 Turing 从未验证**。SM75 原厂内核族来自 Coldwood1026（见 `THIRD_PARTY_NOTICES.txt`）。 |
 | `SM75Family` | `Repaired/Original` | `Repaired` | 仅在 `Router=SM75`（或物理 Turing）时有意义，选哪一份**导入的 sm_75 原厂内核族**。`Repaired` 是本项目修复过的那份：Coldwood1026 的 f16x2 min/max 模拟经一块用通用地址寻址的 `.local` 缓冲交换半字（未定义行为，9 个 DL2 内核 342 处），已按值等价地改写进寄存器，72 个 cubin 也由修复后的 PTX 重新编译——**默认值，本仓库的全部结果都是在它上面测的**。`Original` 是原样导入的那份（cubin 逐字节是 Coldwood 的二进制，PTX 只做了 `.version` 归一化），留着是因为离线 `ptxas` 会给未修复的 PTX 分配真栈帧，**原厂 cubin 路径在真实 Turing 上很可能从来没碰到这个缺陷**，而只有 20 系实机能回答；给真实 Turing 用户做 A/B 用。以 PTX 为输入的 JIT 路径（非 Turing 卡上的前向 JIT，3070 实测）用 `Original` 会重现修复前那张 43–73 dB 的表。只换原厂内核，我们自己重写的变体与图像补丁不受影响；310.9 构建上只覆盖与 310.1 共用的 44 个内核（新增的 26 个没有"原样"版本）。走 SM86 路线时该键完全无效，日志记一条 `sm75_family_ignored`。 |
@@ -147,8 +158,8 @@ CacheDirectory=
 | `LaunchChains` | `0/1` | `0` | **实验项，不要开启（会降低性能甚至有害）**。`1` 把连续内核提交攒成 `NvAPI_D3D12_LaunchCuKernelChain`。5070 上无收益（每次 Evaluate 慢 2–3%），**310.9 上实测有害**（中位 Evaluate 超出最小值 3–120 倍）。保留只为在别的驱动 / GPU 上复测。 |
 | `DisableFusions` | `0`–`63` | `0` | **诊断位掩码（打开会变慢）**，关闭 `OptimizedKernels` 的某类跨内核合并：1 解码器 upscale+add+1×1，2 解码器 1×1 对，4 `k_initial_merge`+convPre，8 conv0+池化，16 残差链，32 `k_central_block`+block1 conv0。默认 0 = 全部合并开启。 |
 | `PlainVariant` | `0`–`3` | `0` | 同一内核登记了多个替换实现时选第 n 个（越界取最后一个）。**默认 0 是实测最快的一组**；改成 >0 是换备选实现复测，通常更慢。 |
-| `ImagePatches` | `0/1` | `1` | `0` 关闭图像处理内核的 PTX 级补丁（需要 `OptimizedKernels=1`，两个模型都支持）。补丁语义不变、逐位一致，默认 `1`。 |
-| `HardwareBilinear` | `0/1` | `0` | **仅 310.1**（310.9 上强制 0）。`1` 让合成内核用纹理单元双线性采样代替手写 fp32 混合，每个 index 省约 5 µs，但**旋转场景最底一行可差 12 LSB**（原厂在底边混入零纹素）。默认 `0` 保持逐位一致的手写路径。 |
+| `ImagePatches` | `0/1` | **档位决定**（档位 ≥1 为 `1`） | `0` 关闭图像处理内核的**精确** PTX 级补丁（需要档位 ≥1，两个模型都支持）。补丁语义不变、逐位一致。注意它只管精确补丁：有损行由 `ImageApprox` 管。 |
+| `HardwareBilinear` | `0/1` | **档位决定**（档位 3 为 `1`，其余 `0`；310.9 上恒为 0） | **仅 310.1**（310.9 上强制 0）。`1` 让合成内核用纹理单元双线性采样代替手写 fp32 混合，每个 index 省约 5 µs，但**旋转场景最底一行可差 12 LSB**（原厂在底边混入零纹素）——所以它属于档位 3 的那一类有损加速。 |
 | `ChainBlock0` | `0/1` | `0` | `1` 把 DL2 block0 的 8 个残差卷积也换成持久化链内核。5070 上与 8 次原生提交**持平**（无收益），默认关闭；其它 GPU 可复测。 |
 
 ### [Runtime]
@@ -192,7 +203,7 @@ SM75 族与 SM86 族在 RTX 3070 的前向 JIT 上**逐位一致**（原厂族�
 
 **310.9 构建上同样成立**：310.9.1 的 70 个内核里，44 个共用 310.1 的 sm_75 族，26 个新内核的 sm_75 镜像由 `scripts/perf/ptx_sm75.py` 从仓库自己的 sm_86 PTX 改写而来（`assets/kernels/310_9_1/sm75/`）。3070 前向 JIT 实测：box + rotate × 7 个分辨率原厂族与优化集各 240/240 张、**`--multi 5`（6×）另外 80/80 张**，全部与同机 SM86 原厂路线逐位一致；MFG 相位（`i/(N+1)` 质心）两条路线完全相同。详见 `docs/evidence/310_9_1_sm75.md`。
 
-只在 RTX 3070 上做过 `.target sm_75` 前向 JIT 验证，**真实 Turing 未验证**，那些 `sm_75` cubin 也从未执行过（只有物理架构完全一致时才会被选中）。详见 `docs/VALIDATION.md`。
+数值在 RTX 3070 上以 `.target sm_75` 前向 JIT 验证为与 SM86 路线逐位一致；**真 Turing（20 系实机，2026-09-15/17）**上 `sm_75` cubin 全族创建并运行、0 回退，cubin 与 PTX 逐位一致，档 0 与档 1 逐位一致，游戏内可用。Turing 上的耗时尚未量化。详见 `docs/VALIDATION.md` 与 `docs/evidence/sm75/turing_2026-09-17.md`。
 
 #### 驱动版本要求与 cubin → PTX 自动回退
 
@@ -217,11 +228,12 @@ SM75 族与 SM86 族在 RTX 3070 的前向 JIT 上**逐位一致**（原厂族�
 
 | 事件 / 字段 | 含义 |
 |---|---|
-| loader：`configuration` | 本次读取的 INI、运行库模式、内核格式请求，以及 `optimized_kernels`（`Optimized`/别名解析后的结果）、`warnings`（本次回退了几个键）、`proxies`（`{active, standby[]}`，哪个代理在干活）。 |
+| loader：`configuration` | 本次读取的 INI、运行库模式、内核格式请求，以及 `optimized_tier`/`optimized_tier_name`（解析后的一致性档位）、该档位解出的每个旋钮（`optimized_kernels`/`image_patches`/`image_approx`/`image_approx_mask`/`skip_repeated_real_copy`/`hardware_bilinear`/`chain_block0`/`launch_chains`）、`warnings`（本次回退了几个键）、`proxies`（`{active, standby[]}`，哪个代理在干活）。 |
 | loader：`configuration_warning`（Level 1） | 某个键的值非法，已回退到该键默认值：`section`/`key`/`value`/`default`/`reason`。mod 仍然启用，只有这个键无效。每个出问题的键一条。 |
 | loader：`configuration_error`（Level 1） | 整份配置根本读不了（路径无法构成、内存不足），mod 关闭并保留游戏原始加载。**普通拼写错误不会走到这里**，那是上一行。 |
 | loader：`kernel_selection_unsupported`（Level 1） | 后端不支持 INI 要求的某些标志位：`stripped_flags` 是被去掉的位，`effect` 为 `installed without them`——**安装照常进行**，只是这些开关无效。 |
-| backend：`install` | `actual_sm` 物理架构；`active` 本次是否启用路由；`image` 选定格式；`target_sm`/`router` 解析后的内核族；`optimized_kernels` 是否启用优化。 |
+| backend：`install` | `actual_sm` 物理架构；`active` 本次是否启用路由；`image` 选定格式；`target_sm`/`router` 解析后的内核族；`optimized_tier`/`optimized_tier_name` 与 `optimized_knobs`（该档位真正落地的整组旋钮）。 |
+| backend：`image_approx` | 仅 310.9：有损图像行的解析结果——`enabled`、`optimized_tier`、`mask`/`mask_from`（INI 指定还是档位默认）、`armed[]`（每一行的入口名、槽位、资源号）、`rows_shadowed`、`exact_patches_replaced`。 |
 | loader：`backend_install` | `status=0` 表示后端安装成功；结合 `install.active` 判断是否启用了内核替换。 |
 | `image=ptx_sm86` / `cubin_sm86` / `original` | 已选择的 SM86 内核格式，或未替换。 |
 | backend：`kernel_image_fallback` | 驱动拒绝了某个 cubin，该镜像家族已自动改用 PTX。 |

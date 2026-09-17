@@ -1,4 +1,4 @@
-# DLSSG for SM86（Proxy）- 0.3.1 版本
+# DLSSG for SM86（代理版）- 0.3.2 版本
 
 **中文** · [English](README.en.md)
 
@@ -6,10 +6,22 @@
 
 ## 本次更新说明
 
+### 0.3.2
+
+- 重写了部分推理内核（310.9 版）：生成画面与官方 DLSS-G 完全一致（RTX 3080 Ti 与 RTX 5070 实测逐位相同），不再有损，并有些许加速（3080 Ti 上 0~8%）。
+- 优化内核等级调整：`[FrameGeneration] Optimized` 现在是 `0`–`3` 四级。`0` 原厂内核，不加速；`1` 全部加速，画面与官方逐位一致（出厂默认）；`2` 再开有损图像内核，更快，对官方画面 PSNR 约 50 dB 以上（仅 310.9 版）；`3` 全部有损加速，最快。说明见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+
 ### 0.3.1
 
-- 修复 RTX 20 系（Turing）开不了帧生成的问题。20 系现在和 30 系一样直接用出厂 `dlssg_sm86.ini`，同样支持 6X（310.9 版，`MaxGeneratedFrames=5`，需游戏自带插件支持）。
-- 出厂 `MaxGeneratedFrames` 改为 `3`（4X），要 6X 改成 `5`。
+- 安装简化：发布包根目录现在直接带四个代理（`version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll`），**全部复制到渲染 EXE 旁即可，不用挑**。进程里第一个被游戏加载的那个成为本 mod，其余自动待机、只把导出转发给同名系统 DLL，不会重复安装帧生成。只有这四个都没被加载时，才从 `alternatives\` 里手动拿 `dxgi.dll` 或 `d3d12.dll`（二选一）。
+- 出厂 `MaxGeneratedFrames` 由 `5` 改为 `3`（4×）。自带 Dynamic MFG 的游戏会默认跑到这里写的上限，`5` 对多数人偏高（公开仓库 issue #497 / #499）。要 6× 请用 310.9 版并把这一行手动改成 `5`；游戏自带旧版 4X 插件时无论写几都只有 4×。
+- INI 写错某个键不再关掉整个 mod：该键回退到自己的默认值并记一条 `configuration_warning`（`Level=1` 就能看到），其余键照常工作。后端不支持某个开关时（例如 310.1 版上写 `Preset=B`）也改为**去掉那个开关继续安装**并记 `kernel_selection_unsupported{stripped_flags}`，而不是整个拒绝。
+- RTX 20 系（Turing）恢复可用，用出厂 `dlssg_sm86.ini` 即可，不需要改任何键：内核族按物理显卡自动选到 SM75 一族。RTX 2080 Ti + 巫师 3 次世代版 DX12 实测可开启 2X（该游戏自带的 Streamline 插件上限就是 2X）；4X / 6X 与 30 系一样由游戏自带的插件决定。驱动建议 R580 以上，最低约 R555（自动改用 PTX，只在首次加载多一次 JIT）。
+- 0.3.0 在任何 RTX 20 上都开不了帧生成：它向 NGX 核心报告的显卡架构不是这张卡的真实架构，核心因此拒绝了帧生成特性（对应公开仓库 issue #491 / #492）。本次修改不影响 RTX 30 的数值与性能。
+- 与 20 系有关的两个键 `SM75Family` 和 `SpoofArchToGame` 都不在出厂 INI 里，缺省值即为正确取值；需要时见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+- 帧生成打不开时的诊断：`[Logging] Level=2` 现在会记录是哪一道闸门拒绝的——硬件加速 GPU 计划（HAGS）、驱动版本、NGX 核心对能力查询的答复、以及 `CreateFeature` 的返回值。这一组记录名都以 `fg_gate_` 开头。
+- RTX 20 上的画质与性能尚未测量：本版只证明帧生成能在 20 系上跑起来（数千次 Evaluate 零失败、零回退），没有 FPS 数据，也没有与 RTX 30 的画质对比。
+
 ### 0.3.0
 
 - 由 native 模式回退到代理模式。native 化（自建 NGX host）在部分游戏上存在难以修复的兼容问题；本版改用代理 DLL 内嵌未修改的原厂运行库，游戏对 NGX 的调用不变，兼容性更好。
@@ -29,7 +41,12 @@
 - 驱动：带 NGX / NVAPI / CUDA 接口的 NVIDIA 驱动，591.86 与 610.74 实测可用。cubin 需约 R580+ 驱动，更旧的驱动自动回退 PTX（仅首帧多一次 JIT）。
 - 不需要 CUDA Toolkit，不需要 Python。
 
-两个发布包用法一致，仅内嵌运行库与上限不同；310.9 版在 4X 及以下与 310.1 版一致，另支持 6X。根目录下为310.9最新的dlssg版本，310.1为老版本。
+两个发布包用法一致，仅内嵌运行库与上限不同；310.9 版在 4X 及以下与 310.1 版一致，另支持 6X。
+
+| 发布包 | 内嵌运行库 | 帧生成上限 | `version.dll` 大小 | SHA-256 |
+|---|---|---|---|---|
+| `dlssg-release-x64.zip` | 310.1.0.0 | 4X | 27,951,392 | `a1f5e4c8c43238de5b639ef858fb67fbb1874e5e8681833bc3ffff4d3b573c50` |
+| `dlssg-release-x64-310.9.zip` | 310.9.1.0 | 6X | 29,975,840 | `39b16f2cdb16450f0edc0e0b14231951e10954131ad9aa12037700e18dc91040` |
 
 ## 不同配置的插帧额外显存参考
 
@@ -54,22 +71,22 @@
 
 1. 完全退出游戏。
 2. 进入游戏的渲染 EXE 目录（如《黑神话：悟空》为 `...\b1\Binaries\Win64\`）。
-3. 将 `version.dll` 与 `dlssg_sm86.ini` 复制进去；该目录已有 `version.dll` 时先备份原文件。少数游戏不加载 `version.dll`，改用发布包 `alternatives\` 目录下的其它代理名（按游戏实际加载的 DLL 选一个，如 `winmm.dll` / `dxgi.dll` / `dbghelp.dll` 等）。
-4. 启动游戏，在图形设置中开启 DLSS 帧生成，选 2X / 3X / 4X（310.9 版且游戏支持时可至 6X）。
-5. 升级：退出游戏后用新版 `version.dll` 覆盖即可，`dlssg_sm86.ini` 一般无需改动。
-6. 卸载：用备份的原 `version.dll` 覆盖回去（或删除），并删除 `dlssg_sm86.ini`。
+3. 把发布包**根目录下的所有文件**（`version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll`、`dlssg_sm86.ini`）复制进去，不用挑代理名；该目录已有同名 DLL 时先备份原文件。四个代理里哪个先被游戏加载，哪个就是本 mod，其余只做转发。极少数游戏这四个都不加载，再从 `alternatives\` 里取 `dxgi.dll` 或 `d3d12.dll`（只放一个）。
+4. 启动游戏，在图形设置中开启 DLSS 帧生成，选 2X / 3X / 4X（要 6× 见下面「6X 说明」，需要 310.9 版并手动把 `MaxGeneratedFrames` 改成 `5`）。
+5. 升级：退出游戏后用新版的这几个文件覆盖即可，`dlssg_sm86.ini` 一般无需改动。
+6. 卸载：把备份的原 DLL 覆盖回去（没有备份就删除本包放进去的那几个），并删除 `dlssg_sm86.ini`。
 
-出厂 `dlssg_sm86.ini` 只保留两个决定性开关：`[FrameGeneration] Optimized`（`1` 用最优内核，输出与原厂逐位一致；`0` 用原厂数值不优化）与 `[FrameGeneration] MaxGeneratedFrames`（出厂 `3` 对应 4X；改成 `5` 对应 6X，仅 310.9 版，实际生成帧数由游戏请求、并钳到运行库上限）。其余诊断/兼容项取安全默认、不在出厂文件中，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+出厂 `dlssg_sm86.ini` 只保留两个决定性开关：`[FrameGeneration] Optimized`（一致性档位 `0`–`3`，出厂 `1` = 全部逐位一致的加速，`0` 为原厂数值，`2`/`3` 为有损档位）与 `[FrameGeneration] MaxGeneratedFrames`（出厂 `3` 对应 4X；改成 `5` 对应 6X，仅 310.9 版，实际生成帧数由游戏请求、并钳到运行库上限）。其余诊断/兼容项取安全默认、不在出厂文件中，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。某个键写错时只有那个键回退到默认值并记一条 `configuration_warning`，不会再关掉整个 mod。
 
 ## 杀软误报与签名
 
-本版发布的代理 DLL（`version.dll`、`winmm.dll` 及 `alternatives\` 下各代理）均做代码签名。自签名证书仅验证签名者身份与文件完整性，不提供 Windows 默认信任；首次运行 Windows SmartScreen 仍可能提示「未知发布者」——这是基于信誉的提示，与杀软报毒是两回事。本次使用自签证书 `CN=DLSSG for SM86 (self-signed)`，SHA-1 指纹 `85BA66762F851E49148D706915D09026281418E6`；可在文件属性→数字签名或用 `signtool verify /pa` 核对签名者与指纹。
+本版发布的代理 DLL（根目录的 `version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll` 及 `alternatives\` 下两个）均做代码签名。自签名证书仅验证签名者身份与文件完整性，不提供 Windows 默认信任；首次运行 Windows SmartScreen 仍可能提示「未知发布者」——这是基于信誉的提示，与杀软报毒是两回事。本次使用自签证书 `CN=DLSSG for SM86 (self-signed)`，SHA-1 指纹 `85BA66762F851E49148D706915D09026281418E6`；可在文件属性→数字签名或用 `signtool verify /pa` 核对签名者与指纹。
 
 ## 性能（RTX 3080 Ti，离线基准）
 
 RTX 3080 Ti，驱动 591.86，SM86，2026-09-13 实测。单位为每个真实帧对应整组帧生成的 GPU 毫秒数，含共用预处理；4 轮 × 每轮 256 组，取各轮中位数的中位数，同一轮内各配置交错运行以共享温度漂移。下表为 310.9 版、16:9 常见分辨率，原厂内核（`Optimized=0`）与最优内核（`Optimized=1`）的对比。耗时降低统一按 `(原厂 − 最优) / 原厂` 计算，使用未取整数据。
 
-本表衡量的是帧生成的 GPU 计算开销，不等于实测游戏 FPS 增幅；如何据此估算显示帧率见下一节。该次测量之后仅有生命周期与工具类改动（内核缓存与重绑定、录制回放、日志、INI 精简等），最优内核集本身未变动（同一组 63 个变体 + 图像补丁 + 跨内核合并），故以上数字适用于本次发布。
+本表衡量的是帧生成的 GPU 计算开销，不等于实测游戏 FPS 增幅；如何据此估算显示帧率见下一节。该次测量之后最优内核集本身未变动（同一组 63 个变体 + 图像补丁 + 跨内核合并），其余为生命周期与工具类改动（内核缓存与重绑定、录制回放、日志、INI 精简等）；0.3.2 只换掉 310.9 版那 26 个新内核的镜像，同卡实测比上表再快 0~8%，故以上数字对本次发布偏保守。
 
 | 分辨率 | 倍率 | 原厂内核 (ms) | 最优内核 (ms) | 耗时降低 |
 |---|---|---|---|---|
@@ -120,9 +137,11 @@ RTX 3080 Ti，驱动 591.86，SM86，2026-09-13 实测。单位为每个真实�
 
 ## 6X 说明
 
-6X（每真实帧生成 5 帧）为 NVIDIA DLSS 4.5 的 Dynamic Multi Frame Generation。310.9 版内嵌的运行库支持该能力，本项目使其能在 Ampere 上运行；是否得到 6X 取决于游戏：
+6X（每真实帧生成 5 帧）为 NVIDIA DLSS 4.5 的 Dynamic Multi Frame Generation。310.9 版内嵌的运行库支持该能力，本项目使其能在 Ampere 上运行。
 
-- 游戏自身支持 6X（自带较新的 Streamline 帧生成插件、菜单中可选 6X 或 Dynamic MFG）：装 310.9 版并置 `MaxGeneratedFrames=5` 即可，实测可稳定运行 6X。
+**出厂 `MaxGeneratedFrames` 是 `3`（4X），6X 需要自己改。** 原因是自带 Dynamic MFG 的游戏会默认直接跑到这里写的上限，`5` 对多数人偏高（公开仓库 issue #497 / #499）；把它改回 `5` 随时可以拿到 6X。是否真的得到 6X 还取决于游戏：
+
+- 游戏自身支持 6X（自带较新的 Streamline 帧生成插件、菜单中可选 6X 或 Dynamic MFG）：装 310.9 版并把 `MaxGeneratedFrames` 改成 `5` 即可，实测可稳定运行 6X。
 - 游戏仅支持 4X（自带较旧的 4X 插件，当前多数游戏如此）：上限由游戏侧插件决定，本项目无法将其抬到 6X（该插件在初始化时按 4X 铺设内部呈现队列，强行加帧会越界导致帧生成失效或崩溃）。这类游戏请使用 4X。
 
 ## 实测反馈
@@ -138,7 +157,7 @@ RTX 3080 Ti，驱动 591.86，SM86，2026-09-13 实测。单位为每个真实�
 
 ## SM75 来源与致谢
 
-- Coldwood1026 的 RTX 20 系列 / SM75 适配（实验性 SM75 路由的内核族来源，见 `THIRD_PARTY_NOTICES.txt`）。
+- Coldwood1026 的 RTX 20 系列 / SM75 适配（SM75 内核族的来源，见 `THIRD_PARTY_NOTICES.txt`）。
 - NVIDIA 的 DLSS-G 运行库、模型与前后处理（内嵌、未经修改）。
 
 ## 许可与第三方

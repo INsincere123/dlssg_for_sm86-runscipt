@@ -1,4 +1,4 @@
-# DLSSG for SM86 (proxy) - 0.3.1 Version
+# DLSSG for SM86 (proxy build) - 0.3.2
 
 [中文](README.md) · **English**
 
@@ -6,10 +6,22 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 
 ## Changes in this release
 
+### 0.3.2
+
+- Part of the inference kernels rewritten (310.9 build): the generated image now matches the official DLSS-G exactly (bit-identical in tests on an RTX 3080 Ti and an RTX 5070), no longer lossy, with a small speed-up (0–8% on the 3080 Ti).
+- Optimization levels reworked: `[FrameGeneration] Optimized` is now `0`–`3`. `0` stock kernels, no acceleration; `1` every acceleration, image bit-identical to the official one (factory default); `2` adds lossy image kernels, faster, about 50 dB PSNR or better against the official image (310.9 build only); `3` everything lossy, fastest. See [`docs/INSTALL.md`](docs/INSTALL.md).
+
 ### 0.3.1
 
-- Fixed frame generation not enabling on RTX 20-series (Turing). RTX 20 now works with the factory `dlssg_sm86.ini` like RTX 30, including 6X (310.9 build, `MaxGeneratedFrames=5`, game plugin permitting).
-- Factory `MaxGeneratedFrames` is now `3` (4X); set `5` for 6X.
+- Simpler install: the package root now ships four proxies (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`) — **copy all of them next to the game EXE, there is nothing to pick**. Whichever one the game loads first runs the mod; the others go on standby and only forward their exports to the matching system DLL, so frame generation is never installed twice. Only if none of the four is loaded, take `dxgi.dll` or `d3d12.dll` (one of them) from `alternatives\`.
+- The factory `MaxGeneratedFrames` changes from `5` to `3` (4X). A game with dynamic MFG runs at whatever ceiling is written here by default, and `5` turned out to be too high for most people (public issues #497 / #499). For 6X use the 310.9 build and set this line to `5` yourself; a game whose own Streamline plugin is 4X stays at 4X either way.
+- A bad value in the INI no longer switches the whole mod off: that key falls back to its own default and logs one `configuration_warning` (visible at `Level=1`), every other key keeps working. The same for a switch the backend cannot do (for example `Preset=B` on the 310.1 build): those flags are **stripped and the install goes ahead**, logging `kernel_selection_unsupported{stripped_flags}` instead of refusing outright.
+- RTX 20-series (Turing) works again, with the factory `dlssg_sm86.ini` and no edits: the kernel family is selected from the physical GPU and resolves to the SM75 family. Confirmed on an RTX 2080 Ti in The Witcher 3 next-gen DX12 at 2X (that game's own Streamline plugin caps at 2X); 4X / 6X are decided by the game's own plugin, as on RTX 30. Driver R580+ recommended, roughly R555 minimum (PTX is used automatically, costing one extra JIT on first load).
+- 0.3.0 could not enable frame generation on any RTX 20: the GPU architecture it reported to the NGX core was not the card's real architecture, so the core refused the frame-generation feature (public issues #491 / #492). Nothing about RTX 30 numerics or performance changes with this fix.
+- The two RTX 20-related keys, `SM75Family` and `SpoofArchToGame`, are not in the factory INI; their defaults are the right values. See [`docs/INSTALL.md`](docs/INSTALL.md) if you need them.
+- Diagnostics for "frame generation will not turn on": at `[Logging] Level=2` the log now records which gate refused it — hardware-accelerated GPU scheduling (HAGS), driver version, the NGX core's answer to the capability query, and the `CreateFeature` result. These records are named `fg_gate_*`.
+- Image quality and performance on RTX 20 are not yet measured: this release only shows that frame generation runs there (thousands of Evaluates with no failure and no fallback). There are no FPS numbers and no image comparison against RTX 30.
+
 ### 0.3.0
 
 - Reverted from the native build to the proxy build. The native approach (a self-built NGX host) had game-compatibility problems that were hard to fix; this build uses a proxy DLL around the unmodified factory runtime, leaving the game's calls to NGX unchanged, which is more compatible.
@@ -29,8 +41,12 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 - Driver: an NVIDIA driver with the NGX / NVAPI / CUDA interfaces; tested on 591.86 and 610.74. The cubins need roughly R580+; older drivers fall back to PTX automatically (one extra JIT on the first frame only).
 - No CUDA Toolkit and no Python.
 
-Both release zips install the same way; only the embedded runtime and the ceiling differ. The 310.9 build matches the 310.1 build at 4X and below, and additionally supports 6X.The root directory contains the latest DLSSG version, 310.9, while 310.1 is the older version.
+Both release zips install the same way; only the embedded runtime and the ceiling differ. The 310.9 build matches the 310.1 build at 4X and below, and additionally supports 6X.
 
+| Release zip | Embedded runtime | Ceiling | `version.dll` size | SHA-256 |
+|---|---|---|---|---|
+| `dlssg-release-x64.zip` | 310.1.0.0 | 4X | 27,951,392 | `a1f5e4c8c43238de5b639ef858fb67fbb1874e5e8681833bc3ffff4d3b573c50` |
+| `dlssg-release-x64-310.9.zip` | 310.9.1.0 | 6X | 29,975,840 | `39b16f2cdb16450f0edc0e0b14231951e10954131ad9aa12037700e18dc91040` |
 
 ## Extra VRAM by configuration
 
@@ -55,22 +71,22 @@ The same height at different widths is similar (it tracks output pixel count). T
 
 1. Exit the game completely.
 2. Go to the game's rendering-EXE directory (e.g. Black Myth: Wukong is `...\b1\Binaries\Win64\`).
-3. Copy `version.dll` and `dlssg_sm86.ini` into it; if a `version.dll` already exists, back it up first. If a game does not load `version.dll`, use one of the other proxy names in `alternatives\` (pick the DLL the game actually loads — e.g. `winmm.dll` / `dxgi.dll` / `dbghelp.dll`).
-4. Launch the game, enable DLSS Frame Generation in the graphics settings, and select 2X / 3X / 4X (up to 6X on the 310.9 build where the game supports it).
-5. Upgrade: exit the game and overwrite `version.dll`; `dlssg_sm86.ini` usually needs no change.
-6. Uninstall: overwrite `version.dll` with the backed-up original (or delete it) and delete `dlssg_sm86.ini`.
+3. Copy **every file at the package root** (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`, `dlssg_sm86.ini`) into it — there is no proxy name to pick; back up any same-named DLL that is already there. Whichever of the four the game loads first runs the mod, the rest only forward. In the rare case that none of them is loaded, take `dxgi.dll` or `d3d12.dll` (only one) from `alternatives\`.
+4. Launch the game, enable DLSS Frame Generation in the graphics settings, and select 2X / 3X / 4X (for 6X see "6X" below: it needs the 310.9 build and `MaxGeneratedFrames` set to `5` by hand).
+5. Upgrade: exit the game and overwrite those files; `dlssg_sm86.ini` usually needs no change.
+6. Uninstall: restore the backed-up originals (or delete the files this package added) and delete `dlssg_sm86.ini`.
 
-The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (`1` uses the optimized kernels, output bit-identical to stock; `0` uses stock numerics) and `[FrameGeneration] MaxGeneratedFrames` (factory `3` = 4X; `5` = 6X on the 310.9 build only; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.md`](docs/INSTALL.md).
+The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (a consistency tier `0`–`3`; factory `1` = every acceleration that stays bit-identical, `0` = stock numerics, `2`/`3` = the lossy tiers) and `[FrameGeneration] MaxGeneratedFrames` (factory `3` = 4X; `5` = 6X on the 310.9 build only; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.md`](docs/INSTALL.md). A key written wrongly only costs that key — it falls back to its default and logs one `configuration_warning` instead of switching the mod off.
 
 ## Antivirus & signing
 
-The release proxy DLLs (`version.dll`, `winmm.dll`, and each proxy in `alternatives\`) are code-signed. A self-signed certificate only verifies the signer's identity and file integrity; it gives no default Windows trust, so Windows SmartScreen may still prompt "unknown publisher" on first run — that is a reputation prompt, not an antivirus detection. The certificate is self-signed as `CN=DLSSG for SM86 (self-signed)`, SHA-1 thumbprint `85BA66762F851E49148D706915D09026281418E6`; verify the signer and thumbprint via the file's Properties → Digital Signatures tab or `signtool verify /pa`.
+The release proxy DLLs (`version.dll`, `winmm.dll`, `dbghelp.dll` and `dinput8.dll` at the root, plus the two in `alternatives\`) are code-signed. A self-signed certificate only verifies the signer's identity and file integrity; it gives no default Windows trust, so Windows SmartScreen may still prompt "unknown publisher" on first run — that is a reputation prompt, not an antivirus detection. The certificate is self-signed as `CN=DLSSG for SM86 (self-signed)`, SHA-1 thumbprint `85BA66762F851E49148D706915D09026281418E6`; verify the signer and thumbprint via the file's Properties → Digital Signatures tab or `signtool verify /pa`.
 
 ## Performance (RTX 3080 Ti, offline benchmark)
 
 RTX 3080 Ti, driver 591.86, SM86, measured 2026-09-13. The unit is GPU milliseconds for the whole generation group per real frame, shared preprocessing included; 4 rounds × 256 groups each, median of the per-round medians, configs interleaved within a round to share thermal drift. The table is the 310.9 build, common 16:9 resolutions: stock kernels (`Optimized=0`) versus optimized kernels (`Optimized=1`). Reduction is `(stock − optimized) / stock` on un-rounded data.
 
-This table measures frame generation's GPU compute cost; it is not an in-game FPS gain — how to estimate displayed FPS from it is in the next section. Only lifecycle and tooling changes were made after this measurement (kernel caching and re-binding, capture/replay, logging, INI simplification); the optimized kernel set itself is unchanged (the same 63 variants + image patches + cross-kernel fusions), so these numbers apply to this release.
+This table measures frame generation's GPU compute cost; it is not an in-game FPS gain — how to estimate displayed FPS from it is in the next section. The optimized kernel set itself is unchanged since this measurement (the same 63 variants + image patches + cross-kernel fusions); the rest were lifecycle and tooling changes (kernel caching and re-binding, capture/replay, logging, INI simplification). 0.3.2 only replaces the images of the 26 kernels new to the 310.9 build, measured on the same card as another 0–8% faster, so the table is conservative for this release.
 
 | Resolution | Multiplier | Stock (ms) | Optimized (ms) | Reduction |
 |---|---|---|---|---|
@@ -121,9 +137,11 @@ For other resolutions/multipliers use the matching row and your own measured `F_
 
 ## 6X
 
-6X (5 generated frames per real frame) is NVIDIA's DLSS 4.5 Dynamic Multi Frame Generation. The runtime embedded in the 310.9 build supports it and this project makes it run on Ampere; whether you get 6X depends on the game:
+6X (5 generated frames per real frame) is NVIDIA's DLSS 4.5 Dynamic Multi Frame Generation. The runtime embedded in the 310.9 build supports it and this project makes it run on Ampere.
 
-- The game itself supports 6X (ships a newer Streamline frame-gen plugin and offers 6X or Dynamic MFG in its menu): install the 310.9 build with `MaxGeneratedFrames=5`; 6X runs stably in testing.
+**The factory `MaxGeneratedFrames` is `3` (4X); 6X is a manual edit.** A game with dynamic MFG runs at whatever ceiling is written there by default, and `5` was too high for most people (public issues #497 / #499); setting it back to `5` gets 6X at any time. Whether you actually get 6X still depends on the game:
+
+- The game itself supports 6X (ships a newer Streamline frame-gen plugin and offers 6X or Dynamic MFG in its menu): install the 310.9 build and set `MaxGeneratedFrames=5`; 6X runs stably in testing.
 - The game only supports 4X (ships an older 4X plugin, as most current games do): the ceiling is set by the game's plugin and this project cannot raise it to 6X. That plugin sizes its internal present queue for 4X at init, so forcing extra frames overruns it and disables frame generation or crashes. Use 4X for these games.
 
 ## Real-world feedback
@@ -139,7 +157,7 @@ Black Myth: Wukong, Cyberpunk 2077, and FH6 run 4X normally in testing; Resonanc
 
 ## SM75 source & credits
 
-- Coldwood1026 for the RTX 20-series / SM75 adaptation (the kernel family behind the experimental SM75 route — see `THIRD_PARTY_NOTICES.txt`).
+- Coldwood1026 for the RTX 20-series / SM75 adaptation (the source of the SM75 kernel family — see `THIRD_PARTY_NOTICES.txt`).
 - NVIDIA for the DLSS-G runtime, models, and pre/post-processing (embedded, unmodified).
 
 ## License & third-party
