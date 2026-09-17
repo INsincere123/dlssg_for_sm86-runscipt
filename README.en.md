@@ -26,11 +26,11 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 - The 310.9 runtime adds 6X (`MaxGeneratedFrames` ceiling raised from 3 to 5). On games that themselves support Dynamic MFG, selecting "Dynamic / Auto" frame generation reaches 6X.
 - Optimized kernel set (~19–32% in the offline benchmark), a two-switch factory INI, capture/replay, and diagnostic logging — see below and `docs/`.
 
-## Roadmap
+## Statement & roadmap
 
-- Re-evaluate Vulkan support.
-- Re-evaluate forcing 6X on games that only support 4X. This release confirmed the approach is per-game, depends on the game's closed-source plugin, and is fragile (see "6X"); a more robust path remains to be found.
-- Optimization of the DLSS L / M presets: preliminary testing shows about a 1.2× latency improvement; to be merged after validation.
+- Kernel-level work on frame generation (DLSS-G) has essentially reached the best this project can do at this stage; kernel optimization is paused, and later releases will carry compatibility and bug fixes only.
+- The next release focuses on INT8 optimization of several Transformer super-resolution models, to raise the base frame rate on RTX 30 / RTX 20.
+- Vulkan support is hard to continue in the project's current state: the existing Vulkan wrapper layer has poor game compatibility and too little coverage testing. If you need it, use one of the community patch builds.
 
 ## Requirements
 
