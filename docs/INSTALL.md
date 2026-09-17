@@ -1,5 +1,7 @@
 # DLSSG SM86 融合版
 
+**中文** · [English](INSTALL.en.md)
+
 **把发布包根目录的所有文件（`version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll` 和 `dlssg_sm86.ini`）放到游戏实际渲染 EXE 旁，照常启动。** 四个代理不用挑：哪个先被游戏加载，哪个就是本 mod，其余自动待机、只做转发（见下面“多个代理同时存在”）。运行时无需 Python 或 PowerShell 启动器。
 
 代理 DLL 内嵌一个配套的原版 DLSSG 运行库（含模型和管线）及其 SM86 后端，默认 `Mode=Bundled`。游戏请求不同版本的 DLSSG 时，统一加载这套内置实现。首次运行将配套文件释放到 `%LOCALAPPDATA%\DlssgSm86\bundles\<bundle-id>`，校验后加载；以后复用缓存，损坏时自动恢复。
@@ -13,7 +15,7 @@
 | 变体 | 产物 | 内嵌运行库 | 最大生成帧 | 备注 |
 |---|---|---|---|---|
 | **310.1** | `dlssg-release-x64.zip` | `nvngx_dlssg.dll` 310.1.0.0 | 3（4×） | 优化内核、跨内核合并、图像内核补丁全部可用 |
-| **310.9** | `dlssg-release-x64-310.9.zip` | `nvngx_dlssg_310.9.1.dll` 310.9.1.0 | 5（6×） | 原生 6×；优化内核、跨内核合并与图像内核补丁均已可用（63 个变体行：60 个网络变体 + 3 个按 310.9.1 RVA 重新推导的图像补丁）。`Router=SM75` 现在也可用（3070 前向 JIT 验证，真实 Turing 未验证）。`HardwareBilinear` 仍不可用 |
+| **310.9** | `dlssg-release-x64-310.9.zip` | `nvngx_dlssg_310.9.1.dll` 310.9.1.0 | 5（6×） | 原生 6×；优化内核、跨内核合并与图像内核补丁均已可用（63 个变体行：60 个网络变体 + 3 个按 310.9.1 RVA 重新推导的图像补丁）。`Router=SM75` 现在也可用（3070 前向 JIT 与真 Turing（RTX 2080 Ti）都已验证）。`HardwareBilinear` 仍不可用 |
 
 构建方式：`powershell -File build.ps1 -RuntimeModel 310.1|310.9`（310.9 的运行库不随源码分发，默认从
 `assets/runtime/nvngx_dlssg_310.9.1.dll` 读取，可用 `-Runtime3109 <路径>` 指定）。出厂 INI 里的
@@ -149,7 +151,7 @@ CacheDirectory=
 |---|---|---|---|
 | `OptimizedKernels` | `0`–`3` | 档位 0（见别名说明） | `[FrameGeneration] Optimized` 的**向后兼容别名**，接受同样的档位范围；两者都在时 `Optimized` 优先。老 INI 里的 `OptimizedKernels=1` 仍然是档位 1。 |
 | `KernelImage` | `Auto/PTX/Cubin/Original` | `Auto` | 内核加载格式，见下表。**cubin 被驱动拒绝时自动回退到同一内核的 PTX**（见“驱动版本要求与 cubin → PTX 自动回退”）。`Original` 只装钩子不替换任何内核（本机取原厂数值参考；**310.9 构建在 Ampere 上用不了这一项**——它的原厂图像内核是 sm_89，Ampere 上创建失败，本机参考请用 `Optimized=0`+`KernelImage=PTX`）。 |
-| `Router` | `Auto/SM86/SM75` | `Auto` | 内核族。`Auto` 按物理 GPU 选（SM86 及以上走 SM86，Turing 走 SM75）。**SM75 是实验项**，**两种构建都有**。`Optimized=1` 时两边都创建 63 个变体行、跨内核合并与图像补丁全开，日志记一条 `sm75_route_limits`（`variant_rows=63`、`image_patches_partial` 为空）；区别只在补丁的来源与 `HardwareBilinear`：310.1 是两个图像补丁 + 纹理探针（`HardwareBilinear` 可用），310.9 是 3 个按 310.9.1 RVA 重新推导的补丁（63 = 60 + 3），纹理探针的那个内核 310.9.1 已删除，所以 `HardwareBilinear` 在该构建上强制 0。3070 前向 JIT 上两种构建都与各自的 SM86 原厂路线逐位一致（310.9 上含 6×），**真实 Turing 从未验证**。SM75 原厂内核族来自 Coldwood1026（见 `THIRD_PARTY_NOTICES.txt`）。 |
+| `Router` | `Auto/SM86/SM75` | `Auto` | 内核族。`Auto` 按物理 GPU 选（SM86 及以上走 SM86，Turing 走 SM75）。**SM75 是实验项**，**两种构建都有**。`Optimized=1` 时两边都创建 63 个变体行、跨内核合并与图像补丁全开，日志记一条 `sm75_route_limits`（`variant_rows=63`、`image_patches_partial` 为空）；区别只在补丁的来源与 `HardwareBilinear`：310.1 是两个图像补丁 + 纹理探针（`HardwareBilinear` 可用），310.9 是 3 个按 310.9.1 RVA 重新推导的补丁（63 = 60 + 3），纹理探针的那个内核 310.9.1 已删除，所以 `HardwareBilinear` 在该构建上强制 0。3070 前向 JIT 上两种构建都与各自的 SM86 原厂路线逐位一致（310.9 上含 6×）；**真 Turing（RTX 2080 Ti）上**：sm_75 cubin 与 PTX、档 0 与档 1 都逐位一致，且同一份输入下的输出与 RTX 3080 Ti 的输出逐位一致（rotate 合成场景 32/32；两者与 RTX 5070 上官方输出的差异也逐字节相同，是 Blackwell 与 Turing/Ampere 之间的硬件累加差，见 `docs/evidence/sm75/turing_2026-09-17.md`）。Turing 上的性能尚未测量。SM75 原厂内核族来自 Coldwood1026（见 `THIRD_PARTY_NOTICES.txt`）。 |
 | `SM75Family` | `Repaired/Original` | `Repaired` | 仅在 `Router=SM75`（或物理 Turing）时有意义，选哪一份**导入的 sm_75 原厂内核族**。`Repaired` 是本项目修复过的那份：Coldwood1026 的 f16x2 min/max 模拟经一块用通用地址寻址的 `.local` 缓冲交换半字（未定义行为，9 个 DL2 内核 342 处），已按值等价地改写进寄存器，72 个 cubin 也由修复后的 PTX 重新编译——**默认值，本仓库的全部结果都是在它上面测的**。`Original` 是原样导入的那份（cubin 逐字节是 Coldwood 的二进制，PTX 只做了 `.version` 归一化），留着是因为离线 `ptxas` 会给未修复的 PTX 分配真栈帧，**原厂 cubin 路径在真实 Turing 上很可能从来没碰到这个缺陷**，而只有 20 系实机能回答；给真实 Turing 用户做 A/B 用。以 PTX 为输入的 JIT 路径（非 Turing 卡上的前向 JIT，3070 实测）用 `Original` 会重现修复前那张 43–73 dB 的表。只换原厂内核，我们自己重写的变体与图像补丁不受影响；310.9 构建上只覆盖与 310.1 共用的 44 个内核（新增的 26 个没有"原样"版本）。走 SM86 路线时该键完全无效，日志记一条 `sm75_family_ignored`。 |
 | `Preset` | `Auto/A/B` | `Auto` | DLSSG 渲染预设（UI 重组），**仅 310.9 构建有效**。`Auto` 不干预；`A` 强制关闭 UI 重组；`B` 强制开启（需要游戏同时提供 HUD-less 与 UI 平面，另占两张全分辨率 FP16 表面）。写在 310.1 上会被拒（`kernel_selection_unsupported`）。详见下面小节。 |
 | `SpoofArchToGame` | 缺省 / `0/1` | **缺省 = 自动** | 只管**游戏自己那道架构闸门**。**这是个三态键**：**不写**（出厂 INI 就没有这一行）= 自动，只在后端判定"这是 Turing 主机"之后才武装，记一条 `turing_host_defaults` 和 `arch_spoof_installed{trigger:"backend",default:true}`——所以 RTX 20 用出厂 INI 不用改任何东西，而**非 Turing 显卡上自动档不装任何东西、一条 `arch_spoof_*` 都不会有**；写 `1` = 读完 INI 就武装（比后端早，游戏若在 DLSS-G 运行库加载前就问架构，只有这一档来得及）；写 `0` = 永不武装，Turing 上记一条 `arch_spoof_disabled`。`1` 时把 `nvapi64.dll` 导出的 `nvapi_QueryInterface` 重定向，使 `NvAPI_GPU_GetArchInfo` 对外报告 Ada，让把帧生成开关挂在 Ada 上的游戏放开它（`nvngx_*`/`nvapi*` 仍看真实架构，不改任何 NVIDIA 代码字节）。**只有真实答案恰好是 Turing（`0x160`）才改写**：别的架构上重定向照装但什么都不做，并记一条 `arch_spoof_inert{real_arch}`。`arch_spoof_installed` 带 `trigger` 与 `default` 两个字段：`trigger=settings`（写 `1`，读完 INI 时 `nvapi64.dll` 已在进程里）/ `nvapi_load`（写 `1`，`nvapi64.dll` 之后才加载、由 loader 的 LoadLibrary 钩子接住）/ `backend`（后端装完才武装）；`default=true` 表示是自动档做的决定，`default=false` 且 `trigger=backend` 才是"写了 `1` 但武装得很晚"。**它与 NGX 核心的 `0xbad0000b` 无关**：那一条是核心拿显卡架构去比运行库导出的最低架构（见下面 `fg_gate_create_feature` 一行），核心在 Streamline 初始化时就比完了，任何 NVAPI spoof 都来不及。 |
@@ -216,7 +218,7 @@ SM75 族与 SM86 族在 RTX 3070 的前向 JIT 上**逐位一致**（原厂族�
 
 #### `SkipRepeatedRealCopy`：跳过重复的 OutputReal 拷贝
 
-两个运行库的 host graph 都在**每次** Evaluate 末尾发一次全分辨率 `CopyResource(Backbuffer → DLSSG.OutputReal)`。`ext_real` 只有一个写者、没有读者，`ext_color` 只读，所以同一组里第一次之后的拷贝都在写逐字节相同的内容，全是死存储。`1` 让后端在 `MultiFrameIndex > 1` 时吞掉它。收益随倍率增长（4K 6× 每真实帧 −566 µs，2× 为 0），与内核替换正交（`Optimized=0` 下也生效）。默认 `0` 的前提是“游戏不会在同组两次 Evaluate 之间重画真实帧”；后端有防护，任何疑点都照常转发并记 `real_copy_mismatch`。机制见 `docs/ARCHITECTURE.md`。
+两个运行库的 host graph 都在**每次** Evaluate 末尾发一次全分辨率 `CopyResource(Backbuffer → DLSSG.OutputReal)`。`ext_real` 只有一个写者、没有读者，`ext_color` 只读，所以同一组里第一次之后的拷贝都在写逐字节相同的内容，全是死存储。`1` 让后端在 `MultiFrameIndex > 1` 时吞掉它。收益随倍率增长（4K 6× 每真实帧 −566 µs，2× 为 0），与内核替换正交（`Optimized=0` 下也生效）。档位 ≥1 默认打开（档位 0 默认 `0`）；打开它的前提是“游戏不会在同组两次 Evaluate 之间重画真实帧”；后端有防护，任何疑点都照常转发并记 `real_copy_mismatch`。机制见 `docs/ARCHITECTURE.md`。
 
 #### Preset：A / B 预设（UI 重组），仅 310.9 构建
 

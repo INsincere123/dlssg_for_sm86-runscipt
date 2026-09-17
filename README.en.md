@@ -8,8 +8,8 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 
 ### 0.3.2
 
-- Part of the inference kernels rewritten (310.9 build): the generated image now matches the official DLSS-G exactly (bit-identical in tests on an RTX 3080 Ti and an RTX 5070), no longer lossy, with a small speed-up (0–8% on the 3080 Ti).
-- Optimization levels reworked: `[FrameGeneration] Optimized` is now `0`–`3`. `0` stock kernels, no acceleration; `1` every acceleration, image bit-identical to the official one (factory default); `2` adds lossy image kernels, faster, about 50 dB PSNR or better against the official image (310.9 build only); `3` everything lossy, fastest. See [`docs/INSTALL.md`](docs/INSTALL.md).
+- Part of the inference kernels rewritten (310.9 build): the generated image now matches the official DLSS-G exactly (bit-identical in tests on an RTX 3080 Ti and an RTX 5070; an RTX 2080 Ti's output is bit-identical to the 3080 Ti's), no longer lossy, with a small speed-up (0–8% on the 3080 Ti).
+- Optimization levels reworked: `[FrameGeneration] Optimized` is now `0`–`3`. `0` stock kernels, no acceleration; `1` every acceleration, image bit-identical to the official one (factory default); `2` adds lossy image kernels, faster, about 50 dB PSNR or better against the official image (310.9 build only); `3` everything lossy, fastest. See [`docs/INSTALL.en.md`](docs/INSTALL.en.md).
 
 ### 0.3.1
 
@@ -30,7 +30,7 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 ## Requirements
 
 - OS/game: Windows 10/11 x64, D3D12.
-- GPU: RTX 30-series (SM86) or RTX 20-series (Turing / SM75). The full offline benchmark was run on a 3080 Ti and development validation on a 3070; RTX 20 was confirmed working on a 2080 Ti, with image quality and performance not yet measured.
+- GPU: RTX 30-series (SM86) or RTX 20-series (Turing / SM75). The full offline benchmark was run on a 3080 Ti and development validation on a 3070; RTX 20 was confirmed working on a 2080 Ti, whose generated image for the same inputs is bit-identical to the 3080 Ti's; performance is not yet measured.
 - Driver: an NVIDIA driver with the NGX / NVAPI / CUDA interfaces; tested on 591.86 and 610.74. The cubins need roughly R580+; older drivers fall back to PTX automatically (one extra JIT on the first frame only).
 - No CUDA Toolkit and no Python.
 
@@ -65,7 +65,7 @@ The same height at different widths is similar (it tracks output pixel count). T
 5. Upgrade: exit the game and overwrite `version.dll`; `dlssg_sm86.ini` usually needs no change.
 6. Uninstall: overwrite `version.dll` with the backed-up original (or delete it) and delete `dlssg_sm86.ini`.
 
-The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (optimization level `0`–`3`: `0` stock kernels, no acceleration; `1` every acceleration, image bit-identical to the official one, factory default; `2`/`3` lossy but faster) and `[FrameGeneration] MaxGeneratedFrames` (factory `3` = 4X; `5` = 6X on the 310.9 build only; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.md`](docs/INSTALL.md).
+The factory `dlssg_sm86.ini` keeps only two decisive switches: `[FrameGeneration] Optimized` (optimization level `0`–`3`: `0` stock kernels, no acceleration; `1` every acceleration, image bit-identical to the official one, factory default; `2`/`3` lossy but faster) and `[FrameGeneration] MaxGeneratedFrames` (factory `3` = 4X; `5` = 6X on the 310.9 build only; the actual count is requested by the game and clamped to the runtime's ceiling). Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.en.md`](docs/INSTALL.en.md).
 
 ## Antivirus & signing
 
@@ -140,7 +140,7 @@ Black Myth: Wukong, Cyberpunk 2077, and FH6 run 4X normally in testing; Resonanc
 - Logs go to `dlssg_sm86\logs\` in the game directory (`loader_<PID>.jsonl` / `backend_<PID>.jsonl`). `[Logging] Level=1` (default) records errors only; use `2` or `3` when investigating.
 - If frame generation does nothing, check `backend_*.jsonl` for an `install` line with `route active=true`; if it is absent, the driver/runtime usually did not match — the reason is logged and the factory path is used.
 - This release optimizes frame generation's GPU compute cost; do not read the offline time reduction as an in-game FPS gain — the real frame-rate change depends on the game and where the bottleneck is.
-- All INI keys, log fields, and capture/replay are in [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/CAPTURE.md`](docs/CAPTURE.md).
+- All INI keys, log fields, and capture/replay are in [`docs/INSTALL.en.md`](docs/INSTALL.en.md) and [`docs/CAPTURE.md`](docs/CAPTURE.md).
 
 ## SM75 source & credits
 
