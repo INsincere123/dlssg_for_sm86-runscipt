@@ -1,10 +1,14 @@
-# DLSSG for SM86 (proxy) - 0.3.3 Version
+# DLSSG for SM86 (proxy) - 0.3.4 Version
 
 [中文](README.md) · **English**
 
 Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20-series (SM75). Windows x64 / D3D12; the runtime files are `version.dll` and `dlssg_sm86.ini`.
 
 ## Changes in this release
+
+### 0.3.4
+
+- Fixes the 0.3.3 crash on RTX 30 (GPU driver reset at startup or once DLSS is on; Forza Horizon 6 shows FHC01; issues #535 / #538 / #540 / #542). Cause: with the NVIDIA App DLSS override or an NGX OTA model update active, the DLSS Super Resolution model also received the GPU-architecture rewrite this project makes for Streamline, took a path that does not belong to an RTX 30 and hung the GPU. NVIDIA's own components now always get the real architecture; the rewrite applies to Streamline and the game only. On 0.3.3, just replace `version.dll`.
 
 ### 0.3.3
 

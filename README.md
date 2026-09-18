@@ -1,10 +1,14 @@
-# DLSSG for SM86（Proxy）- 0.3.3 版本
+# DLSSG for SM86（Proxy）- 0.3.4 版本
 
 **中文** · [English](README.en.md)
 
 在 RTX 30 系列（SM86）和 RTX 20 系列（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G）。Windows x64 / D3D12，运行文件为 `version.dll` 和 `dlssg_sm86.ini`。
 
 ## 本次更新说明
+
+### 0.3.4
+
+- 修复 0.3.3 在 RTX 30 上的崩溃（启动或开启 DLSS 后显卡驱动重置，《极限竞速：地平线 6》表现为 FHC01；issue #535 / #538 / #540 / #542）。原因：NVIDIA App 的 DLSS 覆盖或 NGX 在线更新生效时，DLSS 超分模型也收到了本项目给 Streamline 的显卡架构改写，在 RTX 30 上走了不属于这张卡的路径，导致 GPU 挂起。现在 NVIDIA 自己的组件一律得到真实架构，改写只对 Streamline 和游戏生效。0.3.3 用户请直接替换 `version.dll`。
 
 ### 0.3.3
 
