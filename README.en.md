@@ -1,10 +1,14 @@
-# DLSSG for SM86 (proxy) - 0.3.4 Version
+# DLSSG for SM86 (proxy) - 0.3.5 Version
 
 [中文](README.md) · **English**
 
 Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20-series (SM75). Windows x64 / D3D12; the runtime files are `version.dll` and `dlssg_sm86.ini`.
 
 ## Changes in this release
+
+### 0.3.5
+
+- Fixes a defect present since 0.3.0: after the game re-creates the frame-generation feature (menu changes, a resolution or quality change, toggling frame generation; some games re-create it often while running), the wrong optimized inference kernel could be used, seen as corrupted generated frames, and possibly as a random crash / GPU driver reset after playing for a while (issue #561 may be related). `Optimized=0` is not affected. In an offline test on an RTX 3070 with 15 re-creations, the old build produced wrong generated frames in three of four runs; the new build is bit-identical in every run. On 0.3.x, just replace `version.dll`.
 
 ### 0.3.4
 
