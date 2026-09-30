@@ -9,12 +9,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $gameDir = 'C:\Games\Wuthering Waves\Wuthering Waves Game'
+$launcherDir = 'C:\Program Files\Wuthering Waves'
+$launcherExe = Join-Path $launcherDir 'launcher.exe'
 $renderDir = Join-Path $gameDir 'Client\Binaries\Win64'
 $gameExe = Join-Path $renderDir 'Client-Win64-Shipping.exe'
 $projectDir = 'D:\Games\dlssg_for_sm86'
 $projectDll = Join-Path $projectDir 'version.dll'
 $storageDll = Join-Path $renderDir '_storage_\version.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86'
+$launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-wuthering-{0}.ini" -f $PID)
 
@@ -79,10 +82,44 @@ function Assert-FileExists {
 }
 
 function Assert-NoGameProcess {
+    $launcherRunning = @(Get-Process -Name $launcherProcessName -ErrorAction SilentlyContinue)
+    if ($launcherRunning.Count -gt 0) {
+        throw "$launcherProcessName 已经在运行，请先关闭启动器再使用此脚本。"
+    }
+
     $running = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         throw "$processName 已经在运行，请先关闭游戏再使用此脚本。"
     }
+}
+
+function Wait-ForGameProcess {
+    param([int]$TimeoutSeconds = 120)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $processes = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+        if ($processes.Count -gt 0) {
+            Write-Log "已检测到游戏进程：$processName"
+            return $processes[0]
+        }
+
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+
+    throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
+}
+
+function Test-StaleDiagnosticIniTarget {
+    param([string]$Path, [string]$Target)
+
+    if ((Get-NormalizedPath $Path) -ne (Get-NormalizedPath $linkSpecs[1].Path)) { return $false }
+    if ((Split-Path -Parent (Get-NormalizedPath $Target)) -ne (Get-NormalizedPath $env:TEMP)) { return $false }
+    if ([System.IO.Path]::GetFileName($Target) -notmatch '^dlssg_sm86-wuthering-\d+\.ini$') { return $false }
+    if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
+
+    $contents = [System.IO.File]::ReadAllText($Target)
+    return $contents -ceq $diagnosticIni
 }
 
 function Assert-LinkOrAbsent {
@@ -97,6 +134,18 @@ function Assert-LinkOrAbsent {
 
     $actualTarget = [string](($item.Target -join ''))
     if ((Get-NormalizedPath $actualTarget) -ne (Get-NormalizedPath $ExpectedTarget)) {
+        if (Test-StaleDiagnosticIniTarget -Path $Path -Target $actualTarget) {
+            if ($DryRun) {
+                Write-Log "演练模式：将清理脚本生成的过期临时配置软链接：$Path -> $actualTarget"
+                return $false
+            }
+
+            Remove-Item -LiteralPath $Path
+            Remove-Item -LiteralPath $actualTarget
+            Write-Log "已清理脚本生成的过期临时配置软链接及文件：$Path"
+            return $false
+        }
+
         throw "拒绝替换指向异常目标的软链接：$Path -> $actualTarget"
     }
 
@@ -174,6 +223,7 @@ function Show-PostRunStatus {
 }
 
 try {
+    Assert-FileExists -Path $launcherExe -Description 'Wuthering Waves launcher'
     Assert-FileExists -Path $gameExe -Description 'Wuthering Waves rendering executable'
     Assert-FileExists -Path $projectDll -Description 'Project version.dll'
     Assert-NoGameProcess
@@ -194,8 +244,9 @@ try {
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
 
-    Write-Log '正在启动鸣潮。本脚本不会绕过或关闭 ACE。'
-    $process = Start-Process -FilePath $gameExe -WorkingDirectory $renderDir -PassThru
+    Write-Log '正在启动鸣潮官方启动器。本脚本不会绕过或关闭 ACE。'
+    $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
+    $process = Wait-ForGameProcess
     $process.WaitForExit()
     $gameExitCode = $process.ExitCode
     Write-Log "游戏已退出，退出代码：$gameExitCode"
