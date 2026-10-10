@@ -2,11 +2,16 @@
 param(
     [switch]$DryRun,
     [switch]$KeepLinks,
-    [switch]$VerboseLog
+    [switch]$VerboseLog,
+    [string]$ConfigDirectory,
+    [switch]$RestoreEngineConfig
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
+$consoleState = $null
 
 $gameDir = 'C:\Games\Wuthering Waves\Wuthering Waves Game'
 $launcherDir = 'C:\Program Files\Wuthering Waves'
@@ -20,6 +25,15 @@ $logDir = Join-Path $renderDir 'dlssg_sm86'
 $launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-wuthering-{0}.ini" -f $PID)
+$engineConfigSource = 'D:\Games\WuWa-Configs\当前配置\Engine.ini'
+$engineConfigPath = $null
+$engineRuntimePath = $null
+$engineBackupPath = $null
+$engineRuntimeMarker = '; WuWa-Configs launcher runtime copy v1'
+$enginePrepared = $false
+$engineOriginalMoved = $false
+$engineRuntimeCreated = $false
+$setupStarted = $false
 
 $diagnosticIni = @'
 ; 鸣潮 0.3.2 临时诊断配置。
@@ -91,6 +105,99 @@ function Assert-NoGameProcess {
     if ($running.Count -gt 0) {
         throw "$processName 已经在运行，请先关闭游戏再使用此脚本。"
     }
+}
+
+function Resolve-EngineConfigDirectory {
+    if ($ConfigDirectory) {
+        $resolved = (Resolve-Path -LiteralPath $ConfigDirectory -ErrorAction Stop).ProviderPath
+        if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
+            throw "配置目录不存在：$resolved"
+        }
+        Assert-FileExists -Path (Join-Path $resolved 'GameUserSettings.ini') -Description 'GameUserSettings.ini'
+        return $resolved
+    }
+
+    # 不绑定 WindowsNoEditor；只在本次安装的用户存档区查找，不按时间猜测。
+    $savedRoot = Join-Path $gameDir 'Client\Saved'
+    $candidates = @(Get-ChildItem -LiteralPath $savedRoot -Filter 'GameUserSettings.ini' -File -Recurse -ErrorAction Stop |
+        Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match '(?m)^\[/Script/Engine\.GameUserSettings\]' } |
+        Select-Object -ExpandProperty DirectoryName -Unique)
+    if ($candidates.Count -ne 1) {
+        throw "找到 $($candidates.Count) 个候选配置目录，无法自动确认。请用 -ConfigDirectory 指定当前目录。候选：$($candidates -join '；')"
+    }
+    return $candidates[0]
+}
+
+function Assert-OwnedEngineRuntime {
+    Assert-FileExists -Path $engineRuntimePath -Description '脚本生成的 Engine.ini 临时副本'
+    # 游戏可能重写副本并移除注释，因此这里只检查它是不是普通文件。
+    $runtimeItem = Get-Item -LiteralPath $engineRuntimePath -Force
+    if ($runtimeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "临时副本被替换为链接，拒绝操作：$engineRuntimePath"
+    }
+}
+
+function Restore-EngineConfig {
+    $item = Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item) {
+        if ($item.LinkType -ne 'SymbolicLink' -or
+            (Get-NormalizedPath ([string]($item.Target -join ''))) -ne (Get-NormalizedPath $engineRuntimePath)) {
+            throw "Engine.ini 已不是本脚本的链接，拒绝覆盖。原文件备份（如存在）：$engineBackupPath"
+        }
+    }
+    Assert-OwnedEngineRuntime
+    if ($DryRun) {
+        Write-Log "演练模式：将移除 Engine.ini 临时链接和副本，并恢复原文件（如存在）：$engineBackupPath"
+        return
+    }
+    if ($null -ne $item) { Remove-Item -LiteralPath $engineConfigPath }
+    if (Test-Path -LiteralPath $engineBackupPath) {
+        Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
+        Write-Log "已恢复原 Engine.ini：$engineConfigPath"
+    }
+    Remove-Item -LiteralPath $engineRuntimePath
+}
+
+function Prepare-EngineConfig {
+    # 固定名称便于中断后恢复；任何遗留文件均要求显式恢复，避免覆盖。
+    foreach ($reservedPath in @($engineBackupPath, $engineRuntimePath)) {
+        if ($null -ne (Get-Item -LiteralPath $reservedPath -Force -ErrorAction SilentlyContinue)) {
+            throw "存在上次运行遗留文件：$reservedPath。请关闭游戏和启动器后运行本脚本 -RestoreEngineConfig。"
+        }
+    }
+    $original = Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $original -and (($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $original.PSIsContainer)) {
+        throw "原 Engine.ini 是链接或目录，拒绝替换：$engineConfigPath"
+    }
+    if ($DryRun) {
+        Write-Log "演练模式：将备份原 Engine.ini 到 $engineBackupPath（若原文件存在）"
+        Write-Log "演练模式：将从 $engineConfigSource 生成可写副本 $engineRuntimePath"
+        Write-Log "演练模式：将创建软链接 $engineConfigPath -> $engineRuntimePath"
+        return
+    }
+    $engineText = [IO.File]::ReadAllText($engineConfigSource)
+    [IO.File]::WriteAllText($engineRuntimePath, ($engineRuntimeMarker + "`r`n" + $engineText), [Text.UTF8Encoding]::new($false))
+    $script:engineRuntimeCreated = $true
+    if ($null -ne $original) {
+        Move-Item -LiteralPath $engineConfigPath -Destination $engineBackupPath
+        $script:engineOriginalMoved = $true
+    }
+    New-Item -ItemType SymbolicLink -Path $engineConfigPath -Target $engineRuntimePath | Out-Null
+    $script:enginePrepared = $true
+    Write-Log "已启用画面配置：$engineConfigSource"
+    Write-Log "Engine.ini 软链接：$engineConfigPath -> $engineRuntimePath"
+}
+
+function Undo-EngineConfigSetup {
+    if ($enginePrepared) { Restore-EngineConfig; return }
+    # 包括缺少创建链接权限等部分失败；只撤回本次已经完成的步骤。
+    if ($engineOriginalMoved) {
+        if ($null -ne (Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue)) {
+            throw "恢复路径被占用，保留备份：$engineBackupPath"
+        }
+        Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
+    }
+    if ($engineRuntimeCreated) { Remove-Item -LiteralPath $engineRuntimePath }
 }
 
 function Wait-ForGameProcess {
@@ -222,11 +329,26 @@ function Show-PostRunStatus {
     }
 }
 
+$consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+
 try {
+    Assert-NoGameProcess
+    $resolvedConfigDir = Resolve-EngineConfigDirectory
+    $engineConfigPath = Join-Path $resolvedConfigDir 'Engine.ini'
+    $engineRuntimePath = Join-Path $resolvedConfigDir 'Engine.wuwaconfig-runtime.ini'
+    $engineBackupPath = Join-Path $resolvedConfigDir 'Engine.ini.before-wuwaconfig-link'
+    Write-Log "本次配置目录：$resolvedConfigDir"
+    if ($RestoreEngineConfig) {
+        Restore-EngineConfig
+        exit 0
+    }
     Assert-FileExists -Path $launcherExe -Description 'Wuthering Waves launcher'
     Assert-FileExists -Path $gameExe -Description 'Wuthering Waves rendering executable'
     Assert-FileExists -Path $projectDll -Description 'Project version.dll'
-    Assert-NoGameProcess
+    Assert-FileExists -Path $engineConfigSource -Description 'WuWa-Configs 当前 Engine.ini'
+    if (Test-Path -LiteralPath (Join-Path $gameDir 'Client\Config\UserEngine.ini')) {
+        throw '发现旧 Client\Config\UserEngine.ini，请先备份并移出该文件，再使用当前配置。'
+    }
 
     $storageExistedBefore = Test-Path -LiteralPath $storageDll -PathType Leaf
     if ($storageExistedBefore) {
@@ -237,9 +359,12 @@ try {
         Write-Log '演练模式：环境检查通过。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
+        Prepare-EngineConfig
         exit 0
     }
 
+    $setupStarted = $true
+    Prepare-EngineConfig
     [System.IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [System.Text.UTF8Encoding]::new($false))
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
@@ -256,21 +381,32 @@ catch {
     Write-Error $_
 }
 finally {
-    if (-not $DryRun -and -not $KeepLinks) {
-        try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
-        try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
-        try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
-    }
-    elseif ($KeepLinks -and -not $DryRun) {
-        Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
-    }
+    try {
+        $gameStillRunning = @(Get-Process -Name $processName -ErrorAction SilentlyContinue).Count -gt 0
+        if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $enginePrepared)) {
+            try { Undo-EngineConfigSetup } catch { Write-Warning $_ }
+            try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
+            try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
+            try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
+        }
+        elseif ($setupStarted -and $KeepLinks -and -not $DryRun) {
+            Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
+            Write-Log '下次启动前先运行 -RestoreEngineConfig 恢复 Engine.ini。'
+        }
+        if ($setupStarted -and $gameStillRunning) {
+            Write-Warning '游戏仍在运行，保留配置链接与备份。关闭游戏和启动器后可用 -RestoreEngineConfig 恢复 Engine.ini。'
+        }
 
-    if (Test-Path -LiteralPath $diagnosticIniPath -PathType Leaf) {
-        Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
-    }
+        if ($setupStarted -and -not $KeepLinks -and -not $gameStillRunning -and (Test-Path -LiteralPath $diagnosticIniPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
+        }
 
-    if (-not $DryRun) {
-        Show-PostRunStatus
+        if ($setupStarted -and -not $DryRun) {
+            Show-PostRunStatus
+        }
+    }
+    finally {
+        Restore-LauncherConsole -State $consoleState
     }
 }
 

@@ -8,6 +8,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
+$consoleState = $null
+
 $gameRoot = 'D:\Neverness To Everness'
 $renderDir = Join-Path $gameRoot 'Client\WindowsNoEditor\HT\Binaries\Win64'
 $launcherExe = Join-Path $gameRoot 'NTELauncher.exe'
@@ -170,6 +173,8 @@ function Wait-ForGameProcess {
     throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
 }
 
+$consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+
 try {
     Assert-FileExists -Path $launcherExe -Description 'NTE launcher'
     Assert-FileExists -Path $gameExe -Description 'NTE game executable'
@@ -205,17 +210,22 @@ catch {
     Write-Error $_
 }
 finally {
-    if (-not $DryRun -and -not $KeepLinks) {
-        try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
-        try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
-        try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
-    }
-    elseif ($KeepLinks -and -not $DryRun) {
-        Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
-    }
+    try {
+        if (-not $DryRun -and -not $KeepLinks) {
+            try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
+            try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
+            try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
+        }
+        elseif ($KeepLinks -and -not $DryRun) {
+            Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
+        }
 
-    if (-not $DryRun) {
-        Show-PostRunStatus
+        if (-not $DryRun) {
+            Show-PostRunStatus
+        }
+    }
+    finally {
+        Restore-LauncherConsole -State $consoleState
     }
 }
 
