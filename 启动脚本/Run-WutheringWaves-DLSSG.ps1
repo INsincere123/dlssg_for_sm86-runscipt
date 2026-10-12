@@ -10,6 +10,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'ScriptLogging.ps1')
+$launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
+try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 $consoleState = $null
 
@@ -412,3 +415,13 @@ finally {
 
 if ($failed) { exit 1 }
 if ($null -ne $gameExitCode) { exit $gameExitCode }
+
+}
+catch {
+    # Include the full error and source position even for errors before main setup.
+    Write-Host ($_ | Format-List * -Force | Out-String) -ForegroundColor Red
+    throw
+}
+finally {
+    Stop-LauncherLog -Path $launcherLogPath
+}
