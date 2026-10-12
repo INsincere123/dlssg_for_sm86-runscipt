@@ -6,6 +6,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'ScriptLogging.ps1')
+$launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
+try {
 $deviceKeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_10DE&DEV_2420&SUBSYS_13241462&REV_A1\4&3062272c&0&0008'
 $classKeyRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
 $targetName = 'NVIDIA GeForce RTX 5070'
@@ -224,4 +227,14 @@ catch {
         # Keep the original PowerShell error if the graphical message box cannot open.
     }
     exit 1
+}
+
+}
+catch {
+    # Include the full error and source position even for errors before main setup.
+    Write-Host ($_ | Format-List * -Force | Out-String) -ForegroundColor Red
+    throw
+}
+finally {
+    Stop-LauncherLog -Path $launcherLogPath
 }
