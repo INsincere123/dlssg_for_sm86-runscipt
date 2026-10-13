@@ -14,7 +14,7 @@ try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 $consoleState = $null
 
-$gameRoot = 'D:\Neverness To Everness'
+$gameRoot = 'C:\Games\Neverness To Everness'
 $renderDir = Join-Path $gameRoot 'Client\WindowsNoEditor\HT\Binaries\Win64'
 $launcherExe = Join-Path $gameRoot 'NTELauncher.exe'
 $gameExe = Join-Path $renderDir 'HTGame.exe'
