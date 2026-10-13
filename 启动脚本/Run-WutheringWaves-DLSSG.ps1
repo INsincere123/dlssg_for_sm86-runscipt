@@ -4,7 +4,9 @@ param(
     [switch]$KeepLinks,
     [switch]$VerboseLog,
     [string]$ConfigDirectory,
-    [switch]$RestoreEngineConfig
+    [switch]$RestoreEngineConfig,
+    [ValidateRange(1, 3600)]
+    [int]$RestartGraceSeconds = 10
 )
 
 Set-StrictMode -Version Latest
@@ -16,7 +18,7 @@ try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 $consoleState = $null
 
-$gameDir = 'C:\Games\Wuthering Waves\Wuthering Waves Game'
+$gameDir = 'C:\Games\Wuthering Waves Game'
 $launcherDir = 'C:\Program Files\Wuthering Waves'
 $launcherExe = Join-Path $launcherDir 'launcher.exe'
 $renderDir = Join-Path $gameDir 'Client\Binaries\Win64'
@@ -162,11 +164,24 @@ function Restore-EngineConfig {
 }
 
 function Prepare-EngineConfig {
-    # 固定名称便于中断后恢复；任何遗留文件均要求显式恢复，避免覆盖。
-    foreach ($reservedPath in @($engineBackupPath, $engineRuntimePath)) {
-        if ($null -ne (Get-Item -LiteralPath $reservedPath -Force -ErrorAction SilentlyContinue)) {
-            throw "存在上次运行遗留文件：$reservedPath。请关闭游戏和启动器后运行本脚本 -RestoreEngineConfig。"
+    # 固定名称便于中断后恢复；恢复前征求同意，不直接覆盖遗留文件。
+    $leftovers = @(@($engineBackupPath, $engineRuntimePath) | Where-Object {
+        $null -ne (Get-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue)
+    })
+    if ($leftovers.Count -gt 0) {
+        Write-Log "检测到上次运行遗留的画面配置：$($leftovers -join '；')"
+        if ($DryRun) {
+            Write-Log '演练模式：正式运行时将询问是否恢复原 Engine.ini，演练不会修改遗留文件。'
+            return
         }
+        $answer = Read-Host '是否恢复原 Engine.ini 并继续启动游戏？[y/N]'
+        if ($answer.Trim() -notmatch '^(?i:y|yes|是|同意)$') {
+            throw '已取消启动，遗留配置保持不变。'
+        }
+        # 用户确认期间可能启动了游戏，恢复前再次检查。
+        Assert-NoGameProcess
+        Restore-EngineConfig
+        Write-Log '已恢复上次配置，继续准备本次游戏启动。'
     }
     $original = Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue
     if ($null -ne $original -and (($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $original.PSIsContainer)) {
@@ -218,6 +233,33 @@ function Wait-ForGameProcess {
     } while ((Get-Date) -lt $deadline)
 
     throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
+}
+
+function Wait-ForGameSession {
+    param([System.Diagnostics.Process]$InitialProcess)
+
+    $currentProcess = $InitialProcess
+    while ($true) {
+        $currentProcess.WaitForExit()
+        $exitCode = $currentProcess.ExitCode
+        Write-Log "游戏进程已退出，退出代码：$exitCode。等待重启，连续 $RestartGraceSeconds 秒未发现游戏才清理退出。"
+
+        # 使用单调计时，避免系统时间调整影响热更新等待窗口。
+        $absenceTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            $processes = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+            if ($processes.Count -gt 0) {
+                $currentProcess = $processes[0]
+                Write-Log "检测到游戏重新运行（PID：$($currentProcess.Id)），继续保留配置并等待游戏退出。"
+                break
+            }
+            if ($absenceTimer.Elapsed.TotalSeconds -ge $RestartGraceSeconds) {
+                Write-Log "连续 $RestartGraceSeconds 秒未发现游戏进程，本次游戏会话结束。"
+                return $exitCode
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 
 function Test-StaleDiagnosticIniTarget {
@@ -332,7 +374,10 @@ function Show-PostRunStatus {
     }
 }
 
-$consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+# 恢复配置不启动游戏，无需控制台保护；避免终端不支持菜单操作时无法恢复。
+if (-not $RestoreEngineConfig) {
+    $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+}
 
 try {
     Assert-NoGameProcess
@@ -375,9 +420,7 @@ try {
     Write-Log '正在启动鸣潮官方启动器。本脚本不会绕过或关闭 ACE。'
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
     $process = Wait-ForGameProcess
-    $process.WaitForExit()
-    $gameExitCode = $process.ExitCode
-    Write-Log "游戏已退出，退出代码：$gameExitCode"
+    $gameExitCode = Wait-ForGameSession -InitialProcess $process
 }
 catch {
     $failed = $true
