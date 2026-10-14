@@ -113,42 +113,122 @@ Every other diagnostic/compatibility knob takes a safe default and is omitted; t
 
 This project's own DLLs are code-signed: `version.dll` at the root, the five alternative proxies in `alternatives\`, and the backend and three resource packs (frame-generation kernels, super-resolution kernels, XeSS model) in `dlssg_sm86\`, 10 in all; NVIDIA's runtime and super-resolution files in `dlssg_sm86\` keep NVIDIA's own signatures. A self-signed certificate only verifies the signer's identity and file integrity; it gives no default Windows trust, so Windows SmartScreen may still prompt "unknown publisher" on first run — that is a reputation prompt, not an antivirus detection. The certificate is self-signed as `CN=DLSSG for SM86 (self-signed)`, SHA-1 thumbprint `85BA66762F851E49148D706915D09026281418E6`; verify the signer and thumbprint via the file's Properties → Digital Signatures tab or `signtool verify /pa`.
 
-## Performance (RTX 3080 Ti, offline benchmark)
+## Performance
 
-RTX 3080 Ti, driver 610.88, a full run of the 0.4.0 test kit. The unit is GPU milliseconds for the whole generation group per real frame, shared preprocessing included; 4 rounds × 256 groups each, median of the per-round medians, configs interleaved within a round. The table covers common 16:9 resolutions: stock kernels (`Optimized=0`), bit-identical acceleration (`1`) and the factory default (`2`); reduction is `(stock − current) / stock`. In the same kit the frame-generation, real-capture and super-resolution outputs match the RTX 3070 reference bit for bit.
+Every number below comes from this project's own timing (a D3D12 timestamp before and after each Evaluate, or the `[Logging] FrameTiming` log). Offline GPU milliseconds measure the cost of frame generation / super resolution itself; they are not an in-game frame-rate gain.
 
-This table measures frame generation's GPU compute cost; it is not an in-game FPS gain — how to estimate displayed FPS from it is in the next section.
+### Frame generation: real game captures (RTX 3070, offline replay)
 
-| Resolution | Multiplier | Stock (ms) | Bit-identical (ms) | Reduction | Factory default (ms) | Reduction |
-|---|---|---|---|---|---|---|
-| 1080p | 2X | 1.364 | 0.926 | 32.1% | 0.917 | 32.8% |
-| 1080p | 3X | 1.942 | 1.423 | 26.7% | 1.400 | 27.9% |
-| 1080p | 4X | 2.520 | 1.914 | 24.0% | 1.888 | 25.1% |
-| 1080p | 5X | 3.089 | 2.411 | 21.9% | 2.375 | 23.1% |
-| 1080p | 6X | 3.677 | 2.911 | 20.8% | 2.867 | 22.0% |
-| 1440p | 2X | 2.094 | 1.459 | 30.3% | 1.443 | 31.1% |
-| 1440p | 3X | 3.030 | 2.238 | 26.1% | 2.205 | 27.2% |
-| 1440p | 4X | 3.963 | 3.008 | 24.1% | 2.960 | 25.3% |
-| 1440p | 5X | 4.900 | 3.786 | 22.7% | 3.719 | 24.1% |
-| 1440p | 6X | 5.841 | 4.558 | 22.0% | 4.472 | 23.4% |
-| 4K | 2X | 2.472 | 1.901 | 23.1% | 1.864 | 24.6% |
-| 4K | 3X | 3.792 | 3.002 | 20.8% | 2.924 | 22.9% |
-| 4K | 4X | 5.112 | 4.106 | 19.7% | 3.987 | 22.0% |
-| 4K | 5X | 6.437 | 5.212 | 19.0% | 5.054 | 21.5% |
-| 4K | 6X | 7.760 | 6.319 | 18.6% | 6.123 | 21.1% |
+RTX 3070, driver 617.14, the 0.4.0 test kit's full run (run_all). Inputs recorded in the games (Cyberpunk 2077, Black Myth: Wukong) replayed through the whole route (proxy → backend → NVIDIA runtime 310.9.16 or the XeSS engine); the first 4 real frames of each run dropped, median over all frames of 4 rounds. GPU milliseconds per generated frame; in brackets the change against DLSS default (negative = faster). DLSS default = the factory INI (`Optimized=2`, `Preset=Auto`); stock kernels = `Optimized=0`.
+
+**2X**
+
+| Capture | DLSS default | Preset C | XeSS Middle | XeSS Coarse | XeSS Fine | Stock kernels |
+|---|---:|---:|---:|---:|---:|---:|
+| Cyberpunk 2077 1440p | 2.554 | 1.694 (−33.7 %) | 2.974 (+16.4 %) | 2.344 (−8.2 %) | 3.828 (+49.9 %) | 3.639 (+42.4 %) |
+| Black Myth: Wukong 1440p | 2.581 | 1.745 (−32.4 %) | 3.266 (+26.5 %) | 2.634 (+2.0 %) | 4.164 (+61.3 %) | 3.657 (+41.7 %) |
+| Cyberpunk 2077 4K | 3.557 | 2.499 (−29.7 %) | 6.379 (+79.3 %) | 5.059 (+42.2 %) | 8.296 (+133.2 %) | 4.407 (+23.9 %) |
+| Black Myth: Wukong 4K | 3.756 | 2.679 (−28.7 %) | 6.974 (+85.7 %) | 5.682 (+51.3 %) | 9.025 (+140.3 %) | 4.560 (+21.4 %) |
+
+**4X** (per generated frame = the sum of a real frame's 3 Evaluates ÷ 3): Cyberpunk 2077 4K default 2.532 ms, preset C 1.392 ms (−45.0 %); Black Myth: Wukong 4K default 2.733 ms, preset C 1.517 ms (−44.5 %).
+
+### Frame generation: real game captures (RTX 3080 Ti, offline replay)
+
+RTX 3080 Ti, driver 610.88, a full run of the same test kit (a tester's machine); method as above. During these two timing stages the GPU held 1665 MHz (below the 1950 MHz of the synthetic timing), so the absolute values are conservative; the comparisons hold.
+
+**2X**
+
+| Capture | DLSS default | Preset C | XeSS Middle | XeSS Coarse | XeSS Fine | Stock kernels |
+|---|---:|---:|---:|---:|---:|---:|
+| Cyberpunk 2077 1440p | 1.651 | 1.032 (−37.5 %) | 2.235 (+35.4 %) | 1.786 (+8.2 %) | 2.791 (+69.1 %) | 2.381 (+44.2 %) |
+| Black Myth: Wukong 1440p | 1.663 | 1.062 (−36.1 %) | 2.359 (+41.9 %) | 1.911 (+14.9 %) | 2.936 (+76.6 %) | 2.391 (+43.8 %) |
+| Cyberpunk 2077 4K | 2.171 | 1.473 (−32.2 %) | 4.640 (+113.7 %) | 3.668 (+68.9 %) | 5.908 (+172.1 %) | 2.860 (+31.7 %) |
+| Black Myth: Wukong 4K | 2.275 | 1.577 (−30.7 %) | 4.763 (+109.3 %) | 3.822 (+68.0 %) | 6.060 (+166.3 %) | 2.935 (+29.0 %) |
+
+**4X**: Cyberpunk 2077 4K default 1.567 ms, preset C 0.822 ms (−47.5 %); Black Myth: Wukong 4K default 1.666 ms, preset C 0.897 ms (−46.2 %).
+
+### Super-resolution INT8 against the same preset in FP16 (RTX 3070, offline)
+
+Same test kit. GPU time of one super-resolution Evaluate in ms: median of 64 measured frames per run, median of 3 rounds. Same runtime (310.7.129), same preset; only INT8 against FP16. The two kernel families correspond to The Witcher 3 / Resonance / Forza Horizon 6 / Spider-Man (mvlo) and Black Myth: Wukong / Hogwarts Legacy (mvhi).
+
+| Family | Output | Mode | L FP16 | L INT8 | L change | M FP16 | M INT8 | M change |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| mvlo | 3840×2160 | Performance | 7.443 | 6.459 | −13.2 % | 6.065 | 4.905 | −19.1 % |
+| mvlo | 2560×1440 | Performance | 3.415 | 2.993 | −12.4 % | 2.787 | 2.294 | −17.7 % |
+| mvlo | 1920×1080 | Performance | 1.965 | 1.736 | −11.7 % | 1.615 | 1.353 | −16.2 % |
+| mvlo | 1920×1080 | Ultra Performance | 1.258 | 1.179 | −6.3 % | 1.066 | 0.967 | −9.3 % |
+| mvhi | 3840×2160 | Performance | 7.305 | 6.127 | −16.1 % | 5.914 | 4.623 | −21.8 % |
+| mvhi | 2560×1440 | Performance | 3.346 | 2.845 | −15.0 % | 2.719 | 2.171 | −20.2 % |
+| mvhi | 1920×1080 | Performance | 1.934 | 1.656 | −14.4 % | 1.581 | 1.278 | −19.2 % |
+| mvhi | 1920×1080 | Ultra Performance | 1.235 | 1.106 | −10.4 % | 1.057 | 0.914 | −13.5 % |
+
+### Super-resolution INT8 against the same preset in FP16 (RTX 3080 Ti, offline)
+
+Same test kit and method, GPU at 1665 MHz.
+
+| Family | Output | Mode | L FP16 | L INT8 | L change | M FP16 | M INT8 | M change |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| mvlo | 3840×2160 | Performance | 5.338 | 4.578 | −14.2 % | 4.341 | 3.455 | −20.4 % |
+| mvlo | 2560×1440 | Performance | 2.484 | 2.151 | −13.4 % | 2.028 | 1.644 | −18.9 % |
+| mvlo | 1920×1080 | Performance | 1.465 | 1.333 | −9.0 % | 1.208 | 1.047 | −13.4 % |
+| mvlo | 1920×1080 | Ultra Performance | 1.000 | 0.948 | −5.2 % | 0.849 | 0.791 | −6.9 % |
+| mvhi | 3840×2160 | Performance | 5.262 | 4.355 | −17.2 % | 4.252 | 3.239 | −23.8 % |
+| mvhi | 2560×1440 | Performance | 2.437 | 2.045 | −16.1 % | 1.991 | 1.545 | −22.4 % |
+| mvhi | 1920×1080 | Performance | 1.441 | 1.272 | −11.8 % | 1.186 | 0.994 | −16.1 % |
+| mvhi | 1920×1080 | Ultra Performance | 0.979 | 0.892 | −8.9 % | 0.848 | 0.746 | −12.0 % |
+
+### In game (RTX 3070, 4K output, 2X)
+
+RTX 3070, driver 617.14, logs of `[Logging] FrameTiming=1`, median of a 60 s still window after entering the world, tier 2, XeSS at `Middle`. Per generated frame = frame-generation GPU time; real frame rate = frames the game renders (the displayed rate is twice that).
+
+| Game | DLSS default (ms) | XeSS (ms) | XeSS real fps | Preset C (ms) | Preset C real fps |
+|---|---:|---:|---:|---:|---:|
+| Cyberpunk 2077 | 3.755 | 6.733 (+79 %) | −8.6..−9.7 % | 2.748 (−27 %) | +3.6 % |
+| Black Myth: Wukong | 4.035 | 7.308 (+81 %) | −11.0 % | 3.085 (−24 %) | +4.3 % |
+| The Witcher 3 | 3.973 | 7.166 (+80 %) | −15.0 % | 2.974 (−25 %) | −0.8 % |
+| A Plague Tale: Resonance | 3.943 | 6.968 (+77 %) | −28.1 % | 2.947 (−25 %) | +9.5 % |
+| Forza Horizon 6 | 3.856 | 6.847 (+78 %) | −8.0 % | 2.803 (−27 %) | +7.4 % |
+
+Cyberpunk 2077: path tracing + ray reconstruction, DLSS Ultra Performance; Black Myth: Wukong: DLSS 50 %. How the real frame rate moves depends on the game's bottleneck: in The Witcher 3 preset C saves 1 ms per generated frame and the frame rate does not change.
+
+### Super-resolution INT8 in game (RTX 3070, The Witcher 3)
+
+RTX 3070, driver 617.14, frame generation off, frame rate over a still window after entering the world; the baseline is the same preset in FP16 (`Mode=M-FP16` / `L-FP16`), INT8 and FP16 alternated 2–4 runs each, means in the table, gain from the medians. The preset M rows use the 0.4.0 shipped kernel sets (measured 10-10); the L rows were measured 10-09 (this family's L set has not changed since).
+
+| Output | Mode (render) | Preset | FP16 fps | INT8 fps | Gain | Per frame |
+|---|---|---|---:|---:|---:|---|
+| 3840×2160 | Performance (1920×1080) | M | 47.15 | 50.85 | +7.85 % | 21.21 → 19.67 ms (−1.54) |
+| 2560×1440 | Performance (1280×720) | M | 85.48 | 91.34 | +6.86 % | 11.70 → 10.95 ms (−0.75) |
+| 1920×1080 | Performance (960×540) | M | 122.14 | 128.35 | +5.08 % | 8.19 → 7.79 ms (−0.40) |
+| 3840×2160 | Ultra Performance (1280×720) | L | 63.56 | 66.13 | +4.0 % | 15.73 → 15.12 ms (−0.61) |
+| 2560×1440 | Ultra Performance (853×480) | L | 109.42 | 111.80 | +2.2 % | 9.14 → 8.94 ms (−0.19) |
+| 1920×1080 | Ultra Performance (640×360) | L | 145.83 | 147.57 | +1.2 % | 6.86 → 6.78 ms (−0.08) |
+
+Every gain but the last exceeds twice the same-configuration repeat spread; 1080p Ultra Performance L is within one run's spread, but all 4 INT8 runs are above all 4 FP16 runs. Image quality: preset M flickers slightly more than FP16 on still content (frame-to-frame stability of still pixels in game 61.8 vs 62.5 dB) with PSNR against ground truth no lower than FP16; preset L is within 0.6 dB of FP16.
+
+### Whole generation group GPU time (RTX 3080 Ti, synthetic scene)
+
+RTX 3080 Ti, driver 610.88, the 0.4.0 test kit (a tester's machine). GPU milliseconds of the whole frame-generation group per real frame (the span of one group's Evaluates in one submission): median of 256 groups per run, median of 4 rounds; reduction = (tier0 − current) / tier0. tier0 = stock kernels (`Optimized=0`), tier1 = bit-identical acceleration (`1`), tier2 = factory default (`2`). The same kit's consistency checks match the RTX 3070 reference bit for bit: frame generation 18/18, real captures 28/28, super resolution 32/32, super resolution `Mode=On` 4/4.
+
+| Resolution | Multiplier | tier0 (ms) | tier1 (ms) | Reduction | tier2 (ms) | Reduction |
+|---|---|---:|---:|---:|---:|---:|
+| 1080p | 2X | 1.364 | 0.926 | 32.1 % | 0.917 | 32.8 % |
+| 1080p | 3X | 1.942 | 1.423 | 26.7 % | 1.400 | 27.9 % |
+| 1080p | 4X | 2.520 | 1.914 | 24.0 % | 1.888 | 25.1 % |
+| 1080p | 5X | 3.089 | 2.411 | 21.9 % | 2.375 | 23.1 % |
+| 1080p | 6X | 3.677 | 2.911 | 20.8 % | 2.867 | 22.0 % |
+| 1440p | 2X | 2.094 | 1.459 | 30.3 % | 1.443 | 31.1 % |
+| 1440p | 3X | 3.030 | 2.238 | 26.1 % | 2.205 | 27.2 % |
+| 1440p | 4X | 3.963 | 3.008 | 24.1 % | 2.960 | 25.3 % |
+| 1440p | 5X | 4.900 | 3.786 | 22.7 % | 3.719 | 24.1 % |
+| 1440p | 6X | 5.841 | 4.558 | 22.0 % | 4.472 | 23.4 % |
+| 4K | 2X | 2.472 | 1.901 | 23.1 % | 1.864 | 24.6 % |
+| 4K | 3X | 3.792 | 3.002 | 20.8 % | 2.924 | 22.9 % |
+| 4K | 4X | 5.112 | 4.106 | 19.7 % | 3.987 | 22.0 % |
+| 4K | 5X | 6.437 | 5.212 | 19.0 % | 5.054 | 21.5 % |
+| 4K | 6X | 7.760 | 6.319 | 18.6 % | 6.123 | 21.1 % |
 
 The gain is larger at lower resolution and lower multiplier (closer to launch/latency bound).
-
-Real game captures replayed (same RTX 3080 Ti, 2X, GPU ms per generated frame, in brackets against DLSS default; the GPU held 1665 MHz in this stage):
-
-| Capture | DLSS default | Preset C | XeSS | Stock kernels |
-|---|---|---|---|---|
-| Cyberpunk 2077 1440p | 1.651 | 1.032 (−37.5%) | 2.235 (+35.4%) | 2.381 (+44.2%) |
-| Black Myth: Wukong 1440p | 1.663 | 1.062 (−36.1%) | 2.359 (+41.9%) | 2.391 (+43.8%) |
-| Cyberpunk 2077 4K | 2.171 | 1.473 (−32.2%) | 4.640 (+113.7%) | 2.860 (+31.7%) |
-| Black Myth: Wukong 4K | 2.275 | 1.577 (−30.7%) | 4.763 (+109.3%) | 2.935 (+29.0%) |
-
-At 4X preset C is −46..−48 % per generated frame. In five games on an RTX 3070 (4K, 2X, this project's frame-timing log): preset C about −1 ms per generated frame (−24..−27 %), XeSS about +3 ms (+77..+81 %).
 
 ## Estimating FPS after frame generation
 
