@@ -83,6 +83,36 @@ try {
     Remove-Item -LiteralPath $engineConfigPath
     Write-Host 'PASS: changed backup retained; retry succeeds after conflict resolution.'
 
+    foreach ($originalExists in @($true, $false)) {
+        Start-TestJournal; Add-TestEngine -NoOriginal:(-not $originalExists)
+        [IO.File]::SetAttributes($engineRuntimePath, [IO.FileAttributes]::ReadOnly)
+        $op=Start-DeploymentOperation engineLink $engineConfigPath $engineRuntimePath
+        Complete-DeploymentOperation $op
+        [IO.File]::WriteAllText($engineConfigPath,'game replaced the read-only target link')
+        $savedPath=Join-Path (Split-Path -Parent $script:journalPath) ('recovered\' + $script:deploymentJournal.Session + '-Engine.ini')
+        Reload-TestJournal; Restore-RecordedDeployment
+        Assert-Test ([IO.File]::ReadAllText($savedPath) -eq 'game replaced the read-only target link') 'Replacement contents lost.'
+        Assert-Test (-not (Test-Path -LiteralPath $engineRuntimePath)) 'Read-only runtime survived replacement recovery.'
+        if ($originalExists) {
+            Assert-Test ([IO.File]::ReadAllText($engineConfigPath) -eq 'original') 'Original not restored after link replacement.'
+            Remove-Item -LiteralPath $engineConfigPath
+        }
+        else { Assert-Test (-not (Test-Path -LiteralPath $engineConfigPath)) 'Originally absent config not restored to absence.' }
+    }
+    Start-TestJournal; Add-TestEngine
+    $op=Start-DeploymentOperation engineLink $engineConfigPath $engineRuntimePath
+    Complete-DeploymentOperation $op
+    [IO.File]::WriteAllText($engineConfigPath,'replacement')
+    $savedPath=Join-Path (Split-Path -Parent $script:journalPath) ('recovered\' + $script:deploymentJournal.Session + '-Engine.ini')
+    [IO.File]::WriteAllText($savedPath,'existing saved replacement')
+    Reload-TestJournal; Expect-Failure { Restore-RecordedDeployment }
+    Assert-Test ([IO.File]::ReadAllText($engineConfigPath) -eq 'replacement') 'Collision overwrote replacement.'
+    Assert-Test ([IO.File]::ReadAllText($savedPath) -eq 'existing saved replacement') 'Collision overwrote saved replacement.'
+    Remove-Item -LiteralPath $savedPath
+    Reload-TestJournal; Restore-RecordedDeployment
+    Remove-Item -LiteralPath $engineConfigPath
+    Write-Host 'PASS: replaced Engine.ini archived, original restored, read-only cleanup, no-original and archive collision recovery.'
+
     Start-TestJournal
     $op=Start-DeploymentOperation link $linkSpecs[0].Path $linkSpecs[0].Target
     [IO.File]::WriteAllText($linkSpecs[0].Path,'unrelated replacement')
@@ -173,6 +203,7 @@ try {
         finally { Remove-Item Function:\New-Item }
         Assert-Test (-not (Test-Path -LiteralPath $engineConfigPath)) 'Original not renamed before injected link failure.'
         Assert-Test ($script:deploymentJournal.Operations.Count -eq 3) 'Launcher did not journal each Engine.ini operation.'
+        Assert-Test (([IO.File]::GetAttributes($engineRuntimePath) -band [IO.FileAttributes]::ReadOnly) -ne 0) 'Launcher runtime is writable.'
         Reload-TestJournal; Restore-RecordedDeployment
         Assert-Test ((Get-HashOrNull $engineConfigPath) -eq $originalHash) 'Actual launcher rollback changed original.'
         Remove-Item -LiteralPath $engineConfigPath
@@ -192,9 +223,9 @@ try {
         & $getItemImplementation $Path
     }
     function Remove-Item {
-        param([string]$LiteralPath)
+        param([string]$LiteralPath, [switch]$Force)
         if ($virtualLinks.ContainsKey($LiteralPath)) { $virtualLinks.Remove($LiteralPath); return }
-        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force
     }
     try {
         Reload-TestJournal; Restore-RecordedDeployment
@@ -220,13 +251,13 @@ try {
         try { Prepare-EngineConfig } finally { Microsoft.PowerShell.Management\Remove-Item Function:\New-Item }
         Assert-Test ([IO.File]::ReadAllText($engineRuntimePath) -ceq ($engineRuntimeMarker + "`r`n" + [IO.File]::ReadAllText($source))) 'NTE runtime is not the unmodified plaintext source with marker.'
         Assert-Test ((Get-HashOrNull $engineBackupPath) -eq $originalHash) 'Opaque original backup changed.'
-        # Simulate game save without touching the source or original backup.
-        [IO.File]::WriteAllText($engineRuntimePath,'game saved plaintext settings')
+        Assert-Test (([IO.File]::GetAttributes($engineRuntimePath) -band [IO.FileAttributes]::ReadOnly) -ne 0) 'NTE runtime is writable.'
+        Expect-Failure { [IO.File]::WriteAllText($engineRuntimePath,'game attempted save') }
         Reload-TestJournal; Restore-RecordedDeployment
         Assert-Test ((Get-HashOrNull $engineConfigPath) -eq $originalHash) 'Opaque original not restored byte-for-byte.'
         Assert-Test ((Get-HashOrNull $source) -eq $sourceHash) 'Source changed during deployment.'
         Remove-Item -LiteralPath $engineConfigPath
-        Write-Host 'PASS: actual NTE plaintext deployment, DryRun, opaque original backup, game save and byte-for-byte restoration.'
+        Write-Host 'PASS: actual NTE plaintext deployment, DryRun, read-only write rejection, opaque original backup and byte-for-byte restoration.'
 
         Start-TestJournal
         $virtualLinks[$linkSpecs[0].Path]=$linkSpecs[0].Target
