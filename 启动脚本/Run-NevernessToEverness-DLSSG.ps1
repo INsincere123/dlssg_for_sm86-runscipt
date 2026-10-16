@@ -12,27 +12,58 @@ $ErrorActionPreference = 'Stop'
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot 'LauncherResources.ps1')
+$createdLinks = [Collections.Generic.List[string]]::new()
+$setupComplete = $false
 $consoleState = $null
 
 $gameRoot = 'C:\Games\Neverness To Everness'
 $renderDir = Join-Path $gameRoot 'Client\WindowsNoEditor\HT\Binaries\Win64'
 $launcherExe = Join-Path $gameRoot 'NTELauncher.exe'
 $gameExe = Join-Path $renderDir 'HTGame.exe'
-$projectDir = 'D:\Games\dlssg_for_sm86'
+$projectDir = Split-Path -Parent $PSScriptRoot
 $projectProxy = Join-Path $projectDir 'alternatives\winmm.dll'
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
+$diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-nte-{0}.ini" -f $PID)
+$diagnosticIni = @'
+; 异环 0.4.0 临时诊断配置。
+; 由 Run-NevernessToEverness-DLSSG.ps1 生成。
+
+[General]
+Enabled=1
+
+[FrameGeneration]
+Engine=DLSS
+MaxGeneratedFrames=3
+
+[DLSSG]
+Optimized=2
+Preset=Auto
+
+[Logging]
+Level=2
+Directory=dlssg_sm86\logs
+
+[Runtime]
+Mode=Bundled
+
+[SuperResolution]
+Mode=On
+'@
 $storageDll = Join-Path $renderDir '_storage_\winmm.dll'
-$logDir = Join-Path $renderDir 'dlssg_sm86'
+$logDir = Join-Path $renderDir 'dlssg_sm86\logs'
 $launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 
+$deployment = New-DlssgDeployment -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName 'winmm.dll'
 $storageExistedBefore = $false
 $gameExitCode = $null
 $failed = $false
+$setupStarted = $false
 
 $linkSpecs = @(
     @{ Path = (Join-Path $renderDir 'winmm.dll'); Target = $projectProxy },
-    @{ Path = (Join-Path $renderDir 'dlssg_sm86.ini'); Target = $projectIni }
+    @{ Path = (Join-Path $renderDir 'dlssg_sm86.ini'); Target = $diagnosticIniPath }
 )
 
 function Write-Log {
@@ -71,10 +102,22 @@ function Assert-NoRunningProcess {
     }
 }
 
+function Test-StaleDiagnosticIniTarget {
+    param([string]$Path, [string]$Target)
+
+    if ((Get-NormalizedPath $Path) -ne (Get-NormalizedPath $linkSpecs[1].Path)) { return $false }
+    if ((Split-Path -Parent (Get-NormalizedPath $Target)) -ne (Get-NormalizedPath $env:TEMP)) { return $false }
+    if ([System.IO.Path]::GetFileName($Target) -notmatch '^dlssg_sm86-nte-\d+\.ini$') { return $false }
+    if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
+
+    $contents = [System.IO.File]::ReadAllText($Target)
+    return ($contents -ceq $diagnosticIni)
+}
+
 function Assert-LinkOrAbsent {
     param([string]$Path, [string]$ExpectedTarget)
 
-    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($null -eq $item) { return $false }
 
     if ($item.LinkType -ne 'SymbolicLink') {
@@ -83,6 +126,24 @@ function Assert-LinkOrAbsent {
 
     $actualTarget = [string](($item.Target -join ''))
     if ((Get-NormalizedPath $actualTarget) -ne (Get-NormalizedPath $ExpectedTarget)) {
+        if ((Get-NormalizedPath $Path) -eq (Get-NormalizedPath $linkSpecs[1].Path) -and
+            (Get-NormalizedPath $actualTarget) -eq (Get-NormalizedPath $projectIni)) {
+            if (-not $DryRun) { Remove-Item -LiteralPath $Path }
+            Write-Log '将原仓库 INI 链接迁移为本次临时配置；仓库文件保持不变。'
+            return $false
+        }
+        if (Test-StaleDiagnosticIniTarget -Path $Path -Target $actualTarget) {
+            if ($DryRun) {
+                Write-Log "演练模式：将清理脚本生成的过期临时配置软链接：$Path -> $actualTarget"
+                return $false
+            }
+
+            Remove-Item -LiteralPath $Path
+            Remove-Item -LiteralPath $actualTarget
+            Write-Log "已清理脚本生成的过期临时配置软链接及文件：$Path"
+            return $false
+        }
+
         throw "拒绝替换指向异常目标的软链接：$Path -> $actualTarget"
     }
 
@@ -101,13 +162,15 @@ function Ensure-Link {
     }
 
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target | Out-Null
+    $createdLinks.Add($Path)
     Write-Log "已创建软链接：$Path -> $Target"
 }
 
 function Remove-ExpectedLink {
     param([string]$Path, [string]$ExpectedTarget)
 
-    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $createdLinks.Contains($Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($null -eq $item) { return }
 
     if ($item.LinkType -eq 'SymbolicLink') {
@@ -153,6 +216,7 @@ function Show-PostRunStatus {
     if ($logs.Count -gt 0) {
         Write-Log ("找到 {0} 个 DLSSG 日志文件" -f $logs.Count)
         Write-Log ("最新日志：{0}" -f $logs[0].FullName)
+        Write-Log '发现日志仅表示有日志文件，帧生成是否生效需检查加载和内核记录。'
     }
     else {
         Write-Warning "目录下未找到 DLSSG 日志：$logDir"
@@ -176,7 +240,7 @@ function Wait-ForGameProcess {
     throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
 }
 
-$consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
+if (-not $DryRun) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
 
 try {
     Assert-FileExists -Path $launcherExe -Description 'NTE launcher'
@@ -186,21 +250,27 @@ try {
     Assert-NoRunningProcess -Name $launcherProcessName -Description 'NTE launcher'
     Assert-NoRunningProcess -Name $gameProcessName -Description 'NTE game'
 
+    Assert-DlssgDeployment $deployment
     $storageExistedBefore = Test-Path -LiteralPath $storageDll -PathType Leaf
     if ($storageExistedBefore) {
         Write-Log "发现启动前已存在的 _storage_\winmm.dll，将保留。SHA256：$(Get-HashOrNull $storageDll)"
     }
 
     if ($DryRun) {
-        Write-Log '演练模式：环境检查通过。'
+        Install-DlssgResources -Deployment $deployment -DryRun
+        Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
         exit 0
     }
 
+    $setupStarted = $true
+    Install-DlssgResources -Deployment $deployment
+    [IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [Text.UTF8Encoding]::new($false))
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
 
+    $setupComplete = $true
     Write-Log '正在启动官方异环启动器。本脚本不会绕过或关闭 ACE。'
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $gameRoot -PassThru
     $game = Wait-ForGameProcess
@@ -214,16 +284,26 @@ catch {
 }
 finally {
     try {
-        if (-not $DryRun -and -not $KeepLinks) {
+        $gameStillRunning = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue).Count -gt 0
+        if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $setupComplete)) {
+            try { Undo-DlssgResources $deployment } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
             try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
+            # Preserve the temporary file if its link could not be removed.
+            $iniLink = Get-Item -LiteralPath $linkSpecs[1].Path -Force -ErrorAction SilentlyContinue
+            $tempStillLinked = $null -ne $iniLink -and $iniLink.LinkType -eq 'SymbolicLink' -and
+                (Get-NormalizedPath ([string]($iniLink.Target -join ''))) -eq (Get-NormalizedPath $diagnosticIniPath)
+            if (-not $tempStillLinked) {
+                Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
+            }
         }
-        elseif ($KeepLinks -and -not $DryRun) {
+        elseif ($setupStarted -and $KeepLinks -and -not $DryRun) {
             Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
         }
 
-        if (-not $DryRun) {
+        if ($setupStarted -and $gameStillRunning) { Write-Warning '游戏仍在运行，保留配置与资源链接。' }
+        if ($setupStarted -and -not $DryRun) {
             Show-PostRunStatus
         }
     }
