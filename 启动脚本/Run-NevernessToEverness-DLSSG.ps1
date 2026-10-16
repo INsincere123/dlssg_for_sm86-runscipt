@@ -4,6 +4,7 @@ param(
     [switch]$KeepLinks,
     [switch]$VerboseLog,
     [switch]$RestoreEngineConfig,
+    [switch]$RestoreDeployment,
     [string]$ConfigDirectory,
     [string]$EngineConfigSource = (Join-Path $PSScriptRoot '异环配置\Engine.ini')
 )
@@ -16,6 +17,7 @@ $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 . (Join-Path $PSScriptRoot 'LauncherResources.ps1')
+. (Join-Path $PSScriptRoot 'DeploymentJournal.ps1')
 . (Join-Path $PSScriptRoot 'NteEngineConfig.ps1')
 $enginePrepared = $false
 $engineOriginalMoved = $false
@@ -178,13 +180,19 @@ function Prepare-EngineConfig {
         return
     }
     $encryptedLines = @(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $engineConfigSource)
+    $record = Start-DeploymentOperation -Kind runtime -Path $engineRuntimePath
     [IO.File]::WriteAllLines($engineRuntimePath, $encryptedLines, [Text.UTF8Encoding]::new($false))
     $script:engineRuntimeCreated = $true
+    Complete-DeploymentOperation $record
     if ($null -ne $original) {
+        $record = Start-DeploymentOperation -Kind backup -Path $engineConfigPath -Target $engineBackupPath -Hash (Get-HashOrNull $engineConfigPath)
         Move-Item -LiteralPath $engineConfigPath -Destination $engineBackupPath
+        Complete-DeploymentOperation $record
         $script:engineOriginalMoved = $true
     }
+    $record = Start-DeploymentOperation -Kind engineLink -Path $engineConfigPath -Target $engineRuntimePath
     New-Item -ItemType SymbolicLink -Path $engineConfigPath -Target $engineRuntimePath | Out-Null
+    Complete-DeploymentOperation $record
     $script:enginePrepared = $true
     Write-Log "已启用画面配置：$engineConfigSource"
     Write-Log "Engine.ini 软链接：$engineConfigPath -> $engineRuntimePath"
@@ -254,14 +262,19 @@ function Assert-LinkOrAbsent {
 function Ensure-Link {
     param([string]$Path, [string]$Target)
 
-    if (Assert-LinkOrAbsent -Path $Path -ExpectedTarget $Target) { return }
+    if (Assert-LinkOrAbsent -Path $Path -ExpectedTarget $Target) {
+        if (-not $DryRun) { Register-ReusedDeploymentLink -Path $Path -Target $Target }
+        return
+    }
 
     if ($DryRun) {
         Write-Log "演练模式：将创建软链接 $Path -> $Target"
         return
     }
 
+    $record = Start-DeploymentOperation -Kind link -Path $Path -Target $Target
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target | Out-Null
+    Complete-DeploymentOperation $record
     $createdLinks.Add($Path)
     Write-Log "已创建软链接：$Path -> $Target"
 }
@@ -340,13 +353,27 @@ function Wait-ForGameProcess {
     throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
 }
 
-if (-not $DryRun -and -not $RestoreEngineConfig) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
+if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
 
 try {
     Assert-NteEnginePaths
     Assert-NoRunningProcess -Name $launcherProcessName -Description 'NTE launcher'
     Assert-NoRunningProcess -Name $gameProcessName -Description 'NTE game'
-    if ($RestoreEngineConfig) { Restore-EngineConfig; exit 0 }
+    Open-DeploymentJournal -GameId 'nte' -GameProcess $gameProcessName -LauncherProcess $launcherProcessName -DiagnosticPrefix 'dlssg_sm86-nte-'
+    if ($RestoreDeployment) {
+        if ($null -ne $script:deploymentJournal) { Restore-RecordedDeployment -Preview:$DryRun }
+        elseif ($null -ne (Get-JournalItem $engineBackupPath) -or $null -ne (Get-JournalItem $engineRuntimePath)) { Restore-EngineConfig }
+        else { Write-Log '没有需要恢复的部署记录。' }
+        exit 0
+    }
+    if ($RestoreEngineConfig) {
+        if ($null -ne $script:deploymentJournal) { Restore-RecordedDeployment -EngineOnly -Preview:$DryRun }
+        elseif ($null -ne (Get-JournalItem $engineBackupPath) -or $null -ne (Get-JournalItem $engineRuntimePath)) { Restore-EngineConfig }
+        else { Write-Log '没有需要恢复的画面配置。' }
+        exit 0
+    }
+    Resolve-PreviousDeployment
+    Resolve-LegacyEngineDeployment
     Assert-FileExists -Path $engineConfigSource -Description '异环明文 Engine.ini 配置源'
     if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在：$ConfigDirectory" }
     Write-Log "本次配置目录：$ConfigDirectory"
@@ -372,15 +399,24 @@ try {
         exit 0
     }
 
+    Test-DeploymentInputs
+    New-DeploymentJournal
     $setupStarted = $true
     Install-DlssgResources -Deployment $deployment
     Prepare-EngineConfig
+    $record = Start-DeploymentOperation -Kind diagnostic -Path $diagnosticIniPath -Hash (Get-JournalTextHash $diagnosticIni)
     [IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [Text.UTF8Encoding]::new($false))
+    Complete-DeploymentOperation $record
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
 
+    Set-DeploymentPhase 'active'
     $setupComplete = $true
     Write-Log '正在启动官方异环启动器。本脚本不会绕过或关闭 ACE。'
+    if (-not $storageExistedBefore) {
+        $record = Start-DeploymentOperation -Kind storage -Path $storageDll -Hash (Get-HashOrNull $projectProxy)
+        Complete-DeploymentOperation $record
+    }
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $gameRoot -PassThru
     $game = Wait-ForGameProcess
     $game.WaitForExit()
@@ -395,25 +431,13 @@ finally {
     try {
         $gameStillRunning = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue).Count -gt 0
         if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $setupComplete)) {
-            try { Undo-EngineConfigSetup } catch { Write-Warning $_ }
-            try { Undo-DlssgResources $deployment } catch { Write-Warning $_ }
-            try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
-            try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
-            try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
-            # Preserve the temporary file if its link could not be removed.
-            $iniLink = Get-Item -LiteralPath $linkSpecs[1].Path -Force -ErrorAction SilentlyContinue
-            $tempStillLinked = $null -ne $iniLink -and $iniLink.LinkType -eq 'SymbolicLink' -and
-                (Get-NormalizedPath ([string]($iniLink.Target -join ''))) -eq (Get-NormalizedPath $diagnosticIniPath)
-            if (-not $tempStillLinked) {
-                Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
-            }
+            try { Restore-RecordedDeployment -Automatic } catch { Write-Warning $_; $failed = $true }
         }
-        elseif ($setupStarted -and $KeepLinks -and -not $DryRun) {
-            Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
-            Write-Log '关闭游戏和启动器后，可用 -RestoreEngineConfig 恢复原 Engine.ini。'
+        elseif ($setupStarted -and -not $DryRun) {
+            Set-DeploymentPhase 'retained'
+            Write-Warning '部署与记录已保留；关闭游戏和启动器后用 -RestoreDeployment 完整恢复。'
         }
 
-        if ($setupStarted -and $gameStillRunning) { Write-Warning '游戏仍在运行，保留配置与资源链接。' }
         if ($setupStarted -and -not $DryRun) {
             Show-PostRunStatus
         }
@@ -433,5 +457,6 @@ catch {
     throw
 }
 finally {
+    Close-DeploymentJournal
     Stop-LauncherLog -Path $launcherLogPath
 }
