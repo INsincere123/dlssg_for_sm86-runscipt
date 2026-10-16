@@ -376,6 +376,21 @@ function Restore-RecordedDeployment {
                     }
                 }
                 if ($null -ne $item) {
+                    if ($op.Kind -eq 'engineLink' -and $op.State -eq 'done' -and
+                        -not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                        # Games can replace the symlink with a new file even if its target is read-only.
+                        # Preserve that file outside the game directory before restoring the original.
+                        if ($script:deploymentJournal.Session -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery session.' }
+                        $savedPath = Join-Path (Split-Path -Parent $script:journalPath) ('recovered\' + $script:deploymentJournal.Session + '-Engine.ini')
+                        Assert-JournalOrdinaryParents $savedPath
+                        if ($null -ne (Get-JournalItem $savedPath)) { throw "Replacement backup already exists; both files preserved: $savedPath" }
+                        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $savedPath))
+                        Move-Item -LiteralPath $op.Path -Destination $savedPath
+                        Write-Host "Replaced Engine.ini preserved: $savedPath"
+                        $item = $null
+                    }
+                }
+                if ($null -ne $item) {
                     if ($item.LinkType -ne 'SymbolicLink' -or (Get-NormalizedPath ([string]($item.Target -join ''))) -ne (Get-NormalizedPath $op.Target)) { throw "Link changed; preserved: $($op.Path)" }
                     if ($item.PSIsContainer) { [IO.Directory]::Delete($op.Path) }
                     else { Remove-Item -LiteralPath $op.Path }
@@ -398,7 +413,7 @@ function Restore-RecordedDeployment {
                 if ($null -ne $item) {
                     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Temporary file replaced; preserved: $($op.Path)" }
                     if ($op.Kind -ne 'runtime' -and (Get-HashOrNull $op.Path) -ne $op.Hash) { throw "File hash changed; preserved: $($op.Path)" }
-                    Remove-Item -LiteralPath $op.Path
+                    Remove-Item -LiteralPath $op.Path -Force
                 }
             }
             'directory' {

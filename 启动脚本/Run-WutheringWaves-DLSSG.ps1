@@ -169,7 +169,7 @@ function Resolve-EngineConfigDirectory {
 
 function Assert-OwnedEngineRuntime {
     Assert-FileExists -Path $engineRuntimePath -Description '脚本生成的 Engine.ini 临时副本'
-    # 游戏可能重写副本并移除注释，因此这里只检查它是不是普通文件。
+    # 兼容旧版可写副本；恢复时检查普通文件，不要求标记注释或只读属性。
     $runtimeItem = Get-Item -LiteralPath $engineRuntimePath -Force
     if ($runtimeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "临时副本被替换为链接，拒绝操作：$engineRuntimePath"
@@ -194,7 +194,7 @@ function Restore-EngineConfig {
         Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
         Write-Log "已恢复原 Engine.ini：$engineConfigPath"
     }
-    Remove-Item -LiteralPath $engineRuntimePath
+    Remove-Item -LiteralPath $engineRuntimePath -Force
 }
 
 function Prepare-EngineConfig {
@@ -223,13 +223,14 @@ function Prepare-EngineConfig {
     }
     if ($DryRun) {
         Write-Log "演练模式：将备份原 Engine.ini 到 $engineBackupPath（若原文件存在）"
-        Write-Log "演练模式：将从 $engineConfigSource 生成可写副本 $engineRuntimePath"
+        Write-Log "演练模式：将从 $engineConfigSource 生成只读临时副本 $engineRuntimePath"
         Write-Log "演练模式：将创建软链接 $engineConfigPath -> $engineRuntimePath"
         return
     }
     $engineText = [IO.File]::ReadAllText($engineConfigSource)
     $record = Start-DeploymentOperation -Kind runtime -Path $engineRuntimePath
     [IO.File]::WriteAllText($engineRuntimePath, ($engineRuntimeMarker + "`r`n" + $engineText), [Text.UTF8Encoding]::new($false))
+    [IO.File]::SetAttributes($engineRuntimePath, ([IO.File]::GetAttributes($engineRuntimePath) -bor [IO.FileAttributes]::ReadOnly))
     $script:engineRuntimeCreated = $true
     Complete-DeploymentOperation $record
     if ($null -ne $original) {
@@ -255,7 +256,7 @@ function Undo-EngineConfigSetup {
         }
         Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
     }
-    if ($engineRuntimeCreated) { Remove-Item -LiteralPath $engineRuntimePath }
+    if ($engineRuntimeCreated) { Remove-Item -LiteralPath $engineRuntimePath -Force }
 }
 
 function Wait-ForGameProcess {
