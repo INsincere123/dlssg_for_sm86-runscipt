@@ -18,12 +18,12 @@ try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 . (Join-Path $PSScriptRoot 'LauncherResources.ps1')
 . (Join-Path $PSScriptRoot 'DeploymentJournal.ps1')
-. (Join-Path $PSScriptRoot 'NteEngineConfig.ps1')
 $enginePrepared = $false
 $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
 if (-not $EngineConfigSource) { $EngineConfigSource = Join-Path $PSScriptRoot '异环配置\Engine.ini' }
 $engineConfigSource = $EngineConfigSource
+$engineRuntimeMarker = '; NTE launcher runtime copy v1'
 if (-not $ConfigDirectory) { $ConfigDirectory = Join-Path $env:LOCALAPPDATA 'HT\Saved\Config\Windows' }
 $engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
 $engineRuntimePath = Join-Path $ConfigDirectory 'Engine.nteconfig-runtime.ini'
@@ -117,6 +117,14 @@ function Assert-NoRunningProcess {
     }
 }
 
+function Assert-NteEnginePaths {
+    foreach ($path in @($engineConfigPath, $engineRuntimePath, $engineBackupPath)) {
+        if ((Get-NormalizedPath $engineConfigSource) -eq (Get-NormalizedPath $path)) {
+            throw '配置源不能使用游戏原文件、临时文件或备份路径。'
+        }
+    }
+}
+
 function Assert-OwnedEngineRuntime {
     Assert-FileExists -Path $engineRuntimePath -Description '脚本生成的 Engine.ini 临时副本'
     # 游戏可能重写副本并移除注释，因此这里只检查它是不是普通文件。
@@ -173,16 +181,14 @@ function Prepare-EngineConfig {
         throw "原 Engine.ini 是链接或目录，拒绝替换：$engineConfigPath"
     }
     if ($DryRun) {
-        $validatedLines = @(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $engineConfigSource)
-        Write-Log "演练模式：合并加密及回读校验通过，共 $($validatedLines.Count) 行。"
         Write-Log "演练模式：将备份原 Engine.ini 到 $engineBackupPath（若原文件存在）"
         Write-Log "演练模式：将从 $engineConfigSource 生成可写副本 $engineRuntimePath"
         Write-Log "演练模式：将创建软链接 $engineConfigPath -> $engineRuntimePath"
         return
     }
-    $encryptedLines = @(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $engineConfigSource)
+    $engineText = [IO.File]::ReadAllText($engineConfigSource)
     $record = Start-DeploymentOperation -Kind runtime -Path $engineRuntimePath
-    [IO.File]::WriteAllLines($engineRuntimePath, $encryptedLines, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($engineRuntimePath, ($engineRuntimeMarker + "`r`n" + $engineText), [Text.UTF8Encoding]::new($false))
     $script:engineRuntimeCreated = $true
     Complete-DeploymentOperation $record
     if ($null -ne $original) {
