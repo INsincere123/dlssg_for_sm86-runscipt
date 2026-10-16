@@ -3,7 +3,6 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $launcherRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $launcherRoot 'DeploymentJournal.ps1')
-. (Join-Path $launcherRoot 'NteEngineConfig.ps1')
 function Get-NormalizedPath { param([string]$Path) [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant() }
 function Get-HashOrNull { param([string]$Path) if ([IO.File]::Exists($Path)) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } }
 function Assert-Test { param([bool]$Condition,[string]$Message) if (-not $Condition) { throw $Message } }
@@ -43,7 +42,7 @@ function Add-TestEngine {
     }
 }
 try {
-    foreach ($file in @('DeploymentJournal.ps1','LauncherResources.ps1','Run-WutheringWaves-DLSSG.ps1','Run-NevernessToEverness-DLSSG.ps1','NteEngineConfig.ps1')) {
+    foreach ($file in @('DeploymentJournal.ps1','LauncherResources.ps1','Run-WutheringWaves-DLSSG.ps1','Run-NevernessToEverness-DLSSG.ps1')) {
         $tokens=$null; $errors=$null
         [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $launcherRoot $file),[ref]$tokens,[ref]$errors)
         Assert-Test ($errors.Count -eq 0) "Syntax errors: $file"
@@ -126,15 +125,6 @@ try {
     Write-Host 'PASS: reused link replacement preserved and running process blocks recovery.'
 
     $source=Join-Path $launcherRoot '异环配置\Engine.ini'
-    $encrypted=@(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $source)
-    $sourceEntries = @([IO.File]::ReadAllLines($source) | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith(';') })
-    Assert-Test ($sourceEntries.Count -gt 1 -and $encrypted.Count -eq $sourceEntries.Count) 'Active NTE settings were omitted during encryption.'
-    $encryptedPath=Join-Path $testRoot 'encrypted.ini'; [IO.File]::WriteAllLines($encryptedPath,$encrypted)
-    $again=@(Convert-NteEngineConfig -OriginalPath $encryptedPath -SourcePath $source)
-    Assert-Test ($again.Count -eq (2 * $encrypted.Count)) 'Encrypted config merge failed.'
-    Assert-Test (($again[0..($encrypted.Count-1)] -join "`n") -ceq ($encrypted -join "`n")) 'Original encrypted entries changed during merge.'
-    Assert-Test (($again[$encrypted.Count..($again.Count-1)] -join "`n") -ceq ($encrypted -join "`n")) 'User entries changed during merge.'
-    Write-Host 'PASS: NTE source encryption roundtrip and merge.'
 
     # Real directory junctions work without file-symlink elevation on typical Windows installations.
     $target=$deployment.Specs[0].Target; [void][IO.Directory]::CreateDirectory($target)
@@ -175,8 +165,7 @@ try {
         $engineConfigSource=$source
         $engineRuntimeMarker='; isolated test'
         $enginePrepared=$false; $engineOriginalMoved=$false; $engineRuntimeCreated=$false
-        if ($launcher -match 'Neverness') { [IO.File]::WriteAllLines($engineConfigPath,$encrypted) }
-        else { [IO.File]::WriteAllText($engineConfigPath,'original') }
+        [IO.File]::WriteAllText($engineConfigPath,'original opaque configuration')
         $originalHash=Get-HashOrNull $engineConfigPath
         Start-TestJournal
         function New-Item { throw 'injected SymbolicLink creation failure' }
@@ -212,6 +201,32 @@ try {
         Assert-Test ($virtualLinks.Count -eq 0) 'Owned link not removed.'
         Assert-Test ([IO.File]::ReadAllText($engineConfigPath) -eq 'original') 'Linked runtime restoration failed.'
         Remove-Item -LiteralPath $engineConfigPath
+
+        # Use the actual NTE preparation function loaded above; original bytes need no decoding.
+        [IO.File]::WriteAllText($engineConfigPath,'opaque encrypted-looking original')
+        $originalHash=Get-HashOrNull $engineConfigPath
+        $sourceHash=Get-HashOrNull $source
+        $DryRun=$true
+        Prepare-EngineConfig
+        Assert-Test ((Get-HashOrNull $engineConfigPath) -eq $originalHash) 'DryRun changed original.'
+        Assert-Test (-not (Test-Path -LiteralPath $engineRuntimePath)) 'DryRun wrote runtime.'
+        $DryRun=$false
+        Start-TestJournal
+        function New-Item {
+            param([string]$ItemType,[string]$Path,[string]$Target)
+            Assert-Test ($ItemType -eq 'SymbolicLink') 'Unexpected item type.'
+            $virtualLinks[$Path]=$Target
+        }
+        try { Prepare-EngineConfig } finally { Microsoft.PowerShell.Management\Remove-Item Function:\New-Item }
+        Assert-Test ([IO.File]::ReadAllText($engineRuntimePath) -ceq ($engineRuntimeMarker + "`r`n" + [IO.File]::ReadAllText($source))) 'NTE runtime is not the unmodified plaintext source with marker.'
+        Assert-Test ((Get-HashOrNull $engineBackupPath) -eq $originalHash) 'Opaque original backup changed.'
+        # Simulate game save without touching the source or original backup.
+        [IO.File]::WriteAllText($engineRuntimePath,'game saved plaintext settings')
+        Reload-TestJournal; Restore-RecordedDeployment
+        Assert-Test ((Get-HashOrNull $engineConfigPath) -eq $originalHash) 'Opaque original not restored byte-for-byte.'
+        Assert-Test ((Get-HashOrNull $source) -eq $sourceHash) 'Source changed during deployment.'
+        Remove-Item -LiteralPath $engineConfigPath
+        Write-Host 'PASS: actual NTE plaintext deployment, DryRun, opaque original backup, game save and byte-for-byte restoration.'
 
         Start-TestJournal
         $virtualLinks[$linkSpecs[0].Path]=$linkSpecs[0].Target
