@@ -1,8 +1,8 @@
-# Shared 0.4.0 resource deployment. Never traverse a resource link during cleanup.
+﻿# Shared 0.4.0 resource deployment. Never traverse a resource link during cleanup.
 function New-DlssgDeployment {
     param([string]$ProjectDirectory, [string]$RenderDirectory, [string]$ProxyName)
     $root = Join-Path $RenderDirectory 'dlssg_sm86'
-    $specs = @(foreach ($name in @('runtime', 'backend', 'kernels', 'xefg')) {
+    $specs = @(foreach ($name in @('runtime', 'backend', 'kernels', 'xefg', 'sr')) {
         @{ Path = (Join-Path $root $name); Target = (Join-Path $ProjectDirectory "dlssg_sm86\$name") }
     })
     return @{ Root = $root; Specs = $specs; Created = [Collections.Generic.List[object]]::new();
@@ -13,7 +13,8 @@ function Assert-DlssgDeployment {
     param($Deployment)
     foreach ($relative in @('dlssg_sm86.ini', 'dlssg_sm86\runtime\nvngx_dlssg.dll',
         'dlssg_sm86\backend\sm86_backend.dll', 'dlssg_sm86\kernels\fg_kernels.dll',
-        'dlssg_sm86\xefg\xefg_kernels.dll')) {
+        'dlssg_sm86\xefg\xefg_kernels.dll', 'dlssg_sm86\sr\sr_kernels.dll',
+        'dlssg_sm86\sr\nvngx_dlss.dll')) {
         $path = Join-Path $Deployment.Project $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing DLSSG resource: $path" }
     }

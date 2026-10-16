@@ -89,8 +89,10 @@ Directory=dlssg_sm86\logs
 Mode=Bundled
 
 [SuperResolution]
-Mode=Off
+Mode=On
 '@
+# Recognize the previous 0.4.0 configuration without INT8 when recovering stale links.
+$previousDiagnosticIni = $diagnosticIni.Replace('[SuperResolution]' + "`r`n" + 'Mode=On', '[SuperResolution]' + "`r`n" + 'Mode=Off')
 
 $linkSpecs = @(
     @{ Path = (Join-Path $renderDir 'version.dll'); Target = $projectDll },
@@ -301,7 +303,7 @@ function Test-StaleDiagnosticIniTarget {
     if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
 
     $contents = [System.IO.File]::ReadAllText($Target)
-    return ($contents -ceq $diagnosticIni -or $contents -ceq $legacyDiagnosticIni)
+    return ($contents -ceq $diagnosticIni -or $contents -ceq $legacyDiagnosticIni -or $contents -ceq $previousDiagnosticIni)
 }
 
 function Assert-LinkOrAbsent {
@@ -439,7 +441,7 @@ try {
 
     if ($DryRun) {
         Install-DlssgResources -Deployment $deployment -DryRun
-        Write-Log '演练模式：环境检查通过。'
+        Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
         Prepare-EngineConfig
