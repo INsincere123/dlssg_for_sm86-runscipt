@@ -2,7 +2,10 @@
 param(
     [switch]$DryRun,
     [switch]$KeepLinks,
-    [switch]$VerboseLog
+    [switch]$VerboseLog,
+    [switch]$RestoreEngineConfig,
+    [string]$ConfigDirectory,
+    [string]$EngineConfigSource = (Join-Path $PSScriptRoot '异环配置\Engine.ini')
 )
 
 Set-StrictMode -Version Latest
@@ -13,6 +16,15 @@ $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
 . (Join-Path $PSScriptRoot 'LauncherResources.ps1')
+. (Join-Path $PSScriptRoot 'NteEngineConfig.ps1')
+$enginePrepared = $false
+$engineOriginalMoved = $false
+$engineRuntimeCreated = $false
+$engineConfigSource = $EngineConfigSource
+if (-not $ConfigDirectory) { $ConfigDirectory = Join-Path $env:LOCALAPPDATA 'HT\Saved\Config\Windows' }
+$engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
+$engineRuntimePath = Join-Path $ConfigDirectory 'Engine.nteconfig-runtime.ini'
+$engineBackupPath = Join-Path $ConfigDirectory 'Engine.ini.before-nteconfig-link'
 $createdLinks = [Collections.Generic.List[string]]::new()
 $setupComplete = $false
 $consoleState = $null
@@ -100,6 +112,94 @@ function Assert-NoRunningProcess {
     if ($running.Count -gt 0) {
         throw "$Description 已经在运行，请先关闭它再使用此脚本。"
     }
+}
+
+function Assert-OwnedEngineRuntime {
+    Assert-FileExists -Path $engineRuntimePath -Description '脚本生成的 Engine.ini 临时副本'
+    # 游戏可能重写副本并移除注释，因此这里只检查它是不是普通文件。
+    $runtimeItem = Get-Item -LiteralPath $engineRuntimePath -Force
+    if ($runtimeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "临时副本被替换为链接，拒绝操作：$engineRuntimePath"
+    }
+}
+
+function Restore-EngineConfig {
+    $item = Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item) {
+        if ($item.LinkType -ne 'SymbolicLink' -or
+            (Get-NormalizedPath ([string]($item.Target -join ''))) -ne (Get-NormalizedPath $engineRuntimePath)) {
+            throw "Engine.ini 已不是本脚本的链接，拒绝覆盖。原文件备份（如存在）：$engineBackupPath"
+        }
+    }
+    Assert-OwnedEngineRuntime
+    if ($DryRun) {
+        Write-Log "演练模式：将移除 Engine.ini 临时链接和副本，并恢复原文件（如存在）：$engineBackupPath"
+        return
+    }
+    if ($null -ne $item) { Remove-Item -LiteralPath $engineConfigPath }
+    if (Test-Path -LiteralPath $engineBackupPath) {
+        Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
+        Write-Log "已恢复原 Engine.ini：$engineConfigPath"
+    }
+    Remove-Item -LiteralPath $engineRuntimePath
+}
+
+function Prepare-EngineConfig {
+    # 固定名称便于中断后恢复；恢复前征求同意，不直接覆盖遗留文件。
+    $leftovers = @(@($engineBackupPath, $engineRuntimePath) | Where-Object {
+        $null -ne (Get-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue)
+    })
+    if ($leftovers.Count -gt 0) {
+        Write-Log "检测到上次运行遗留的画面配置：$($leftovers -join '；')"
+        if ($DryRun) {
+            Write-Log '演练模式：正式运行时将询问是否恢复原 Engine.ini，演练不会修改遗留文件。'
+            return
+        }
+        $answer = Read-Host '是否恢复原 Engine.ini 并继续启动游戏？[y/N]'
+        if ($answer.Trim() -notmatch '^(?i:y|yes|是|同意)$') {
+            throw '已取消启动，遗留配置保持不变。'
+        }
+        # 用户确认期间可能启动了游戏，恢复前再次检查。
+        Assert-NoRunningProcess -Name $launcherProcessName -Description 'NTE launcher'
+        Assert-NoRunningProcess -Name $gameProcessName -Description 'NTE game'
+        Restore-EngineConfig
+        Write-Log '已恢复上次配置，继续准备本次游戏启动。'
+    }
+    $original = Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $original -and (($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $original.PSIsContainer)) {
+        throw "原 Engine.ini 是链接或目录，拒绝替换：$engineConfigPath"
+    }
+    if ($DryRun) {
+        $validatedLines = @(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $engineConfigSource)
+        Write-Log "演练模式：合并加密及回读校验通过，共 $($validatedLines.Count) 行。"
+        Write-Log "演练模式：将备份原 Engine.ini 到 $engineBackupPath（若原文件存在）"
+        Write-Log "演练模式：将从 $engineConfigSource 生成可写副本 $engineRuntimePath"
+        Write-Log "演练模式：将创建软链接 $engineConfigPath -> $engineRuntimePath"
+        return
+    }
+    $encryptedLines = @(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $engineConfigSource)
+    [IO.File]::WriteAllLines($engineRuntimePath, $encryptedLines, [Text.UTF8Encoding]::new($false))
+    $script:engineRuntimeCreated = $true
+    if ($null -ne $original) {
+        Move-Item -LiteralPath $engineConfigPath -Destination $engineBackupPath
+        $script:engineOriginalMoved = $true
+    }
+    New-Item -ItemType SymbolicLink -Path $engineConfigPath -Target $engineRuntimePath | Out-Null
+    $script:enginePrepared = $true
+    Write-Log "已启用画面配置：$engineConfigSource"
+    Write-Log "Engine.ini 软链接：$engineConfigPath -> $engineRuntimePath"
+}
+
+function Undo-EngineConfigSetup {
+    if ($enginePrepared) { Restore-EngineConfig; return }
+    # 包括缺少创建链接权限等部分失败；只撤回本次已经完成的步骤。
+    if ($engineOriginalMoved) {
+        if ($null -ne (Get-Item -LiteralPath $engineConfigPath -Force -ErrorAction SilentlyContinue)) {
+            throw "恢复路径被占用，保留备份：$engineBackupPath"
+        }
+        Move-Item -LiteralPath $engineBackupPath -Destination $engineConfigPath
+    }
+    if ($engineRuntimeCreated) { Remove-Item -LiteralPath $engineRuntimePath }
 }
 
 function Test-StaleDiagnosticIniTarget {
@@ -240,9 +340,16 @@ function Wait-ForGameProcess {
     throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
 }
 
-if (-not $DryRun) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
+if (-not $DryRun -and -not $RestoreEngineConfig) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
 
 try {
+    Assert-NteEnginePaths
+    Assert-NoRunningProcess -Name $launcherProcessName -Description 'NTE launcher'
+    Assert-NoRunningProcess -Name $gameProcessName -Description 'NTE game'
+    if ($RestoreEngineConfig) { Restore-EngineConfig; exit 0 }
+    Assert-FileExists -Path $engineConfigSource -Description '异环明文 Engine.ini 配置源'
+    if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在：$ConfigDirectory" }
+    Write-Log "本次配置目录：$ConfigDirectory"
     Assert-FileExists -Path $launcherExe -Description 'NTE launcher'
     Assert-FileExists -Path $gameExe -Description 'NTE game executable'
     Assert-FileExists -Path $projectProxy -Description 'DLSSG winmm.dll proxy'
@@ -261,11 +368,13 @@ try {
         Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
+        Prepare-EngineConfig
         exit 0
     }
 
     $setupStarted = $true
     Install-DlssgResources -Deployment $deployment
+    Prepare-EngineConfig
     [IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [Text.UTF8Encoding]::new($false))
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
@@ -286,6 +395,7 @@ finally {
     try {
         $gameStillRunning = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue).Count -gt 0
         if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $setupComplete)) {
+            try { Undo-EngineConfigSetup } catch { Write-Warning $_ }
             try { Undo-DlssgResources $deployment } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
@@ -300,6 +410,7 @@ finally {
         }
         elseif ($setupStarted -and $KeepLinks -and -not $DryRun) {
             Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
+            Write-Log '关闭游戏和启动器后，可用 -RestoreEngineConfig 恢复原 Engine.ini。'
         }
 
         if ($setupStarted -and $gameStillRunning) { Write-Warning '游戏仍在运行，保留配置与资源链接。' }
