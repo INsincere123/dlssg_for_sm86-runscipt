@@ -16,6 +16,9 @@ $ErrorActionPreference = 'Stop'
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot 'LauncherResources.ps1')
+$createdLinks = [Collections.Generic.List[string]]::new()
+$setupComplete = $false
 $consoleState = $null
 
 $gameDir = 'C:\Games\Wuthering Waves Game'
@@ -23,10 +26,10 @@ $launcherDir = 'C:\Program Files\Wuthering Waves'
 $launcherExe = Join-Path $launcherDir 'launcher.exe'
 $renderDir = Join-Path $gameDir 'Client\Binaries\Win64'
 $gameExe = Join-Path $renderDir 'Client-Win64-Shipping.exe'
-$projectDir = 'D:\Games\dlssg_for_sm86'
+$projectDir = Split-Path -Parent $PSScriptRoot
 $projectDll = Join-Path $projectDir 'version.dll'
 $storageDll = Join-Path $renderDir '_storage_\version.dll'
-$logDir = Join-Path $renderDir 'dlssg_sm86'
+$logDir = Join-Path $renderDir 'dlssg_sm86\logs'
 $launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-wuthering-{0}.ini" -f $PID)
@@ -40,7 +43,7 @@ $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
 $setupStarted = $false
 
-$diagnosticIni = @'
+$legacyDiagnosticIni = @'
 ; 鸣潮 0.3.2 临时诊断配置。
 ; 由 Run-WutheringWaves-DLSSG.ps1 生成。
 
@@ -63,11 +66,38 @@ Mode=Bundled
 CacheDirectory=
 '@
 
+$diagnosticIni = @'
+; 鸣潮 0.4.0 临时诊断配置。
+; 由 Run-WutheringWaves-DLSSG.ps1 生成。
+
+[General]
+Enabled=1
+
+[FrameGeneration]
+Engine=DLSS
+MaxGeneratedFrames=3
+
+[DLSSG]
+Optimized=2
+Preset=Auto
+
+[Logging]
+Level=2
+Directory=dlssg_sm86\logs
+
+[Runtime]
+Mode=Bundled
+
+[SuperResolution]
+Mode=Off
+'@
+
 $linkSpecs = @(
     @{ Path = (Join-Path $renderDir 'version.dll'); Target = $projectDll },
     @{ Path = (Join-Path $renderDir 'dlssg_sm86.ini'); Target = $diagnosticIniPath }
 )
 
+$deployment = New-DlssgDeployment -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName 'version.dll'
 $storageExistedBefore = $false
 $gameExitCode = $null
 $failed = $false
@@ -271,13 +301,13 @@ function Test-StaleDiagnosticIniTarget {
     if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
 
     $contents = [System.IO.File]::ReadAllText($Target)
-    return $contents -ceq $diagnosticIni
+    return ($contents -ceq $diagnosticIni -or $contents -ceq $legacyDiagnosticIni)
 }
 
 function Assert-LinkOrAbsent {
     param([string]$Path, [string]$ExpectedTarget)
 
-    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($null -eq $item) { return $false }
 
     if ($item.LinkType -ne 'SymbolicLink') {
@@ -316,13 +346,15 @@ function Ensure-Link {
     }
 
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target | Out-Null
+    $createdLinks.Add($Path)
     Write-Log "已创建软链接：$Path -> $Target"
 }
 
 function Remove-ExpectedLink {
     param([string]$Path, [string]$ExpectedTarget)
 
-    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $createdLinks.Contains($Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($null -eq $item) { return }
 
     if ($item.LinkType -eq 'SymbolicLink') {
@@ -368,6 +400,7 @@ function Show-PostRunStatus {
     if ($logs.Count -gt 0) {
         Write-Log ("找到 {0} 个 DLSSG 日志文件" -f $logs.Count)
         Write-Log ("最新日志：{0}" -f $logs[0].FullName)
+        Write-Log '发现日志仅表示有日志文件，帧生成是否生效需检查加载和内核记录。'
     }
     else {
         Write-Warning "目录下未找到 DLSSG 日志：$logDir"
@@ -375,7 +408,7 @@ function Show-PostRunStatus {
 }
 
 # 恢复配置不启动游戏，无需控制台保护；避免终端不支持菜单操作时无法恢复。
-if (-not $RestoreEngineConfig) {
+if (-not $RestoreEngineConfig -and -not $DryRun) {
     $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters
 }
 
@@ -398,12 +431,14 @@ try {
         throw '发现旧 Client\Config\UserEngine.ini，请先备份并移出该文件，再使用当前配置。'
     }
 
+    Assert-DlssgDeployment $deployment
     $storageExistedBefore = Test-Path -LiteralPath $storageDll -PathType Leaf
     if ($storageExistedBefore) {
         Write-Log "发现启动前已存在的 _storage_\\version.dll，将保留。SHA256：$(Get-HashOrNull $storageDll)"
     }
 
     if ($DryRun) {
+        Install-DlssgResources -Deployment $deployment -DryRun
         Write-Log '演练模式：环境检查通过。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
@@ -412,11 +447,13 @@ try {
     }
 
     $setupStarted = $true
+    Install-DlssgResources -Deployment $deployment
     Prepare-EngineConfig
     [System.IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [System.Text.UTF8Encoding]::new($false))
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
 
+    $setupComplete = $true
     Write-Log '正在启动鸣潮官方启动器。本脚本不会绕过或关闭 ACE。'
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
     $process = Wait-ForGameProcess
@@ -429,7 +466,8 @@ catch {
 finally {
     try {
         $gameStillRunning = @(Get-Process -Name $processName -ErrorAction SilentlyContinue).Count -gt 0
-        if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $enginePrepared)) {
+        if ($setupStarted -and -not $DryRun -and -not $gameStillRunning -and (-not $KeepLinks -or -not $setupComplete)) {
+            try { Undo-DlssgResources $deployment } catch { Write-Warning $_ }
             try { Undo-EngineConfigSetup } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
@@ -443,7 +481,7 @@ finally {
             Write-Warning '游戏仍在运行，保留配置链接与备份。关闭游戏和启动器后可用 -RestoreEngineConfig 恢复 Engine.ini。'
         }
 
-        if ($setupStarted -and -not $KeepLinks -and -not $gameStillRunning -and (Test-Path -LiteralPath $diagnosticIniPath -PathType Leaf)) {
+        if ($setupStarted -and -not $DryRun -and (-not $KeepLinks -or -not $setupComplete) -and -not $gameStillRunning -and (Test-Path -LiteralPath $diagnosticIniPath -PathType Leaf)) {
             Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
         }
 
