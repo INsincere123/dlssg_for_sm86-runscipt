@@ -40,12 +40,19 @@ function Install-DlssgResources {
     param($Deployment, [switch]$DryRun)
     Assert-DlssgDeployment $Deployment
     foreach ($spec in $Deployment.Specs) {
-        if ($null -ne (Get-Item -LiteralPath $spec.Path -Force -ErrorAction SilentlyContinue)) { continue }
+        if ($null -ne (Get-Item -LiteralPath $spec.Path -Force -ErrorAction SilentlyContinue)) {
+            if (-not $DryRun) { Register-ReusedDeploymentLink -Path $spec.Path -Target $spec.Target }
+            continue
+        }
         if ($DryRun) { Write-Host "DryRun: link $($spec.Path) -> $($spec.Target)"; continue }
         if (-not (Test-Path -LiteralPath $Deployment.Root)) {
+            $record = Start-DeploymentOperation -Kind directory -Path $Deployment.Root
             New-Item -ItemType Directory -Path $Deployment.Root | Out-Null
+            Complete-DeploymentOperation $record
         }
+        $record = Start-DeploymentOperation -Kind link -Path $spec.Path -Target $spec.Target
         New-Item -ItemType SymbolicLink -Path $spec.Path -Target $spec.Target | Out-Null
+        Complete-DeploymentOperation $record
         $Deployment.Created.Add($spec)
         Write-Host "Resource link: $($spec.Path) -> $($spec.Target)"
     }

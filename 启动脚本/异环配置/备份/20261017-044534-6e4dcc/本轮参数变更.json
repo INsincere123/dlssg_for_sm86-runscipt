@@ -1,0 +1,46 @@
+{
+  "before_sha256": "F31A9BF8725EFF410D135E30F2B39314E473BB6F6B9132646257429CBB4B984C",
+  "after_sha256": "E7DB57D4692517D7B852116BB07CFB7EBFCCD9B00E65C77D37824E77A83291E2",
+  "changes": [
+    {
+      "key": "r.Lumen.Reflections.MaxRoughnessToTraceClamp",
+      "before": "未覆盖（游戏默认值未知）",
+      "after": "0.3"
+    },
+    {
+      "key": "r.Lumen.Reflections.MaxRoughnessToTraceForFoliage",
+      "before": "未覆盖（游戏默认值未知）",
+      "after": "0.2"
+    },
+    {
+      "key": "r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution",
+      "before": "未覆盖（游戏默认值未知）",
+      "after": "16"
+    },
+    {
+      "key": "r.ViewDistanceScale",
+      "before": "0.9",
+      "after": "0.85"
+    },
+    {
+      "key": "r.StaticMeshLODDistanceScale",
+      "before": "1.0",
+      "after": "1.1"
+    },
+    {
+      "key": "foliage.LODDistanceScale",
+      "before": "1.0",
+      "after": "0.9"
+    },
+    {
+      "key": "grass.CullDistanceScale",
+      "before": "未覆盖（游戏默认值未知）",
+      "after": "0.9"
+    },
+    {
+      "key": "r.Shadow.DistanceScale",
+      "before": "未覆盖（游戏默认值未知）",
+      "after": "0.85"
+    }
+  ]
+}

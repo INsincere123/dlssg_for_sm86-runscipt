@@ -1,0 +1,21 @@
+{
+  "created": "20261017-044534-6e4dcc",
+  "purpose": "异环UE5.6用户偏好优化前备份",
+  "files": [
+    {
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\Engine.ini",
+      "backup": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\Engine.ini",
+      "sha256": "F31A9BF8725EFF410D135E30F2B39314E473BB6F6B9132646257429CBB4B984C"
+    },
+    {
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\Engine.正式组合.ini",
+      "backup": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\Engine.正式组合.ini",
+      "sha256": "F31A9BF8725EFF410D135E30F2B39314E473BB6F6B9132646257429CBB4B984C"
+    },
+    {
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\优化测试说明.md",
+      "backup": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\优化测试说明.md",
+      "sha256": "4A81F1AB832F400F1256D6DBCFE1EB77864E56692A111F452A4A34F8E23A63EA"
+    }
+  ]
+}
