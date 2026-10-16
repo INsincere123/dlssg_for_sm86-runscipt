@@ -114,15 +114,16 @@ try {
     Start-TestJournal
     Register-ReusedDeploymentLink $linkSpecs[0].Path $linkSpecs[0].Target
     [IO.File]::WriteAllText($linkSpecs[0].Path,'preexisting')
-    Reload-TestJournal; Restore-RecordedDeployment
-    Assert-Test (Test-Path -LiteralPath $linkSpecs[0].Path) 'Reused path removed.'
+    Reload-TestJournal; Expect-Failure { Restore-RecordedDeployment }
+    Assert-Test (Test-Path -LiteralPath $linkSpecs[0].Path) 'Unrecognized replacement removed.'
     Remove-Item -LiteralPath $linkSpecs[0].Path
+    Reload-TestJournal; Restore-RecordedDeployment
     Start-TestJournal
     $script:journalContext.GameProcess=(Get-Process -Id $PID).ProcessName
     Expect-Failure { Restore-RecordedDeployment }
     Assert-Test (Test-Path -LiteralPath $script:journalPath) 'Running process lost journal.'
     $script:journalContext.GameProcess='DLSSG_NoSuchGame'; Restore-RecordedDeployment
-    Write-Host 'PASS: reused resources preserved and running process blocks recovery.'
+    Write-Host 'PASS: reused link replacement preserved and running process blocks recovery.'
 
     $source=Join-Path $launcherRoot '异环配置\Engine.ini'
     $encrypted=@(Convert-NteEngineConfig -OriginalPath $engineConfigPath -SourcePath $source)
@@ -210,13 +211,61 @@ try {
         Reload-TestJournal; Restore-RecordedDeployment
         Assert-Test ($virtualLinks.Count -eq 0) 'Owned link not removed.'
         Assert-Test ([IO.File]::ReadAllText($engineConfigPath) -eq 'original') 'Linked runtime restoration failed.'
+        Remove-Item -LiteralPath $engineConfigPath
+
+        Start-TestJournal
+        $virtualLinks[$linkSpecs[0].Path]=$linkSpecs[0].Target
+        # Old journal format: ownership used to be recorded only in Reused.
+        $script:deploymentJournal.Reused=@([pscustomobject]@{Path=$linkSpecs[0].Path;Target=$linkSpecs[0].Target})
+        Save-DeploymentJournal; Reload-TestJournal
+        Restore-RecordedDeployment -Preview
+        Assert-Test ($virtualLinks.Count -eq 1) 'Preview removed old reused link.'
+        Restore-RecordedDeployment -EngineOnly
+        Assert-Test (Test-Path -LiteralPath $script:journalPath) 'Engine-only discarded old reused journal.'
+        Restore-RecordedDeployment
+        Assert-Test ($virtualLinks.Count -eq 0) 'Old reused link survived recovery.'
+
+        $virtualLinks[$linkSpecs[0].Path]=$linkSpecs[0].Target
+        $virtualLinks[$deployment.Specs[0].Path]=$deployment.Specs[0].Target
+        Restore-LegacyResourceDeployment -Preview
+        Assert-Test ($virtualLinks.Count -eq 2) 'Legacy preview removed links.'
+        Restore-LegacyResourceDeployment
+
+        Start-TestJournal
+        $virtualLinks[$linkSpecs[0].Path]=$linkSpecs[0].Target
+        Reload-TestJournal; Restore-RecordedDeployment
+        Assert-Test ($virtualLinks.Count -eq 0) 'Unregistered owned link survived partial setup recovery.'
+        Assert-Test ($virtualLinks.Count -eq 0) 'Unjournaled legacy links survived.'
+        Assert-Test (-not (Test-Path -LiteralPath $script:journalPath)) 'Legacy recovery retained completed journal.'
+        Restore-LegacyResourceDeployment
+
+        Start-TestJournal
+        [IO.File]::WriteAllText($linkSpecs[0].Path,'unrecorded foreign file')
+        Expect-Failure { Restore-RecordedDeployment }
+        Assert-Test (Test-Path -LiteralPath $script:journalPath) 'Residue verification discarded journal.'
+        Remove-Item -LiteralPath $linkSpecs[0].Path
+        Reload-TestJournal; Restore-RecordedDeployment
+
+        Start-TestJournal
+        $script:deploymentJournal.Reused=@([pscustomobject]@{Path=(Join-Path $testRoot 'foreign');Target=$linkSpecs[0].Target})
+        Save-DeploymentJournal
+        Expect-Failure { Restore-RecordedDeployment }
+        $script:deploymentJournal.Reused=@(); Save-DeploymentJournal; Restore-RecordedDeployment
     }
     finally {
         Set-Item Function:\Get-JournalItem $getItemImplementation
         Microsoft.PowerShell.Management\Remove-Item Function:\Remove-Item
     }
-    Remove-Item -LiteralPath $engineConfigPath
-    Write-Host 'PASS: matching simulated file-link removal and real original restoration.'
+    Write-Host 'PASS: simulated links, old Reused journal migration, unjournaled legacy recovery, preview, residue detection and reused path validation.'
+
+    [IO.File]::WriteAllText($storageDll,'proxy')
+    Restore-LegacyResourceDeployment
+    Assert-Test (-not (Test-Path -LiteralPath $storageDll)) 'Legacy owned storage survived.'
+    [IO.File]::WriteAllText($storageDll,'foreign')
+    Restore-LegacyResourceDeployment
+    Assert-Test (Test-Path -LiteralPath $storageDll) 'Foreign legacy storage deleted.'
+    Remove-Item -LiteralPath $storageDll
+    Write-Host 'PASS: legacy storage hash ownership and unrelated DLL preservation.'
 
     $windowsIdentity=[Security.Principal.WindowsIdentity]::GetCurrent()
     try { $elevated=([Security.Principal.WindowsPrincipal]::new($windowsIdentity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }

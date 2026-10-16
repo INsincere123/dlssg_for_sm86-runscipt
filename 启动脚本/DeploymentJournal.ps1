@@ -208,9 +208,119 @@ function Complete-DeploymentOperation {
 
 function Register-ReusedDeploymentLink {
     param([string]$Path, [string]$Target)
+    Assert-DeploymentLinkSpec -Path $Path -Target $Target
     if ($null -ne $script:deploymentJournal) {
-        $script:deploymentJournal.Reused = @($script:deploymentJournal.Reused) + @([pscustomobject]@{ Path=$Path; Target=$Target })
-        Save-DeploymentJournal
+        # A validated link to this deployment is ours even when an older run created it.
+        if (@($script:deploymentJournal.Operations | Where-Object { $_.Kind -eq 'link' -and (Get-NormalizedPath $_.Path) -eq (Get-NormalizedPath $Path) }).Count -eq 0) {
+            $op = Start-DeploymentOperation -Kind link -Path $Path -Target $Target
+            Complete-DeploymentOperation $op
+        }
+    }
+}
+
+function Assert-DeploymentLinkSpec {
+    param([string]$Path, [string]$Target)
+    $key = Get-NormalizedPath $Path
+    $targetKey = Get-NormalizedPath $Target
+    foreach ($spec in (@($deployment.Specs) + @($linkSpecs[0]))) {
+        if ($key -eq (Get-NormalizedPath $spec.Path) -and $targetKey -eq (Get-NormalizedPath $spec.Target)) {
+            Assert-JournalOrdinaryParents $Path
+            return
+        }
+    }
+    if ($key -eq (Get-NormalizedPath $linkSpecs[1].Path) -and
+        (Split-Path -Parent $targetKey) -eq (Get-NormalizedPath $env:TEMP) -and
+        [IO.Path]::GetFileName($targetKey) -match ('^' + [regex]::Escape($script:journalContext.DiagnosticPrefix) + '\d+\.ini$')) {
+        Assert-JournalOrdinaryParents $Path
+        return
+    }
+    throw "Unexpected reused link: $Path -> $Target"
+}
+
+function Register-OwnedStorageDll {
+    $item = Get-JournalItem $storageDll
+    if ($null -eq $item) { return }
+    Assert-JournalOrdinaryParents $storageDll
+    if (-not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        (Get-HashOrNull $storageDll) -eq (Get-HashOrNull $linkSpecs[0].Target)) {
+        if (@($script:deploymentJournal.Operations | Where-Object Kind -eq 'storage').Count -eq 0) {
+            $op = Start-DeploymentOperation storage $storageDll '' (Get-HashOrNull $storageDll)
+            Complete-DeploymentOperation $op
+        }
+    }
+}
+
+function Import-ReusedDeploymentLinks {
+    # Upgrade journals written before reused links were included in recovery.
+    foreach ($link in @($script:deploymentJournal.Reused)) { Assert-DeploymentLinkSpec -Path $link.Path -Target $link.Target }
+    foreach ($link in @($script:deploymentJournal.Reused)) {
+        Register-ReusedDeploymentLink -Path $link.Path -Target $link.Target
+    }
+    # Also cover interruption before an existing link could be registered by setup.
+    foreach ($spec in (@($deployment.Specs) + @($linkSpecs[0]))) {
+        Assert-JournalOrdinaryParents $spec.Path
+        $item = Get-JournalItem $spec.Path
+        if ($null -ne $item -and $item.LinkType -eq 'SymbolicLink' -and
+            (Get-NormalizedPath ([string]($item.Target -join ''))) -eq (Get-NormalizedPath $spec.Target)) {
+            Register-ReusedDeploymentLink -Path $spec.Path -Target $spec.Target
+        }
+    }
+    Register-OwnedStorageDll
+    Assert-DeploymentJournal
+}
+
+function Restore-LegacyResourceDeployment {
+    param([switch]$Preview)
+    Assert-RecoveryProcessesStopped
+    $owned = @()
+    foreach ($spec in (@($deployment.Specs) + @($linkSpecs[0]))) {
+        Assert-JournalOrdinaryParents $spec.Path
+        $item = Get-JournalItem $spec.Path
+        if ($null -eq $item) { continue }
+        if ($item.LinkType -ne 'SymbolicLink' -or
+            (Get-NormalizedPath ([string]($item.Target -join ''))) -ne (Get-NormalizedPath $spec.Target)) {
+            throw "Unrecognized resource preserved: $($spec.Path)"
+        }
+        $owned += $spec
+    }
+    $ini = Get-JournalItem $linkSpecs[1].Path
+    $diagnosticTarget = $null
+    if ($null -ne $ini) {
+        if ($ini.LinkType -ne 'SymbolicLink') { throw 'Unrecognized diagnostic INI preserved.' }
+        $diagnosticTarget = [string]($ini.Target -join '')
+        if (-not (Test-StaleDiagnosticIniTarget -Path $linkSpecs[1].Path -Target $diagnosticTarget)) { throw 'Unrecognized diagnostic target preserved.' }
+        Assert-DeploymentLinkSpec -Path $linkSpecs[1].Path -Target $diagnosticTarget
+        $owned += @{ Path=$linkSpecs[1].Path; Target=$diagnosticTarget }
+    }
+    $storage = Get-JournalItem $storageDll
+    $ownedStorage = $null -ne $storage -and -not $storage.PSIsContainer -and
+        -not ($storage.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        (Get-HashOrNull $storageDll) -eq (Get-HashOrNull $linkSpecs[0].Target)
+    if ($Preview) {
+        foreach ($spec in $owned) { Write-Host "Recovery: legacy link $($spec.Path)" }
+        if ($ownedStorage) { Write-Host "Recovery: legacy storage $storageDll" }
+        return
+    }
+    if ($owned.Count -gt 0 -or $ownedStorage) {
+        New-DeploymentJournal
+        if ($null -ne $diagnosticTarget) {
+            $op = Start-DeploymentOperation diagnostic $diagnosticTarget '' (Get-HashOrNull $diagnosticTarget)
+            Complete-DeploymentOperation $op
+        }
+        foreach ($spec in $owned) { Register-ReusedDeploymentLink -Path $spec.Path -Target $spec.Target }
+        Register-OwnedStorageDll
+        Restore-RecordedDeployment
+    }
+    else { Assert-DeploymentResourcesRemoved }
+}
+
+function Assert-DeploymentResourcesRemoved {
+    # Logs may remain. Loadable proxy/resource links and temporary configuration may not.
+    foreach ($path in (@($deployment.Specs | ForEach-Object { $_.Path }) + @($linkSpecs | ForEach-Object { $_.Path }) + @($engineRuntimePath, $engineBackupPath))) {
+        if ($null -ne (Get-JournalItem $path)) { throw "Deployment residue preserved; recovery incomplete: $path" }
+    }
+    if ($null -ne (Get-JournalItem $storageDll) -and (Get-HashOrNull $storageDll) -eq (Get-HashOrNull $linkSpecs[0].Target)) {
+        throw "Owned storage DLL remains: $storageDll"
     }
 }
 
@@ -231,6 +341,7 @@ function Restore-RecordedDeployment {
         if (@(Get-Process -ErrorAction Stop | Where-Object ProcessName -eq $script:journalContext.GameProcess).Count) { throw 'Game still running; deployment preserved.' }
     } else { Assert-RecoveryProcessesStopped }
     if (-not $Preview) { Set-DeploymentPhase 'recovering' }
+    if (-not $Preview -and -not $EngineOnly) { Import-ReusedDeploymentLinks }
     $ops = @($script:deploymentJournal.Operations)
     # Restore Engine.ini first; unrelated resource conflicts must not prevent original restoration.
     $ordered = @()
@@ -304,7 +415,8 @@ function Restore-RecordedDeployment {
         Save-DeploymentJournal
     }
     if ($conflicts.Count) { throw ('Recovery incomplete; journal retained: ' + ($conflicts -join '; ')) }
-    if (-not $Preview -and @($ops | Where-Object State -ne 'restored').Count -eq 0) {
+    if (-not $Preview -and -not $EngineOnly -and @($ops | Where-Object State -ne 'restored').Count -eq 0) {
+        Assert-DeploymentResourcesRemoved
         [IO.File]::Delete($script:journalPath)
         $script:deploymentJournal = $null
         Write-Host 'Deployment recovery complete.'
