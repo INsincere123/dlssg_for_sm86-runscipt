@@ -6,7 +6,7 @@ param(
     [switch]$RestoreEngineConfig,
     [switch]$RestoreDeployment,
     [string]$ConfigDirectory,
-    [string]$EngineConfigSource = (Join-Path $PSScriptRoot '异环配置\Engine.ini')
+    [string]$EngineConfigSource
 )
 
 Set-StrictMode -Version Latest
@@ -22,6 +22,7 @@ try {
 $enginePrepared = $false
 $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
+if (-not $EngineConfigSource) { $EngineConfigSource = Join-Path $PSScriptRoot '异环配置\Engine.ini' }
 $engineConfigSource = $EngineConfigSource
 if (-not $ConfigDirectory) { $ConfigDirectory = Join-Path $env:LOCALAPPDATA 'HT\Saved\Config\Windows' }
 $engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
@@ -363,7 +364,7 @@ try {
     if ($RestoreDeployment) {
         if ($null -ne $script:deploymentJournal) { Restore-RecordedDeployment -Preview:$DryRun }
         elseif ($null -ne (Get-JournalItem $engineBackupPath) -or $null -ne (Get-JournalItem $engineRuntimePath)) { Restore-EngineConfig }
-        else { Write-Log '没有需要恢复的部署记录。' }
+        Restore-LegacyResourceDeployment -Preview:$DryRun
         exit 0
     }
     if ($RestoreEngineConfig) {
@@ -387,7 +388,7 @@ try {
     Assert-DlssgDeployment $deployment
     $storageExistedBefore = Test-Path -LiteralPath $storageDll -PathType Leaf
     if ($storageExistedBefore) {
-        Write-Log "发现启动前已存在的 _storage_\winmm.dll，将保留。SHA256：$(Get-HashOrNull $storageDll)"
+        Write-Log "发现启动前已存在的 _storage_\winmm.dll，将按项目代理哈希核验归属。SHA256：$(Get-HashOrNull $storageDll)"
     }
 
     if ($DryRun) {
@@ -402,6 +403,7 @@ try {
     Test-DeploymentInputs
     New-DeploymentJournal
     $setupStarted = $true
+    Register-OwnedStorageDll
     Install-DlssgResources -Deployment $deployment
     Prepare-EngineConfig
     $record = Start-DeploymentOperation -Kind diagnostic -Path $diagnosticIniPath -Hash (Get-JournalTextHash $diagnosticIni)
