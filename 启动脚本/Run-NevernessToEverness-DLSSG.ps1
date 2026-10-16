@@ -24,6 +24,32 @@ $gameExe = Join-Path $renderDir 'HTGame.exe'
 $projectDir = Split-Path -Parent $PSScriptRoot
 $projectProxy = Join-Path $projectDir 'alternatives\winmm.dll'
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
+$diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-nte-{0}.ini" -f $PID)
+$diagnosticIni = @'
+; 异环 0.4.0 临时诊断配置。
+; 由 Run-NevernessToEverness-DLSSG.ps1 生成。
+
+[General]
+Enabled=1
+
+[FrameGeneration]
+Engine=DLSS
+MaxGeneratedFrames=3
+
+[DLSSG]
+Optimized=2
+Preset=Auto
+
+[Logging]
+Level=2
+Directory=dlssg_sm86\logs
+
+[Runtime]
+Mode=Bundled
+
+[SuperResolution]
+Mode=On
+'@
 $storageDll = Join-Path $renderDir '_storage_\winmm.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
 $launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
@@ -37,7 +63,7 @@ $setupStarted = $false
 
 $linkSpecs = @(
     @{ Path = (Join-Path $renderDir 'winmm.dll'); Target = $projectProxy },
-    @{ Path = (Join-Path $renderDir 'dlssg_sm86.ini'); Target = $projectIni }
+    @{ Path = (Join-Path $renderDir 'dlssg_sm86.ini'); Target = $diagnosticIniPath }
 )
 
 function Write-Log {
@@ -76,6 +102,18 @@ function Assert-NoRunningProcess {
     }
 }
 
+function Test-StaleDiagnosticIniTarget {
+    param([string]$Path, [string]$Target)
+
+    if ((Get-NormalizedPath $Path) -ne (Get-NormalizedPath $linkSpecs[1].Path)) { return $false }
+    if ((Split-Path -Parent (Get-NormalizedPath $Target)) -ne (Get-NormalizedPath $env:TEMP)) { return $false }
+    if ([System.IO.Path]::GetFileName($Target) -notmatch '^dlssg_sm86-nte-\d+\.ini$') { return $false }
+    if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
+
+    $contents = [System.IO.File]::ReadAllText($Target)
+    return ($contents -ceq $diagnosticIni)
+}
+
 function Assert-LinkOrAbsent {
     param([string]$Path, [string]$ExpectedTarget)
 
@@ -88,6 +126,24 @@ function Assert-LinkOrAbsent {
 
     $actualTarget = [string](($item.Target -join ''))
     if ((Get-NormalizedPath $actualTarget) -ne (Get-NormalizedPath $ExpectedTarget)) {
+        if ((Get-NormalizedPath $Path) -eq (Get-NormalizedPath $linkSpecs[1].Path) -and
+            (Get-NormalizedPath $actualTarget) -eq (Get-NormalizedPath $projectIni)) {
+            if (-not $DryRun) { Remove-Item -LiteralPath $Path }
+            Write-Log '将原仓库 INI 链接迁移为本次临时配置；仓库文件保持不变。'
+            return $false
+        }
+        if (Test-StaleDiagnosticIniTarget -Path $Path -Target $actualTarget) {
+            if ($DryRun) {
+                Write-Log "演练模式：将清理脚本生成的过期临时配置软链接：$Path -> $actualTarget"
+                return $false
+            }
+
+            Remove-Item -LiteralPath $Path
+            Remove-Item -LiteralPath $actualTarget
+            Write-Log "已清理脚本生成的过期临时配置软链接及文件：$Path"
+            return $false
+        }
+
         throw "拒绝替换指向异常目标的软链接：$Path -> $actualTarget"
     }
 
@@ -202,7 +258,7 @@ try {
 
     if ($DryRun) {
         Install-DlssgResources -Deployment $deployment -DryRun
-        Write-Log '演练模式：环境检查通过。'
+        Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
         exit 0
@@ -210,6 +266,7 @@ try {
 
     $setupStarted = $true
     Install-DlssgResources -Deployment $deployment
+    [IO.File]::WriteAllText($diagnosticIniPath, $diagnosticIni, [Text.UTF8Encoding]::new($false))
     Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
     Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
 
@@ -233,6 +290,13 @@ finally {
             try { Remove-ExpectedLink -Path $linkSpecs[1].Path -ExpectedTarget $linkSpecs[1].Target } catch { Write-Warning $_ }
             try { Remove-ExpectedLink -Path $linkSpecs[0].Path -ExpectedTarget $linkSpecs[0].Target } catch { Write-Warning $_ }
             try { Remove-GeneratedStorageDll } catch { Write-Warning $_ }
+            # Preserve the temporary file if its link could not be removed.
+            $iniLink = Get-Item -LiteralPath $linkSpecs[1].Path -Force -ErrorAction SilentlyContinue
+            $tempStillLinked = $null -ne $iniLink -and $iniLink.LinkType -eq 'SymbolicLink' -and
+                (Get-NormalizedPath ([string]($iniLink.Target -join ''))) -eq (Get-NormalizedPath $diagnosticIniPath)
+            if (-not $tempStillLinked) {
+                Remove-Item -LiteralPath $diagnosticIniPath -ErrorAction SilentlyContinue
+            }
         }
         elseif ($setupStarted -and $KeepLinks -and -not $DryRun) {
             Write-Log '已指定 KeepLinks，临时软链接和 storage 文件不会删除。'
