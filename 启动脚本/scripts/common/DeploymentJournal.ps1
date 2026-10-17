@@ -55,7 +55,7 @@ function Open-DeploymentJournal {
         Runtime = [IO.Path]::GetFullPath($engineRuntimePath); Backup = [IO.Path]::GetFullPath($engineBackupPath)
         DiagnosticPrefix = $DiagnosticPrefix
     }
-    $script:journalPath = Join-Path $PSScriptRoot ".state\$GameId\active.json"
+    $script:journalPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".state\$GameId\active.json"
     Assert-JournalOrdinaryParents $script:journalPath
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $identity = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-NormalizedPath $renderDir))))).Replace('-', '') }

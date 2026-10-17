@@ -4,6 +4,7 @@ param(
     [switch]$KeepLinks,
     [switch]$VerboseLog,
     [string]$ConfigDirectory,
+    [string]$EngineConfigSource,
     [switch]$RestoreEngineConfig,
     [switch]$RestoreDeployment,
     [ValidateRange(1, 3600)]
@@ -13,29 +14,35 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'ScriptLogging.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherConfig.ps1')
+$launcherRoot = Get-LauncherRoot
+
+. (Join-Path $PSScriptRoot '..\common\ScriptLogging.ps1')
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
-. (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
-. (Join-Path $PSScriptRoot 'LauncherResources.ps1')
-. (Join-Path $PSScriptRoot 'DeploymentJournal.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherResources.ps1')
+. (Join-Path $PSScriptRoot '..\common\DeploymentJournal.ps1')
+$settings = Get-LauncherGameSettings -GameId 'Wuthering' -Overrides $PSBoundParameters
 $createdLinks = [Collections.Generic.List[string]]::new()
 $setupComplete = $false
 $consoleState = $null
 
-$gameDir = 'C:\Games\Wuthering Waves Game'
-$launcherDir = 'C:\Program Files\Wuthering Waves'
-$launcherExe = Join-Path $launcherDir 'launcher.exe'
+$gameDir = $settings.GameDirectory
+$launcherExe = $settings.LauncherPath
+$launcherDir = if ($launcherExe) { Split-Path -Parent $launcherExe } else { '' }
+$ConfigDirectory = $settings.ConfigDirectory
+$RestartGraceSeconds = $settings.RestartGraceSeconds
 $renderDir = Join-Path $gameDir 'Client\Binaries\Win64'
 $gameExe = Join-Path $renderDir 'Client-Win64-Shipping.exe'
-$projectDir = Split-Path -Parent $PSScriptRoot
+$projectDir = Split-Path -Parent $launcherRoot
 $projectDll = Join-Path $projectDir 'version.dll'
 $storageDll = Join-Path $renderDir '_storage_\version.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
-$launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
+$launcherProcessName = if ($launcherExe) { [IO.Path]::GetFileNameWithoutExtension($launcherExe) } else { 'launcher' }
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-wuthering-{0}.ini" -f $PID)
-$engineConfigSource = 'D:\Games\WuWa-Configs\当前配置\Engine.ini'
+$engineConfigSource = $settings.EngineConfigSource
 $engineConfigPath = $null
 $engineRuntimePath = $null
 $engineBackupPath = $null
@@ -431,6 +438,7 @@ if (-not $RestoreEngineConfig -and -not $RestoreDeployment -and -not $DryRun) {
 try {
     Assert-NoGameProcess
     $resolvedConfigDir = Resolve-EngineConfigDirectory
+    $resolvedConfigDir = Save-LauncherDetectedConfigDirectory -GameId Wuthering -Directory $resolvedConfigDir -Overrides $PSBoundParameters
     $engineConfigPath = Join-Path $resolvedConfigDir 'Engine.ini'
     $engineRuntimePath = Join-Path $resolvedConfigDir 'Engine.wuwaconfig-runtime.ini'
     $engineBackupPath = Join-Path $resolvedConfigDir 'Engine.ini.before-wuwaconfig-link'

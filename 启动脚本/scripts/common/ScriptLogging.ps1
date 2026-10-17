@@ -1,7 +1,7 @@
 ﻿# Shared transcript support for launcher entry scripts (Windows PowerShell 5.1+).
 function Start-LauncherLog {
     param([Parameter(Mandatory=$true)][string]$ScriptPath)
-    $directory = Join-Path (Split-Path -Parent $ScriptPath) 'logs'
+    $directory = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'logs'
     New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
     # Only remove ordinary log files in this script directory; locked logs are kept.
     $cutoff = (Get-Date).AddHours(-24)

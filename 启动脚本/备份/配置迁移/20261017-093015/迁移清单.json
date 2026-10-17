@@ -1,0 +1,263 @@
+﻿{
+  "created": "20261017-093015",
+  "external_root": "D:\\Games\\WuWa-Configs",
+  "external_working_files": {
+    "AGENTS.md": "0379320fb5018b0cb9d446690e585ef7501bb1959cd6c60b4c02de6371c9d4dc",
+    "Engine带注释.ini": "f7320654b64beefbedba17af7e7bb5f8e891e73ebdf1acd7b1651fca04a165e4",
+    "README.md": "d669dd508699765776a7784a54665f4d65d5f89d23a3a806a221e357e044487b",
+    "Common\\DeviceProfiles.ini": "5e6609b3dba74bafb1ec4fa6f25d6ad2235f1cbf5180cadae8d746932397dabb",
+    "Common\\Input.ini": "99525fd184f1b5484c57160f26fa2b076e2fc97099392dfcec73c13b2eb8cb56",
+    "Config 1\\Engine.ini": "774af3b0b48087b74fcb087e0d34582873ec1ba6ae0c941718841dfc6be27936",
+    "Config 2\\Engine.ini": "f7320654b64beefbedba17af7e7bb5f8e891e73ebdf1acd7b1651fca04a165e4",
+    "Config 3\\Engine.ini": "141b1b5997ff69ef646ac3406a494199fab0c1987e6b2f12ab7d34c7794389c3",
+    "Config 4\\Engine.ini": "bbee8acc5105f34def40f3759a2d067502a26ccd42ff48a3889b8aeaa0baec2e",
+    "Config 5\\Engine.ini": "627231c60d3454d04450d622599df321b6873fc551a2758b662fe80cde461652",
+    "RT Configs\\README.md": "a1aa1b01314d019c2a8b87c6606ac6b04dcaf49acea5e5529eb58edb2aafd02c",
+    "当前配置\\Engine.ini": "2bfd63dfff39998172f53d6e59a5f42fe14c366bd907cf70b5374bd2655d4558",
+    "当前配置\\Engine.仅流送.ini": "8968e592f8c0117f1cb6b61bf6787a251b2a8d1a59142f6f1d1e0a7447729c3d",
+    "当前配置\\Engine.原配置.ini": "b654bdacf947f3fdaa3fdfe6df755e0cabf24864b663608161e4ab85c8dc1719",
+    "当前配置\\Engine.正式组合.ini": "88c2ac822bc1aa647ca6c9b9aebf32ee206ae4e7f9fad6328f41e8775259e611",
+    "当前配置\\Engine.缓存候选.ini": "5b90275138a580bb5711a8e1b77a558af29c5671fc7cca6ea5590b092da84d39",
+    "当前配置\\Engine.远景候选.ini": "8a14dd38c2ca6fd36bc3a0a10f9c2ae3a82d8ee179f5eadec197a7d08edf856b",
+    "当前配置\\优化测试说明.md": "9bbc4acc1e469cc9a573e4bacd1135c2c46d836e2c82351797700c8e1eda9cb7",
+    "当前配置\\使用说明.md": "98521ae8ca889b16d4d81e84b7776d590e24b2e37a98e8e9b7d6489ebe4441a9",
+    "当前配置\\备份\\20261017-041728-ac5d29\\Engine.ini": "b654bdacf947f3fdaa3fdfe6df755e0cabf24864b663608161e4ab85c8dc1719",
+    "当前配置\\备份\\20261017-041728-ac5d29\\备份记录.json": "0191ec9ddeba366899d607b81419bc533eee51b2f8f2a695b390db3cb1b99856"
+  },
+  "external_status": "# branch.oid f0bf1059e27778a56da9bea7e7ca48af828d524d\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n1 .M N... 100644 100644 100644 57689d96720a226386f23fa31dd1f288af124495 57689d96720a226386f23fa31dd1f288af124495 Config 2/Engine.ini\n? AGENTS.md\n? \"Engine\\345\\270\\246\\346\\263\\250\\351\\207\\212.ini\"\n? \"\\345\\275\\223\\345\\211\\215\\351\\205\\215\\347\\275\\256/\"\n",
+  "files": [
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\Engine.ini",
+      "sha256": "a9c871bc67864a26536799ef14e91025bf6d0b5304489d9c1b0e9a907b4eed4c"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\优化测试说明.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\优化测试说明.md",
+      "sha256": "24c3b05bff5b6d87f2ed68d42eceba89c093d09d1c146c804b4938a52adff26f",
+      "updated_document_sha256": "d20965d5957d8fd6d771e2c0147a603b06b7828283794cf616fb17576ac9f11d"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\偏好优化说明.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\偏好优化说明.md",
+      "sha256": "fa41e5a95921f54c465761944e4f87335df3c142ee74f974c760d9fcad0c1724",
+      "updated_document_sha256": "776fc034ded25a45f752e51a1bd12daef8e6f288c8c1af026dc058ff6091399e"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\test\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\test\\Engine.ini",
+      "sha256": "bdc2fe4a8b27022ad16390826ccace902abfa973cee3b4e9660603e7cb9a6eb6"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\test\\Engine.plain.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\test\\Engine.plain.ini",
+      "sha256": "75f797b8cb3e47b2ab6482182e9cbdd7a426f3ab6a0370979450a2e2ee5d715b"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.仅Lumen优化.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.仅Lumen优化.ini",
+      "sha256": "90251de857be757bcec34a8bb948957c730e4000c63d95475eb42b8824eb2a4b"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.仅城市.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.仅城市.ini",
+      "sha256": "ecac864f809b151549260b4bef896fab8c3bd88f469d650e0697dd3ff127ffac"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.仅流送.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.仅流送.ini",
+      "sha256": "fa2224e8ed417715e0ea0904bec829cbd8e9aa2382547d6299b23638ea422c43"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.仅远景阴影优化.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.仅远景阴影优化.ini",
+      "sha256": "3de25c3dcf0ce69904951dc90874ae0871ebe098897038164ab5855c3653e1fe"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.缓存候选.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.缓存候选.ini",
+      "sha256": "4c341e214535e219c6ef5bc9748244c595c22dd67bab58bd7dc6d4b270717200"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\候选\\Engine.远景候选.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\候选\\Engine.远景候选.ini",
+      "sha256": "5c6a668f4e21d1c94b2a26d20040d462ddb00434faa5b99aeb79a5dcff98155a"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\基底\\Engine.偏好优化前.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\基底\\Engine.偏好优化前.ini",
+      "sha256": "8341be9e47c9ce88623f0166b2e74b95e3042cca2876bb412439911c54edca52"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\基底\\Engine.原配置.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\基底\\Engine.原配置.ini",
+      "sha256": "0af1e891774545471063a3e8676a3290fd626a9fa6e8da789b771388bb5e560e"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\快照\\Engine.偏好优化.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\快照\\Engine.偏好优化.ini",
+      "sha256": "a9c871bc67864a26536799ef14e91025bf6d0b5304489d9c1b0e9a907b4eed4c"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\快照\\Engine.正式组合.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\快照\\Engine.正式组合.ini",
+      "sha256": "a9c871bc67864a26536799ef14e91025bf6d0b5304489d9c1b0e9a907b4eed4c"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-041728-ac5d29\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-041728-ac5d29\\Engine.ini",
+      "sha256": "bd34a416a466ddd10030e4363b8161bd5c4e8fd8cd1aa014cf6346f23050f8de"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-041728-ac5d29\\备份记录.json",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-041728-ac5d29\\备份记录.json",
+      "sha256": "d18767962ce4a84c20fa4f71d6f01af25358f0770c3d395ae9655d5127037fc4"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-044534-6e4dcc\\Engine.ini",
+      "sha256": "f31a9bf8725eff410d135e30f2b39314e473bb6f6b9132646257429cbb4b984c"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\Engine.正式组合.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-044534-6e4dcc\\Engine.正式组合.ini",
+      "sha256": "f31a9bf8725eff410d135e30f2b39314e473bb6f6b9132646257429cbb4b984c"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\优化测试说明.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-044534-6e4dcc\\优化测试说明.md",
+      "sha256": "4a81f1ab832f400f1256d6dbcfe1eb77864e56692a111f452a4a34f8e23a63ea"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\备份记录.json",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-044534-6e4dcc\\备份记录.json",
+      "sha256": "3abcac1d87a09a46faf90d38e7744dcd826ea37d83057d210f0e797c476be8ae"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-044534-6e4dcc\\本轮参数变更.json",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-044534-6e4dcc\\本轮参数变更.json",
+      "sha256": "91b2aef3f0c98ab506452fabac162c3e0d499185064b4e3b1ceb1ce550116b28"
+    },
+    {
+      "action": "move",
+      "source": "D:\\Games\\dlssg_for_sm86\\启动脚本\\异环配置\\备份\\20261017-目录整理\\迁移SHA256.json",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\异环\\备份\\20261017-目录整理\\迁移SHA256.json",
+      "sha256": "7d1bc32de929eb4bbdd4a1a18d58e5e1eab1b00cc8560282346073d07918d7fa"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\Engine.ini",
+      "sha256": "2bfd63dfff39998172f53d6e59a5f42fe14c366bd907cf70b5374bd2655d4558"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.仅流送.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\候选\\Engine.仅流送.ini",
+      "sha256": "8968e592f8c0117f1cb6b61bf6787a251b2a8d1a59142f6f1d1e0a7447729c3d"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.原配置.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\基底\\Engine.原配置.ini",
+      "sha256": "b654bdacf947f3fdaa3fdfe6df755e0cabf24864b663608161e4ab85c8dc1719"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.正式组合.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\快照\\Engine.正式组合.ini",
+      "sha256": "88c2ac822bc1aa647ca6c9b9aebf32ee206ae4e7f9fad6328f41e8775259e611"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.缓存候选.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\候选\\Engine.缓存候选.ini",
+      "sha256": "5b90275138a580bb5711a8e1b77a558af29c5671fc7cca6ea5590b092da84d39"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\Engine.远景候选.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\候选\\Engine.远景候选.ini",
+      "sha256": "8a14dd38c2ca6fd36bc3a0a10f9c2ae3a82d8ee179f5eadec197a7d08edf856b"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\优化测试说明.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\优化测试说明.md",
+      "sha256": "9bbc4acc1e469cc9a573e4bacd1135c2c46d836e2c82351797700c8e1eda9cb7",
+      "updated_document_sha256": "e463b768edc8a6d88b873d0c8e35e669f13a9671953260533fbdb3663bae0524"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\使用说明.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\使用说明.md",
+      "sha256": "98521ae8ca889b16d4d81e84b7776d590e24b2e37a98e8e9b7d6489ebe4441a9",
+      "updated_document_sha256": "0e51a0cd1b9689982ef2132776e3b54072855f1c564919eeb359fa84d4d13a69"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\备份\\20261017-041728-ac5d29\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\备份\\20261017-041728-ac5d29\\Engine.ini",
+      "sha256": "b654bdacf947f3fdaa3fdfe6df755e0cabf24864b663608161e4ab85c8dc1719"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\当前配置\\备份\\20261017-041728-ac5d29\\备份记录.json",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\备份\\20261017-041728-ac5d29\\备份记录.json",
+      "sha256": "0191ec9ddeba366899d607b81419bc533eee51b2f8f2a695b390db3cb1b99856"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\Engine带注释.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\备份\\迁移原目录-20261017-093015\\Engine带注释.ini",
+      "sha256": "f7320654b64beefbedba17af7e7bb5f8e891e73ebdf1acd7b1651fca04a165e4"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\Config 2\\Engine.ini",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\备份\\迁移原目录-20261017-093015\\Config 2\\Engine.ini",
+      "sha256": "f7320654b64beefbedba17af7e7bb5f8e891e73ebdf1acd7b1651fca04a165e4"
+    },
+    {
+      "action": "copy",
+      "source": "D:\\Games\\WuWa-Configs\\AGENTS.md",
+      "destination": "D:\\Games\\dlssg_for_sm86\\启动脚本\\配置\\鸣潮\\备份\\迁移原目录-20261017-093015\\原目录工作约定.md",
+      "sha256": "0379320fb5018b0cb9d446690e585ef7501bb1959cd6c60b4c02de6371c9d4dc"
+    }
+  ],
+  "upstream_submodules": {
+    "鸣潮": {
+      "url": "https://github.com/AlteriaX/WuWa-Configs.git",
+      "commit": "f0bf1059e27778a56da9bea7e7ca48af828d524d",
+      "branch": "main"
+    },
+    "异环": {
+      "url": "https://github.com/AlteriaX/NTE-Configs.git",
+      "commit": "d749de0579315f61c2046c960d1c5756595171ff",
+      "branch": "main"
+    }
+  },
+  "verification": "All configuration bytes and archived documents match pre-migration SHA256; old WuWa working files/status unchanged; only submodule metadata staged."
+}
