@@ -1,11 +1,11 @@
-# 鸣潮、异环启动脚本使用说明
+﻿# 鸣潮、异环启动脚本使用说明
 
 适用于本仓库 main 分支（0.4.0 明文配置流程）；加密历史版本见 0.4.0带加密 分支。更新于 2026-10-17；下面的实测记录来自 2026-10-16，时间均为北京时间。
 
 ## 平时怎么用
 
 1. 先关闭对应游戏和官方启动器。
-2. 双击对应的 BAT：鸣潮用 `Run-WutheringWaves-DLSSG.bat`，异环用 `Run-NevernessToEverness-DLSSG.bat`。
+2. 双击对应的 BAT：鸣潮用 `启动鸣潮.bat`，异环用 `启动异环.bat`。
 3. 同意 Windows 管理员权限提示。BAT 会退出，另一个窗口负责准备资源、记录日志和等待游戏结束。
 4. 在打开的官方启动器里启动游戏。需要插帧时，在游戏设置里开启 DLSS 帧生成。
 5. 正常退出游戏，等脚本完成清理。鸣潮退出后默认还会等待 10 秒，以便保留热更新重启所需的文件。
@@ -93,8 +93,8 @@
 关闭对应游戏和启动器后，完整恢复命令为：
 
 ```bat
-Run-WutheringWaves-DLSSG.bat -RestoreDeployment
-Run-NevernessToEverness-DLSSG.bat -RestoreDeployment
+启动鸣潮.bat -RestoreDeployment
+启动异环.bat -RestoreDeployment
 ```
 
 `-RestoreDeployment -DryRun` 只展示恢复步骤，不修改部署或记录；正常 `-DryRun` 遇到未完成部署会展示恢复计划并停止，不把“需要恢复”当作可以继续部署。两种演练均仍会写脚本日志。恢复可以重复执行；`-RestoreEngineConfig` 仍只处理画面配置，并更新记录，其他资源可随后完整恢复。没有记录时也能回收目标与本项目匹配的旧资源及代理链接，并按哈希识别 storage 副本。旧版 Reused 记录会迁移到恢复操作；清理后核验残留，有残留时保留记录并报错。资源目录中的日志和归属不符的文件保留。
@@ -103,18 +103,18 @@ Run-NevernessToEverness-DLSSG.bat -RestoreDeployment
 
 异环正式配置参考 Config 3 的分类，采用平衡取向：保留动画更新优化、适度收缩视距、各向异性过滤上限 16，不复制鸣潮插件 Paths 或库洛专用参数。Config 3 的编号不表示比 Config 2 更费性能。读取链路已有用户实测反馈；新配置中各项支持情况、画质和帧率收益仍需同场景比较，测试目录的低画质配置保持不变。
 
-异环与鸣潮使用相同的配置流程：启动前备份游戏 `Engine.ini`，直接从 `异环配置\Engine.ini` 明文源生成带脚本标记的只读临时副本，并将游戏配置路径软链接到副本。原文件按字节备份和恢复，不读取、解密、合并或重新加密原配置；配置源不会被游戏写回。默认不使用 `test` 目录，临时副本设置只读。用户已反馈引擎可读取明文；保留加密实现的历史版本位于 `0.4.0带加密` 分支。
+异环与鸣潮使用相同的配置流程：启动前备份游戏 `Engine.ini`，直接从 `配置\异环\Engine.ini` 明文源生成带脚本标记的只读临时副本，并将游戏配置路径软链接到副本。原文件按字节备份和恢复，不读取、解密、合并或重新加密原配置；配置源不会被游戏写回。默认不使用 `test` 目录，临时副本设置只读。用户已反馈引擎可读取明文；保留加密实现的历史版本位于 `0.4.0带加密` 分支。
 
-正常退出会移除画面配置链接和副本并恢复原文件。强行中断或使用 `-KeepLinks` 后，关闭游戏和启动器，再运行 `Run-NevernessToEverness-DLSSG.bat -RestoreEngineConfig`。此命令只恢复画面配置，不启动游戏；正常启动遇到遗留配置也会询问是否先恢复。恢复时若游戏路径已变成其他文件，脚本会保留备份并停止覆盖。
+正常退出会移除画面配置链接和副本并恢复原文件。强行中断或使用 `-KeepLinks` 后，关闭游戏和启动器，再运行 `启动异环.bat -RestoreEngineConfig`。此命令只恢复画面配置，不启动游戏；正常启动遇到遗留配置也会询问是否先恢复。恢复时若游戏路径已变成其他文件，脚本会保留备份并停止覆盖。
 
 异环支持 `-EngineConfigSource "明文配置完整路径"` 和 `-ConfigDirectory "游戏配置目录"`。配置源应为明文 INI，不要指定已加密的测试文件。软链接需要管理员权限，请通过现有 BAT 启动。临时副本设为只读以阻止普通写回，清理时强制移除已核验的副本；本次运行参数是否持续有效仍需实测。
 
 在本目录打开终端，BAT 后面可以附加参数：
 
 ```bat
-Run-WutheringWaves-DLSSG.bat -DryRun
-Run-NevernessToEverness-DLSSG.bat -DryRun
-Run-WutheringWaves-DLSSG.bat -RestartGraceSeconds 90
+启动鸣潮.bat -DryRun
+启动异环.bat -DryRun
+启动鸣潮.bat -RestartGraceSeconds 90
 ```
 
 `-DryRun` 只检查路径、冲突和部署计划，不启动游戏或修改游戏文件，但仍会记录脚本日志。`-VerboseLog` 显示更多细节。`-KeepLinks` 用于排查，会保留链接和临时配置，日常使用不必加。
@@ -122,7 +122,7 @@ Run-WutheringWaves-DLSSG.bat -RestartGraceSeconds 90
 鸣潮若被强行中断，先关闭游戏和启动器，再恢复画面配置：
 
 ```bat
-Run-WutheringWaves-DLSSG.bat -RestoreEngineConfig
+启动鸣潮.bat -RestoreEngineConfig
 ```
 
 这个命令只恢复鸣潮的 `Engine.ini`，不会启动游戏，也不是所有资源链接的一键卸载。正常启动检测到上次画面配置遗留时，也会询问是否恢复；不要直接删除原文件备份。配置目录无法自动确认时，可用 `-ConfigDirectory "完整配置目录"` 指定包含 `GameUserSettings.ini` 的目录。
@@ -135,6 +135,113 @@ Run-WutheringWaves-DLSSG.bat -RestoreEngineConfig
 | 异环游戏和启动器根目录 | `C:\Games\Neverness To Everness` |
 | 鸣潮游戏目录 | `C:\Games\Wuthering Waves Game` |
 | 鸣潮官方启动器目录 | `C:\Program Files\Wuthering Waves` |
-| 鸣潮画面配置源 | `D:\Games\WuWa-Configs\当前配置\Engine.ini` |
+| 鸣潮画面配置源 | `配置\鸣潮\Engine.ini` |
 
-INT8 所需的 `dlssg_sm86\sr\sr_kernels.dll` 和 `nvngx_dlss.dll` 必须齐全；缺失时脚本会停止并报告路径。游戏移动后，修改对应 PS1 开头的游戏路径；资源仓库移动时，保留“启动脚本”与上级资源目录的相对结构即可。
+INT8 所需的 `dlssg_sm86\sr\sr_kernels.dll` 和 `nvngx_dlss.dll` 必须齐全；缺失时脚本会停止并报告路径。游戏移动后，修改本目录 `启动配置.ini` 中的路径；资源仓库移动时，保留“启动脚本”与上级资源目录的相对结构即可。
+
+
+## 目录与统一配置
+
+根目录仅保留 `.gitignore`、`README.md`、`待办.md`、`启动配置.ini` 和三个中文 BAT。`scripts/games` 放游戏入口，`scripts/common` 放配置读取、提权、日志、控制台、资源及恢复模块，`scripts/tools` 放显卡工具。内部 PS1 保留英文文件名。`备份/启动配置` 保存格式迁移前的原始配置，脚本不读取这些备份。`tests` 为隔离测试，`logs` 为脚本日志，`.state` 为部署记录和恢复归档。
+
+迁移时编辑 `启动配置.ini`，无需修改 PS1。默认保存为 UTF-8，有无 BOM 均可。配置按 `[鸣潮]`、`[异环]`、`[显卡]` 分组，使用 `键=值`；中文键与以下英文别名均可识别：
+
+| 分组 | 项目 |
+| --- | --- |
+| `[鸣潮]` / `[Wuthering]` | `游戏目录` / `GameDirectory`、`启动器路径` / `LauncherPath`、`配置源` / `EngineConfigSource`、`游戏配置目录` / `ConfigDirectory`、`重启等待秒数` / `RestartGraceSeconds` |
+| `[异环]` / `[Nte]` | `游戏目录` / `GameDirectory`、`启动器路径` / `LauncherPath`、`配置源` / `EngineConfigSource`、`游戏配置目录` / `ConfigDirectory` |
+| `[显卡]` / `[Gpu]` | `设备实例标识` / `DeviceInstanceId`、`目标显示名称` / `TargetName` |
+
+路径可用绝对路径或相对于本目录的路径，支持 `%LOCALAPPDATA%` 等环境变量。例如 `配置源=配置\异环\候选\Engine.仅Lumen优化.ini`，无需引号。游戏目录填写包含 `Client` 的目录，启动器路径可留空自动查找，需要手动指定时填写完整 EXE 路径。鸣潮配置目录留空时自动查找，多个候选会要求指定；异环留空时使用当前用户 `%LOCALAPPDATA%\HT\Saved\Config\Windows`。鸣潮重启等待默认 10 秒，范围 1–3600。
+
+显式命令行参数覆盖配置文件，例如 `启动鸣潮.bat -EngineConfigSource "D:\配置\Engine.ini" -RestartGraceSeconds 30`。两款游戏均支持 `-ConfigDirectory` 和 `-EngineConfigSource`。只校验当前入口的配置分组；缺失或格式错误会报告配置项，不使用隐藏的本机路径。
+
+`Gpu.DeviceInstanceId` 留空时只在唯一一张当前存在的 NVIDIA 显卡时自动选择。多张、没有或手填标识不匹配时停止并列出候选。手填 `PCI\VEN_10DE&...` 设备实例标识，不填写注册表路径。`切换显卡.bat -Status` 只查看状态；正常执行切换的是设备显示名称，原值备份仍保存在本机 ProgramData。
+
+### 迁移步骤
+
+1. 在旧设备关闭游戏与启动器，执行对应 BAT 的 `-RestoreDeployment`，确认恢复完成；显卡名称若已切换，先按原流程恢复。
+2. 复制项目及所需 DLL、`dlssg_sm86` 资源目录，保持启动脚本与资源的相对结构；携带“配置”目录内两款游戏的个人源。部署 `.state`、日志和 ProgramData 设备状态备份留在旧设备，不作为新设备配置搬用。
+3. 修改 `启动配置.ini` 中游戏、启动器位置。两款游戏内置个人源随项目移动；用户目录和仓库资源自动定位。
+4. 执行 `启动鸣潮.bat -DryRun`、`启动异环.bat -DryRun` 和 `切换显卡.bat -Status`，修正报告的问题后再正常使用。DryRun 仅写脚本日志，不启动游戏或改变部署。
+
+`配置/异环/Engine.ini` 是异环默认源；“候选”存单组及实验配置，“基底”存原配置和本轮优化前配置，“快照”存正式组合及偏好优化快照。`备份` 与 `test` 保留历史内容；候选优先通过 `-EngineConfigSource` 指定，不覆盖默认源。
+
+### 编码与路径填写
+
+读取时识别 UTF-8 BOM、UTF-16 LE/BE BOM 和 UTF-32 LE/BE BOM；无 BOM 时先严格按 UTF-8 解码，失败后尝试固定的 GBK/CP936 并显示警告，不依赖新设备的系统“ANSI”代码页。兼容 CRLF、LF 和 CR 换行。普通读取不会重写文件；正常启动首次自动找到唯一启动器时，会仅写回该游戏的启动器路径或已确认的游戏配置目录，并保留原编码、BOM、换行、注释与其他配置。无 BOM 的旧编码无法始终准确辨认，GBK 警告出现后请检查中文并另存为 UTF-8；乱码、替换字符或未带 BOM 的 UTF-16 文本应重新保存，不宣称可兼容任意编码。
+
+路径支持以下写法，所有普通相对路径均以“启动脚本”目录为基准，不受启动时工作目录影响：
+
+| 写法 | 示例 |
+| --- | --- |
+| Windows 绝对路径 | `C:\Games\游戏目录` |
+| 正斜杠 | `C:/Games/游戏目录` |
+| 外层单/双引号 | `"C:\Games\游戏 目录"` 或 `'C:\Games\游戏 目录'`；也识别成对的弯引号 |
+| 相对路径 | `配置\异环\Engine.ini`、`./配置/异环/Engine.ini`、`../其他配置/Engine.ini` |
+| 环境变量 | `%LOCALAPPDATA%\HT`、`$env:LOCALAPPDATA/HT`、`${env:LOCALAPPDATA}/HT` |
+| 当前用户主目录 | `~/配置/Engine.ini` |
+| 网络共享 | `\\server\share\Engine.ini` 或 `//server/share/Engine.ini` |
+| 文件 URI | `file:///C:/Games/Engine.ini`，支持百分号转义；`file://server/share/Engine.ini` |
+| 文件系统提供程序前缀 | `FileSystem::C:\Games` |
+| Windows 扩展路径 | `\\?\C:\Games\Engine.ini` 或 `\\?\UNC\server\share\Engine.ini` |
+
+仅指定根目录的 `\Games` 使用项目所在盘符；`C:Games` 和 `C:` 属于歧义写法，会要求改为完整绝对路径或普通相对路径。不会执行配置中的 PowerShell 表达式；未定义的环境变量、未配对引号、网址及路径通配符会报错。盘符和 UNC 扩展路径统一转为普通绝对路径，保证同一位置的互斥锁与恢复记录身份一致；不支持设备命名空间，也不承诺超长路径能被所有游戏、启动器和文件 API 使用。
+
+注释以 `;` 或 `#` 开头并独占一行；不支持行尾注释，避免截断含 `#`、`;` 或 `=` 的合法文件名。键值只按第一个 `=` 分隔。同一分组和同一配置项（含中英文别名）不得重复；当前分组中的拼错配置项会报行号。
+
+```ini
+[异环]
+游戏目录=C:/Games/Neverness To Everness
+启动器路径="C:/Games/Neverness To Everness/NTELauncher.exe"
+配置源=配置/异环/Engine.ini
+游戏配置目录=%LOCALAPPDATA%/HT/Saved/Config/Windows
+```
+
+
+## 个人配置与上游子模块
+
+`配置/鸣潮` 和 `配置/异环` 由本项目保存个人默认源、候选、基底、快照、说明与历史备份。各自的 `上游` 是独立子模块，分别对应 AlteriaX/WuWa-Configs 和 AlteriaX/NTE-Configs；主仓库记录所选提交号。不要忽略整个“配置”目录，不在子模块里保存个人默认源。
+
+新设备克隆项目并初始化上游：
+
+```powershell
+git clone --recurse-submodules https://github.com/sdli1995/dlssg_for_sm86.git
+# 已有检出，在项目根目录执行：
+git submodule update --init --recursive
+```
+
+复制项目时仍需携带实际 DLL 和资源文件，Git 子模块不代替运行资源。个人鸣潮源已内置到 `配置\鸣潮\Engine.ini`，异环源为 `配置\异环\Engine.ini`，无需再依赖旧设备的外部配置仓库。旧 `D:\Games\WuWa-Configs` 保留原文件、修改和 Git 历史；它已不是默认启动源。
+
+未初始化子模块不影响个人默认源。若将“配置源”显式改为上游某个文件，需先初始化对应子模块。启动过程不联网、不更新上游，也不自动复制或合并预设。
+
+明确需要查看上游更新时，可在项目根目录执行：
+
+```powershell
+git -C '启动脚本/配置/鸣潮/上游' fetch origin main
+git -C '启动脚本/配置/鸣潮/上游' diff HEAD origin/main
+git -C '启动脚本/配置/异环/上游' fetch origin main
+git -C '启动脚本/配置/异环/上游' diff HEAD origin/main
+```
+
+审阅后，确认子模块没有本地修改，再用 `git -C '对应上游目录' checkout --detach origin/main` 选择新版本；主仓库中的子模块指针差异须单独审阅和提交。`git submodule update --init --recursive` 恢复的是主仓库记录的版本，不会自动跟随上游最新版。个人源是否采用新预设由用户决定，测试优先传入 `-EngineConfigSource`。
+
+迁移清单、SHA256 和修改前说明保存在 `备份/配置迁移`；鸣潮原目录的带注释配置、修改过的 Config 2 及工作约定另存于 `配置/鸣潮/备份/迁移原目录-*`。历史备份中的旧路径保留作来源记录，不能直接当作当前操作路径。
+
+### 启动器路径留空自动查找
+
+两款游戏的“启动器路径”可留空或省略。先检查游戏目录本身及上一级目录，再检查当前设备 Program Files、Program Files (x86) 的常见游戏启动器目录；鸣潮查找 `launcher.exe`，异环查找 `NTELauncher.exe`。只检查明确位置，不递归扫描磁盘。候选按完整路径去重；唯一候选自动使用，找不到时列出检查目录，多个候选时列出路径并要求手动填写完整 EXE 路径。显式填写时始终使用指定位置，不自动改用其他安装。
+
+启动器路径留空后，正常启动自动找到唯一候选时，会将完整路径原子写回 `启动配置.ini` 并输出记录位置；以后直接使用保存的路径，不再查找。本机两款游戏路径已通过此流程记录。迁移设备或移动启动器后，可清空该项重新查找，也可直接手填新路径。已记录的路径失效时提示错误，不擅自切换到其他安装。自动查找和写回本身不会启动程序或部署游戏文件；DryRun 和恢复模式只查找，不写回。写回失败会停止正常启动并保留原配置，提示手动填写或检查写入权限。`-RestoreDeployment`、`-RestoreEngineConfig` 不要求启动器 EXE 仍然存在；仍按对应启动器进程名称检查是否已关闭。
+
+### 游戏配置目录自动记录
+
+“游戏配置目录”提前填写时直接验证并使用，不再查找。留空时，鸣潮仍按原逻辑在本次安装的 Client/Saved 中查找唯一有效 GameUserSettings.ini，多个或没有候选时停止并提示填写；异环仍使用当前用户 LocalAppData 下原有的默认目录，不改变其目录选择策略。目录确认存在后，正常启动将完整目录写回对应游戏分组，后续直接使用已记录目录。
+
+原编码、BOM、换行、注释和其他配置保持不变；DryRun、恢复模式和临时命令行 `-ConfigDirectory` 不写回。迁移设备或游戏目录变化后，可清空“游戏配置目录”重新确定，也可手填新目录。已记录目录失效会报错，不自动切换到其他存档；写回失败停止后续新部署并保留原配置。
+
+## Windows 10/11 跨设备兼容性
+
+目标为 Windows 10/11 x64、系统 Windows PowerShell 5.1 和管理员 BAT 启动。全部脚本的检查范围、隔离迁移结果与尚需实机验证的部分见 [跨设备兼容性检查](docs/跨设备兼容性检查.md)。当前测试运行于 Windows 11，不代替 Windows 10 实机验收。
+
+本轮修正显卡状态 UTF-8 读取、普通设备名称解析、按实际驱动实例定位原名称，以及使用系统 PowerShell 完整路径自提权。没有修改真实显卡注册表。底层 DLSSG 当前项目说明面向 RTX 20/30 系列；脚本兼容 Windows 不代表支持所有 NVIDIA GPU。搬迁后清空或更新旧设备缓存路径，使用可写且支持符号链接和原子替换的常规本地文件系统。

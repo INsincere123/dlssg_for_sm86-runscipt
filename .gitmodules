@@ -1,0 +1,8 @@
+[submodule "wuwa-configs"]
+	path = 启动脚本/配置/鸣潮/上游
+	url = https://github.com/AlteriaX/WuWa-Configs.git
+	branch = main
+[submodule "nte-configs"]
+	path = 启动脚本/配置/异环/上游
+	url = https://github.com/AlteriaX/NTE-Configs.git
+	branch = main

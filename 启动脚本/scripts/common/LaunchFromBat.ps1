@@ -33,7 +33,7 @@ if (`$exitCode -ne 0) {
 exit `$exitCode
 "@
     $command = $command.Replace('__DIRECTORY__', $script.DirectoryName.Replace("'", "''")).Replace('__SCRIPT__', $script.FullName.Replace("'", "''")).Replace('__ARGUMENTS__', $argumentText)
-    $logDirectory = Join-Path $script.DirectoryName 'logs'
+    $logDirectory = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'logs'
     $command = $command.Replace('__LOG_DIRECTORY__', $logDirectory.Replace("'", "''"))
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

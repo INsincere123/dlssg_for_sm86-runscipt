@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $launcherRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $launcherRoot 'DeploymentJournal.ps1')
+. (Join-Path $launcherRoot 'scripts\common\DeploymentJournal.ps1')
 function Get-NormalizedPath { param([string]$Path) [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant() }
 function Get-HashOrNull { param([string]$Path) if ([IO.File]::Exists($Path)) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } }
 function Assert-Test { param([bool]$Condition,[string]$Message) if (-not $Condition) { throw $Message } }
@@ -42,7 +42,7 @@ function Add-TestEngine {
     }
 }
 try {
-    foreach ($file in @('DeploymentJournal.ps1','LauncherResources.ps1','Run-WutheringWaves-DLSSG.ps1','Run-NevernessToEverness-DLSSG.ps1')) {
+    foreach ($file in @('scripts\common\DeploymentJournal.ps1','scripts\common\LauncherResources.ps1','scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
         $tokens=$null; $errors=$null
         [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $launcherRoot $file),[ref]$tokens,[ref]$errors)
         Assert-Test ($errors.Count -eq 0) "Syntax errors: $file"
@@ -154,7 +154,7 @@ try {
     $script:journalContext.GameProcess='DLSSG_NoSuchGame'; Restore-RecordedDeployment
     Write-Host 'PASS: reused link replacement preserved and running process blocks recovery.'
 
-    $source=Join-Path $launcherRoot '异环配置\Engine.ini'
+    $source=Join-Path $launcherRoot '配置\异环\Engine.ini'
 
     # Real directory junctions work without file-symlink elevation on typical Windows installations.
     $target=$deployment.Specs[0].Target; [void][IO.Directory]::CreateDirectory($target)
@@ -185,7 +185,7 @@ try {
     Write-Host 'PASS: journal write failure stops filesystem mutation.'
 
     # Exercise each launcher's actual Prepare-EngineConfig, not a duplicate implementation.
-    foreach ($launcher in @('Run-WutheringWaves-DLSSG.ps1','Run-NevernessToEverness-DLSSG.ps1')) {
+    foreach ($launcher in @('scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
         $tokens=$null; $errors=$null
         $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $launcherRoot $launcher),[ref]$tokens,[ref]$errors)
         foreach ($name in @('Assert-FileExists','Write-Log','Prepare-EngineConfig')) {
@@ -333,7 +333,7 @@ try {
     Open-DeploymentJournal -GameId test -GameProcess DLSSG_NoSuchGame -LauncherProcess DLSSG_NoSuchLauncher -DiagnosticPrefix dlssg-journal-test-
     try {
         $childFile=Join-Path $testRoot 'mutex-test.ps1'
-        $moduleLiteral=(Join-Path $launcherRoot 'DeploymentJournal.ps1').Replace("'","''")
+        $moduleLiteral=(Join-Path $launcherRoot 'scripts\common\DeploymentJournal.ps1').Replace("'","''")
         $renderLiteral=$renderDir.Replace("'","''")
         $configLiteral=$engineConfigPath.Replace("'","''")
         $runtimeLiteral=$engineRuntimePath.Replace("'","''")

@@ -6,12 +6,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'ScriptLogging.ps1')
+. (Join-Path $PSScriptRoot '..\common\ScriptLogging.ps1')
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
-$deviceKeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI\VEN_10DE&DEV_2420&SUBSYS_13241462&REV_A1\4&3062272c&0&0008'
-$classKeyRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
-$targetName = 'NVIDIA GeForce RTX 5070'
+. (Join-Path $PSScriptRoot '..\common\LauncherConfig.ps1')
+$settings = Get-LauncherGpuSettings
+$deviceKeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $settings.DeviceInstanceId
+$classKeyRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class'
+$targetName = $settings.TargetName
 $stateDirectory = Join-Path $env:ProgramData 'Toggle-NvidiaDeviceName'
 $statePath = Join-Path $stateDirectory 'state.json'
 
@@ -40,7 +42,7 @@ function Show-CurrentStateDialog {
     $description = Split-DeviceDescription -Value ([string]$properties.DeviceDesc)
     $enabled = [string]::Equals($description.DisplayName, $targetName, [System.StringComparison]::OrdinalIgnoreCase)
     $backup = if (Test-Path -LiteralPath $statePath -PathType Leaf) { '存在' } else { '不存在' }
-    $stateText = if ($enabled) { '状态：已伪装为 RTX 5070' } else { '状态：原始适配器名称' }
+    $stateText = if ($enabled) { "状态：已伪装为 $targetName" } else { '状态：原始适配器名称' }
 
     Show-Message @"
 $stateText
@@ -63,7 +65,7 @@ function Assert-Administrator {
     if ($Status) { $arguments += ' -Status' }
 
     Write-Log 'Requesting administrator permission...'
-    $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -PassThru -Wait
+    $elevated = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -ArgumentList $arguments -PassThru -Wait
     exit $elevated.ExitCode
 }
 
@@ -79,6 +81,9 @@ function Split-DeviceDescription {
     param([string]$Value)
 
     $separator = $Value.LastIndexOf(';')
+    if ($separator -lt 0 -and -not [string]::IsNullOrWhiteSpace($Value) -and -not $Value.StartsWith('@')) {
+        return [pscustomobject]@{ Prefix = ''; DisplayName = $Value }
+    }
     if ($separator -lt 0 -or $separator -eq ($Value.Length - 1)) {
         throw "DeviceDesc has an unexpected format and will not be overwritten: $Value"
     }
@@ -101,7 +106,7 @@ function Get-FallbackOriginalDescription {
         throw "The device Driver reference has an unexpected format: $driverReference"
     }
 
-    $classKeyPath = Join-Path $classKeyRoot $Matches[2]
+    $classKeyPath = Join-Path $classKeyRoot $driverReference
     $classProperties = Get-ItemProperty -LiteralPath $classKeyPath -Name 'DriverDesc' -ErrorAction Stop
     if ([string]::IsNullOrWhiteSpace([string]$classProperties.DriverDesc)) {
         throw "The driver class entry does not contain a usable DriverDesc: $classKeyPath"
@@ -130,7 +135,7 @@ function Show-Status {
 function Restore-FromState {
     param([string]$CurrentValue)
 
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $state = [IO.File]::ReadAllText($statePath) | ConvertFrom-Json
     if ([string]$state.KeyPath -ne $deviceKeyPath -or [string]::IsNullOrWhiteSpace([string]$state.OriginalValue)) {
         throw "The state file is invalid or belongs to another registry key: $statePath"
     }

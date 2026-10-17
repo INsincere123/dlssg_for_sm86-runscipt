@@ -12,19 +12,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'ScriptLogging.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherConfig.ps1')
+$launcherRoot = Get-LauncherRoot
+
+. (Join-Path $PSScriptRoot '..\common\ScriptLogging.ps1')
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
-. (Join-Path $PSScriptRoot 'LauncherConsole.ps1')
-. (Join-Path $PSScriptRoot 'LauncherResources.ps1')
-. (Join-Path $PSScriptRoot 'DeploymentJournal.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherResources.ps1')
+. (Join-Path $PSScriptRoot '..\common\DeploymentJournal.ps1')
+$settings = Get-LauncherGameSettings -GameId 'Nte' -Overrides $PSBoundParameters
 $enginePrepared = $false
 $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
-if (-not $EngineConfigSource) { $EngineConfigSource = Join-Path $PSScriptRoot '异环配置\Engine.ini' }
-$engineConfigSource = $EngineConfigSource
+$engineConfigSource = $settings.EngineConfigSource
 $engineRuntimeMarker = '; NTE launcher runtime copy v1'
-if (-not $ConfigDirectory) { $ConfigDirectory = Join-Path $env:LOCALAPPDATA 'HT\Saved\Config\Windows' }
+$ConfigDirectory = $settings.ConfigDirectory
 $engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
 $engineRuntimePath = Join-Path $ConfigDirectory 'Engine.nteconfig-runtime.ini'
 $engineBackupPath = Join-Path $ConfigDirectory 'Engine.ini.before-nteconfig-link'
@@ -32,11 +35,12 @@ $createdLinks = [Collections.Generic.List[string]]::new()
 $setupComplete = $false
 $consoleState = $null
 
-$gameRoot = 'C:\Games\Neverness To Everness'
+$gameRoot = $settings.GameDirectory
 $renderDir = Join-Path $gameRoot 'Client\WindowsNoEditor\HT\Binaries\Win64'
-$launcherExe = Join-Path $gameRoot 'NTELauncher.exe'
+$launcherExe = $settings.LauncherPath
+$launcherDir = if ($launcherExe) { Split-Path -Parent $launcherExe } else { '' }
 $gameExe = Join-Path $renderDir 'HTGame.exe'
-$projectDir = Split-Path -Parent $PSScriptRoot
+$projectDir = Split-Path -Parent $launcherRoot
 $projectProxy = Join-Path $projectDir 'alternatives\winmm.dll'
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-nte-{0}.ini" -f $PID)
@@ -67,7 +71,7 @@ Mode=On
 '@
 $storageDll = Join-Path $renderDir '_storage_\winmm.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
-$launcherProcessName = [System.IO.Path]::GetFileNameWithoutExtension($launcherExe)
+$launcherProcessName = if ($launcherExe) { [IO.Path]::GetFileNameWithoutExtension($launcherExe) } else { 'NTELauncher' }
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 
 $deployment = New-DlssgDeployment -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName 'winmm.dll'
@@ -384,6 +388,7 @@ try {
     Resolve-LegacyEngineDeployment
     Assert-FileExists -Path $engineConfigSource -Description '异环明文 Engine.ini 配置源'
     if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在：$ConfigDirectory" }
+    [void](Save-LauncherDetectedConfigDirectory -GameId Nte -Directory $ConfigDirectory -Overrides $PSBoundParameters)
     Write-Log "本次配置目录：$ConfigDirectory"
     Assert-FileExists -Path $launcherExe -Description 'NTE launcher'
     Assert-FileExists -Path $gameExe -Description 'NTE game executable'
@@ -426,7 +431,7 @@ try {
         $record = Start-DeploymentOperation -Kind storage -Path $storageDll -Hash (Get-HashOrNull $projectProxy)
         Complete-DeploymentOperation $record
     }
-    $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $gameRoot -PassThru
+    $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
     $game = Wait-ForGameProcess
     $game.WaitForExit()
     $gameExitCode = $game.ExitCode
