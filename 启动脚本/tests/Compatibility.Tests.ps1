@@ -50,7 +50,14 @@ foreach ($scenario in @('English User','中文 用户 O''Brien [迁移]')) {
     [IO.File]::WriteAllText($iniPath,$ini,[Text.UTF8Encoding]::new($false))
     foreach ($game in @('Run-WutheringWaves-DLSSG.ps1','Run-NevernessToEverness-DLSSG.ps1')) {
         $scriptPath=Join-Path $copyRoot "scripts\games\$game"
+        # Fixture DryRuns must not depend on the user's real running launchers.
+        # Process lifecycle checks are covered in LauncherSession.Tests.ps1.
         $command=@"
+function Get-Process {
+    [CmdletBinding()]
+    param([string[]]`$Name, [int[]]`$Id)
+    if (`$Id) { Microsoft.PowerShell.Management\Get-Process -Id `$Id }
+}
 `$env:LOCALAPPDATA='$($userData.Replace("'","''"))'
 `$env:ProgramFiles='$($project.Replace("'","''"))\NoDefaultLauncher'
 `$env:ProgramW6432=`$env:ProgramFiles
