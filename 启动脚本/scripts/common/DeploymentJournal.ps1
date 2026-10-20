@@ -48,7 +48,7 @@ function Save-DeploymentJournal {
 }
 
 function Open-DeploymentJournal {
-    param([string]$GameId, [string]$GameProcess, [string]$LauncherProcess, [string]$DiagnosticPrefix)
+    param([string]$GameId, [string]$GameProcess, [string[]]$LauncherProcess, [string]$DiagnosticPrefix)
     $script:journalContext = @{
         GameId = $GameId; GameProcess = $GameProcess; LauncherProcess = $LauncherProcess
         Render = [IO.Path]::GetFullPath($renderDir); Engine = [IO.Path]::GetFullPath($engineConfigPath)
@@ -326,7 +326,7 @@ function Assert-DeploymentResourcesRemoved {
 
 function Assert-RecoveryProcessesStopped {
     $allProcesses = @(Get-Process -ErrorAction Stop)
-    foreach ($name in @($script:journalContext.GameProcess, $script:journalContext.LauncherProcess)) {
+    foreach ($name in (@($script:journalContext.GameProcess) + @($script:journalContext.LauncherProcess))) {
         $running = @($allProcesses | Where-Object ProcessName -eq $name)
         if ($running.Count) { throw "Close $name before recovery." }
     }

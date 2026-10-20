@@ -19,6 +19,7 @@ $launcherRoot = Get-LauncherRoot
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot '..\common\LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherSession.ps1')
 . (Join-Path $PSScriptRoot '..\common\LauncherResources.ps1')
 . (Join-Path $PSScriptRoot '..\common\DeploymentJournal.ps1')
 $settings = Get-LauncherGameSettings -GameId 'Nte' -Overrides $PSBoundParameters
@@ -71,7 +72,7 @@ Mode=On
 '@
 $storageDll = Join-Path $renderDir '_storage_\winmm.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
-$launcherProcessName = if ($launcherExe) { [IO.Path]::GetFileNameWithoutExtension($launcherExe) } else { 'NTELauncher' }
+$launcherProcessName = @(Get-LauncherProcessNames -GameId Nte -LauncherPath $launcherExe)
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 
 $deployment = New-DlssgDeployment -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName 'winmm.dll'
@@ -114,7 +115,7 @@ function Assert-FileExists {
 }
 
 function Assert-NoRunningProcess {
-    param([string]$Name, [string]$Description)
+    param([string[]]$Name, [string]$Description)
     $running = @(Get-Process -Name $Name -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         throw "$Description 已经在运行，请先关闭它再使用此脚本。"
@@ -348,23 +349,6 @@ function Show-PostRunStatus {
     }
 }
 
-function Wait-ForGameProcess {
-    param([int]$TimeoutSeconds = 120)
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $processes = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue)
-        if ($processes.Count -gt 0) {
-            Write-Log "已检测到游戏进程：$gameProcessName"
-            return $processes[0]
-        }
-
-        Start-Sleep -Seconds 2
-    } while ((Get-Date) -lt $deadline)
-
-    throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
-}
-
 if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
 
 try {
@@ -432,10 +416,12 @@ try {
         Complete-DeploymentOperation $record
     }
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
-    $game = Wait-ForGameProcess
-    $game.WaitForExit()
-    $gameExitCode = $game.ExitCode
-    Write-Log "游戏已退出，退出代码：$gameExitCode"
+    $game = Wait-ForGameProcess -GameProcessName $gameProcessName -LauncherProcessName $launcherProcessName
+    if ($null -ne $game) {
+        $game.WaitForExit()
+        $gameExitCode = $game.ExitCode
+        Write-Log "游戏已退出，退出代码：$gameExitCode"
+    }
 }
 catch {
     $failed = $true
@@ -463,6 +449,7 @@ finally {
 
 if ($failed) { exit 1 }
 if ($null -ne $gameExitCode) { exit $gameExitCode }
+exit 0
 
 }
 catch {

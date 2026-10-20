@@ -21,6 +21,7 @@ $launcherRoot = Get-LauncherRoot
 $launcherLogPath = Start-LauncherLog -ScriptPath $PSCommandPath
 try {
 . (Join-Path $PSScriptRoot '..\common\LauncherConsole.ps1')
+. (Join-Path $PSScriptRoot '..\common\LauncherSession.ps1')
 . (Join-Path $PSScriptRoot '..\common\LauncherResources.ps1')
 . (Join-Path $PSScriptRoot '..\common\DeploymentJournal.ps1')
 $settings = Get-LauncherGameSettings -GameId 'Wuthering' -Overrides $PSBoundParameters
@@ -39,7 +40,7 @@ $projectDir = Split-Path -Parent $launcherRoot
 $projectDll = Join-Path $projectDir 'version.dll'
 $storageDll = Join-Path $renderDir '_storage_\version.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
-$launcherProcessName = if ($launcherExe) { [IO.Path]::GetFileNameWithoutExtension($launcherExe) } else { 'launcher' }
+$launcherProcessName = @(Get-LauncherProcessNames -GameId Wuthering -LauncherPath $launcherExe)
 $processName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-wuthering-{0}.ini" -f $PID)
 $engineConfigSource = $settings.EngineConfigSource
@@ -266,23 +267,6 @@ function Undo-EngineConfigSetup {
     if ($engineRuntimeCreated) { Remove-Item -LiteralPath $engineRuntimePath -Force }
 }
 
-function Wait-ForGameProcess {
-    param([int]$TimeoutSeconds = 120)
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $processes = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
-        if ($processes.Count -gt 0) {
-            Write-Log "已检测到游戏进程：$processName"
-            return $processes[0]
-        }
-
-        Start-Sleep -Seconds 2
-    } while ((Get-Date) -lt $deadline)
-
-    throw "等待游戏进程超时（$TimeoutSeconds 秒）：$gameExe"
-}
-
 function Wait-ForGameSession {
     param([System.Diagnostics.Process]$InitialProcess)
 
@@ -300,6 +284,10 @@ function Wait-ForGameSession {
                 $currentProcess = $processes[0]
                 Write-Log "检测到游戏重新运行（PID：$($currentProcess.Id)），继续保留配置并等待游戏退出。"
                 break
+            }
+            if (@(Get-Process -Name $launcherProcessName -ErrorAction SilentlyContinue).Count -eq 0) {
+                Write-Log '启动器和游戏均已关闭，将自动清理部署并关闭脚本。'
+                return $exitCode
             }
             if ($absenceTimer.Elapsed.TotalSeconds -ge $RestartGraceSeconds) {
                 Write-Log "连续 $RestartGraceSeconds 秒未发现游戏进程，本次游戏会话结束。"
@@ -501,8 +489,8 @@ try {
         Complete-DeploymentOperation $record
     }
     $launcher = Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -PassThru
-    $process = Wait-ForGameProcess
-    $gameExitCode = Wait-ForGameSession -InitialProcess $process
+    $process = Wait-ForGameProcess -GameProcessName $processName -LauncherProcessName $launcherProcessName
+    if ($null -ne $process) { $gameExitCode = Wait-ForGameSession -InitialProcess $process }
 }
 catch {
     $failed = $true
@@ -530,6 +518,7 @@ finally {
 
 if ($failed) { exit 1 }
 if ($null -ne $gameExitCode) { exit $gameExitCode }
+exit 0
 
 }
 catch {
