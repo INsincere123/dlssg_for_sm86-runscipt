@@ -1,4 +1,5 @@
-﻿. (Join-Path $PSScriptRoot 'UnrealQuality.ps1')
+﻿. (Join-Path $PSScriptRoot 'DirectLauncher.ps1')
+. (Join-Path $PSScriptRoot 'UnrealQuality.ps1')
 # Data/model layer for the portable desktop launcher. Windows PowerShell 5.1.
 function Get-PortableDataDirectory {
     param([string]$Root = (Get-LauncherRoot))
@@ -62,7 +63,8 @@ function Get-PortableProfiles {
     $profiles += @($Preferences.Profiles | Where-Object { $_.Id -notin $presetIds })
     foreach ($profile in $profiles) {
         Initialize-PortableQuality $profile
-        if ($profile.Id -notmatch '^[A-Za-z0-9_-]+$' -or $profile.AppId -notmatch '^[1-9][0-9]*$') { throw '游戏预设标识无效。' }
+        Initialize-PortableLaunchMode $profile
+        if ($profile.Id -notmatch '^[A-Za-z0-9_-]+$' -or ($profile.LaunchMode -eq 'Steam' -and $profile.AppId -notmatch '^[1-9][0-9]*$')) { throw '游戏预设标识无效。' }
         if ([string]$profile.ProxyDll -notmatch '^[1-6]$') { throw '本机偏好的代理编号无效。' }
     }
     return $profiles
@@ -75,14 +77,15 @@ function Set-PortableProfile {
 
 function Get-PortableGameModel {
     param($Profile, [string]$SteamPath, [string]$Root = (Get-LauncherRoot), $EngineDetection=$null)
-    $model = [pscustomobject]@{ Profile=$Profile; SteamPath=$SteamPath; GameDirectory=[string]$Profile.GameDirectory;
+    $gameId=Get-PortableGameId $Profile
+    $model = [pscustomobject]@{ Profile=$Profile;GameId=$gameId;LaunchExecutable=''; SteamPath=$SteamPath; GameDirectory=[string]$Profile.GameDirectory;
         ConfigDirectory=(Resolve-LauncherConfigPath $Profile.ConfigDirectory '游戏配置目录' -Root $Root);
         EngineConfigSource=(Resolve-LauncherConfigPath $Profile.EngineConfigSource '配置源' -Root $Root);
-        Executable=''; EngineMajor=0; EngineSource='无法确定'; Ready=$false; Recovery=$false; Status='正在查找游戏…'; Journal=(Join-Path $Root ".state\steam-$($Profile.AppId)\active.json") }
+        Executable=''; EngineMajor=0; EngineSource='无法确定'; Ready=$false; Recovery=$false; Status='正在查找游戏…'; Journal=(Join-Path $Root ".state\$gameId\active.json") }
     try {
         if ([IO.File]::Exists($model.Journal)) {
             $journal = [IO.File]::ReadAllText($model.Journal) | ConvertFrom-Json
-            if ($journal.GameId -ne "steam-$($Profile.AppId)" -or $journal.Version -ne 1) { throw '恢复记录格式不受支持。' }
+            if ($journal.GameId -ne $gameId -or $journal.Version -ne 1) { throw '恢复记录格式不受支持。' }
             $suffix = Split-Path -Parent $Profile.RenderExecutable
             $render = [IO.Path]::GetFullPath($journal.Render).TrimEnd('\')
             if ($suffix) {
@@ -95,25 +98,33 @@ function Get-PortableGameModel {
             $model.Status = '发现上次未完成的部署，请先点击“恢复原状”。'
             return $model
         }
-        if (-not $SteamPath -or -not [IO.File]::Exists($SteamPath)) { throw '未找到 Steam，请在高级设置中选择 steam.exe。' }
-        if ($model.GameDirectory -and [IO.Directory]::Exists($model.GameDirectory)) {
-            $match = Resolve-SteamAppId $model.GameDirectory $SteamPath
-            if ($match.AppId -ne $Profile.AppId) { throw '选择的文件夹属于另一款游戏。' }
-        } else {
-            $games = @(Find-SteamGameDirectory $SteamPath $Profile.AppId)
-            if ($games.Count -ne 1) { throw '未找到唯一安装位置，请点击“选择游戏文件夹”。' }
-            $model.GameDirectory = $games[0]
-        }
+        if ($Profile.LaunchMode -eq 'Steam') {
+            if (-not $SteamPath -or -not [IO.File]::Exists($SteamPath)) { throw '未找到 Steam，请在高级设置中选择 steam.exe。' }
+            if ($model.GameDirectory -and [IO.Directory]::Exists($model.GameDirectory)) {
+                $match = Resolve-SteamAppId $model.GameDirectory $SteamPath
+                if ($match.AppId -ne $Profile.AppId) { throw '选择的文件夹属于另一款游戏。' }
+            } else {
+                $games = @(Find-SteamGameDirectory $SteamPath $Profile.AppId)
+                if ($games.Count -ne 1) { throw '未找到唯一安装位置，请点击“选择游戏文件夹”。' }
+                $model.GameDirectory = $games[0]
+            }
+        } elseif (-not [IO.Directory]::Exists($model.GameDirectory)) { throw '未找到游戏目录，请选择当前游戏文件夹。' }
         $executable = Join-Path $model.GameDirectory $Profile.RenderExecutable
         if (-not [IO.File]::Exists($executable)) { throw '游戏程序与预设不符，请选择正确的游戏文件夹。' }
+        $executable=Resolve-DirectExecutable $model.GameDirectory $Profile.RenderExecutable '渲染程序'
         $model.Executable=$executable
+        if ($Profile.LaunchMode -eq 'Direct') {
+            $model.LaunchExecutable=Resolve-DirectExecutable $model.GameDirectory $Profile.LaunchExecutable '启动程序'
+            if (-not [IO.File]::Exists($model.LaunchExecutable)) { throw '启动EXE缺失，请选择正确的游戏文件夹。' }
+        }
+        if ($null -eq $EngineDetection) { $EngineDetection=Get-PortableSavedEngine $Profile }
         if ($null -ne $EngineDetection) { $model.EngineMajor=[int]$EngineDetection.Major; $model.EngineSource=[string]$EngineDetection.Source }
         Initialize-PortableQuality $Profile
         if ($Profile.EngineOverride -ne 'Auto') { $model.EngineMajor=[int]$Profile.EngineOverride.Substring(2); $model.EngineSource='手动校准' }
         $quality=Resolve-PortableQuality $Profile $EngineDetection -Root $Root
         $model.EngineConfigSource=$quality.Path
         if (@(Get-SteamGameProcesses -Executable $executable).Count) { throw '游戏正在运行，请先退出游戏，再使用启动器。' }
-        if (-not [IO.Directory]::Exists($model.ConfigDirectory)) { throw '请先从 Steam 原版启动游戏一次，然后点击“重新查找”。' }
+        if (-not [IO.Directory]::Exists($model.ConfigDirectory)) { throw '请先原版启动游戏一次，然后点击“重新查找”。' }
         if (-not [IO.File]::Exists($model.EngineConfigSource)) { throw '画质配置源缺失，请重新解压完整启动器包。' }
         $project = Split-Path -Parent $Root
         $proxy = @('version.dll','alternatives\winmm.dll','alternatives\dbghelp.dll','alternatives\dinput8.dll','alternatives\dxgi.dll','alternatives\d3d12.dll')[[int]$Profile.ProxyDll-1]
@@ -129,7 +140,8 @@ function Get-PortableGameModel {
 
 function Write-PortableLaunchConfig {
     param($Model, [string]$Directory)
-    if (-not $Model.Recovery -and [string]::IsNullOrWhiteSpace($Model.SteamPath)) { throw '请先选择 Steam。' }
+    Initialize-PortableLaunchMode $Model.Profile
+    if ($Model.Profile.LaunchMode -eq 'Steam' -and -not $Model.Recovery -and [string]::IsNullOrWhiteSpace($Model.SteamPath)) { throw '请先选择 Steam。' }
     if ($Model.SteamPath -match '[\r\n]') { throw 'Steam 路径无效。' }
     foreach ($value in @($Model.Profile.Name,$Model.GameDirectory,$Model.Profile.RenderExecutable,$Model.ConfigDirectory,$Model.EngineConfigSource)) {
         if ([string]::IsNullOrWhiteSpace($value) -or $value -match '[\r\n]') { throw '游戏设置为空或含换行，请重新选择路径。' }
@@ -137,10 +149,11 @@ function Write-PortableLaunchConfig {
     if ([string]$Model.Profile.ProxyDll -notmatch '^[1-6]$') { throw '代理编号必须为 1–6。' }
     [void][IO.Directory]::CreateDirectory($Directory)
     $path = Join-Path $Directory 'launch.ini'
+    $section=if ($Model.Profile.LaunchMode -eq 'Direct') { 'DirectUE:desktop' } else { 'SteamUE5:desktop' }
     $text = @"
 [Steam]
 启动器路径=$($Model.SteamPath)
-[SteamUE5:desktop]
+[$section]
 游戏名称=$($Model.Profile.Name)
 游戏目录=$($Model.GameDirectory)
 渲染程序=$($Model.Profile.RenderExecutable)
@@ -148,21 +161,29 @@ function Write-PortableLaunchConfig {
 配置源=$($Model.EngineConfigSource)
 代理DLL=$($Model.Profile.ProxyDll)
 "@
+    if ($Model.Profile.LaunchMode -eq 'Direct') {
+        [void](Resolve-DirectExecutable $Model.GameDirectory $Model.Profile.LaunchExecutable '启动程序')
+        if ($Model.Profile.LaunchExecutable -match '[\r\n]') { throw '启动程序路径含换行。' }
+        $text+="`r`n启动程序=$($Model.Profile.LaunchExecutable)`r`n"
+    }
     [IO.File]::WriteAllText($path,$text,[Text.UTF8Encoding]::new($true))
     return $path
 }
 
 function New-PortableWorkerCommand {
     param([string]$ScriptPath, [string]$ConfigPath, [string]$AppId, [string]$ResultPath,
-        [ValidateSet('Launch','Restore','Check')][string]$Action)
-    if ($AppId -notmatch '^[1-9][0-9]*$') { throw 'Invalid AppID.' }
+        [ValidateSet('Launch','Restore','Check')][string]$Action,
+        [ValidateSet('Steam','Direct')][string]$LaunchMode='Steam',[string]$GameKey)
+    if ($LaunchMode -eq 'Steam' -and $AppId -notmatch '^[1-9][0-9]*$') { throw 'Invalid AppID.' }
+    if ($LaunchMode -eq 'Direct' -and $GameKey -notmatch '^[a-f0-9]{32}$') { throw 'Invalid direct game key.' }
+    $identity=if ($LaunchMode -eq 'Direct') { "-LaunchMode Direct -GameKey '$GameKey'" } else { "-AppId '$AppId'" }
     $flag = switch ($Action) { 'Restore' { '-RestoreDeployment' } 'Check' { '-DryRun' } default { '' } }
     $command = @'
 $global:LASTEXITCODE = 0
 $code = 1
 $failure = ''
 try {
-    & '__SCRIPT__' -LauncherConfigPath '__CONFIG__' -Profile desktop -AppId '__APPID__' __FLAG__
+    & '__SCRIPT__' -LauncherConfigPath '__CONFIG__' -Profile desktop __IDENTITY__ __FLAG__
     $succeeded = $?
     $code = $global:LASTEXITCODE
     if (-not $succeeded -and $code -eq 0) { $code = 1 }
@@ -179,5 +200,5 @@ if ($code -ne 0 -and __DETACHED__) {
 exit $code
 '@
     $detached = if ($Action -eq 'Launch') { '$true' } else { '$false' }
-    return $command.Replace('__SCRIPT__',$ScriptPath.Replace("'","''")).Replace('__CONFIG__',$ConfigPath.Replace("'","''")).Replace('__APPID__',$AppId).Replace('__RESULT__',$ResultPath.Replace("'","''")).Replace('__FLAG__',$flag).Replace('__DETACHED__',$detached)
+    return $command.Replace('__SCRIPT__',$ScriptPath.Replace("'","''")).Replace('__CONFIG__',$ConfigPath.Replace("'","''")).Replace('__IDENTITY__',$identity).Replace('__RESULT__',$ResultPath.Replace("'","''")).Replace('__FLAG__',$flag).Replace('__DETACHED__',$detached)
 }

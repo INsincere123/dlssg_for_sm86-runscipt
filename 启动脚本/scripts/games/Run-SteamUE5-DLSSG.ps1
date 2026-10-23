@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [ValidatePattern('^[1-9][0-9]*$')][string]$AppId,
+    [ValidateSet('Steam','Direct')][string]$LaunchMode='Steam',
+    [ValidatePattern('^[a-f0-9]{32}$')][string]$GameKey,
     [string]$Profile,
     [string]$LauncherConfigPath,
     [ValidatePattern('^[1-6]$')][string]$ProxyDll,
@@ -26,21 +28,31 @@ try {
 . (Join-Path $PSScriptRoot '..\common\LauncherResources.ps1')
 . (Join-Path $PSScriptRoot '..\common\DeploymentJournal.ps1')
 . (Join-Path $PSScriptRoot '..\common\SteamLauncher.ps1')
-$settingsArguments = @{ AppId=$AppId; Profile=$Profile; Overrides=$PSBoundParameters }
-if ($LauncherConfigPath) { $settingsArguments.Path = $LauncherConfigPath }
-$settings = Get-SteamUE5Settings @settingsArguments
-$AppId = $settings.AppId
-Write-Host ("配置分组：{0}；AppID：{1}（{2}）" -f $settings.Profile, $AppId, $settings.AppIdSource)
-$steamGameId = "steam-$AppId"
+. (Join-Path $PSScriptRoot '..\common\DirectLauncher.ps1')
+if ($LaunchMode -eq 'Direct') {
+    if (-not $GameKey) { throw '直接启动缺少稳定的游戏标识。' }
+    $settingsArguments=@{GameKey=$GameKey;Profile=$Profile;Overrides=$PSBoundParameters}
+    if ($LauncherConfigPath) { $settingsArguments.Path=$LauncherConfigPath }
+    $settings=Get-DirectUESettings @settingsArguments
+    $gameId=$settings.GameId
+    Write-Host ("配置分组：{0}；直接EXE启动；游戏标识：{1}" -f $settings.Profile,$gameId)
+} else {
+    $settingsArguments = @{ AppId=$AppId; Profile=$Profile; Overrides=$PSBoundParameters }
+    if ($LauncherConfigPath) { $settingsArguments.Path = $LauncherConfigPath }
+    $settings = Get-SteamUE5Settings @settingsArguments
+    $AppId = $settings.AppId
+    Write-Host ("配置分组：{0}；AppID：{1}（{2}）" -f $settings.Profile, $AppId, $settings.AppIdSource)
+    $gameId="steam-$AppId"
+}
 $enginePrepared = $false
 $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
 $engineConfigSource = $settings.EngineConfigSource
-$engineRuntimeMarker = ('; Steam UE5 launcher runtime copy v1 appid=' + $AppId)
+$engineRuntimeMarker = if ($LaunchMode -eq 'Steam') { '; Steam UE5 launcher runtime copy v1 appid=' + $AppId } else { '; Direct UE launcher runtime copy v1 game=' + $gameId }
 $ConfigDirectory = $settings.ConfigDirectory
 $engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
-$engineRuntimePath = Join-Path $ConfigDirectory ('Engine.steam-' + $AppId + '-runtime.ini')
-$engineBackupPath = Join-Path $ConfigDirectory ('Engine.ini.before-steam-' + $AppId + '-link')
+$engineRuntimePath = Join-Path $ConfigDirectory ('Engine.' + $gameId + '-runtime.ini')
+$engineBackupPath = Join-Path $ConfigDirectory ('Engine.ini.before-' + $gameId + '-link')
 $createdLinks = [Collections.Generic.List[string]]::new()
 $setupComplete = $false
 $consoleState = $null
@@ -53,7 +65,7 @@ $launcherDir = if ($launcherExe) { Split-Path -Parent $launcherExe } else { '' }
 
 $projectDir = Split-Path -Parent $launcherRoot
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
-$diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-steam-{1}-{0}.ini" -f $PID, $AppId)
+$diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-{1}-{0}.ini" -f $PID, $gameId)
 $diagnosticIni = @'
 ; Steam UE5 0.4.0 临时诊断配置。
 ; 由 Run-SteamUE5-DLSSG.ps1 生成。
@@ -79,6 +91,7 @@ Mode=Bundled
 [SuperResolution]
 Mode=On
 '@
+if ($LaunchMode -eq 'Direct') { $diagnosticIni=$diagnosticIni.Replace('; Steam UE5 0.4.0','; Direct UE 0.4.0') }
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
 $launcherProcessName = @()
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
@@ -215,7 +228,7 @@ function Test-StaleDiagnosticIniTarget {
 
     if ((Get-NormalizedPath $Path) -ne (Get-NormalizedPath $linkSpecs[1].Path)) { return $false }
     if ((Split-Path -Parent (Get-NormalizedPath $Target)) -ne (Get-NormalizedPath $env:TEMP)) { return $false }
-    if ([System.IO.Path]::GetFileName($Target) -notmatch ('^dlssg_sm86-steam-' + [regex]::Escape($AppId) + '-\d+\.ini$')) { return $false }
+    if ([System.IO.Path]::GetFileName($Target) -notmatch ('^dlssg_sm86-' + [regex]::Escape($gameId) + '-\d+\.ini$')) { return $false }
     if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
 
     $contents = [System.IO.File]::ReadAllText($Target)
@@ -300,7 +313,7 @@ if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { 
 try {
     Assert-SteamEnginePaths
     Assert-SteamGameStopped -Executable $gameExe
-    Open-DeploymentJournal -GameId $steamGameId -GameProcess $gameProcessName -LauncherProcess @() -DiagnosticPrefix ("dlssg_sm86-steam-$AppId-") -GameExecutable $gameExe -SelectableProxy
+    Open-DeploymentJournal -GameId $gameId -GameProcess $gameProcessName -LauncherProcess @() -DiagnosticPrefix ("dlssg_sm86-$gameId-") -GameExecutable $gameExe -SelectableProxy
     if ($null -ne $script:deploymentJournal) {
         Write-Log ("旧部署恢复代理：{0}；来源：{1}" -f $deployment.Proxy, $projectProxy)
     }
@@ -318,13 +331,13 @@ try {
     }
     Resolve-PreviousDeployment
     Select-DlssgProxy -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName $settings.ProxyName
-    Write-Log ("游戏：{0}（AppID {1}）；代理 {2}：{3}；来源：{4}" -f $settings.GameName, $AppId, $settings.ProxyDll, $deployment.Proxy, $projectProxy)
+    Write-Log ("游戏：{0}（{1}）；代理 {2}：{3}；来源：{4}" -f $settings.GameName, $gameId, $settings.ProxyDll, $deployment.Proxy, $projectProxy)
     Write-Log "渲染 EXE：$gameExe"
     Resolve-LegacyEngineDeployment
-    Assert-FileExists -Path $engineConfigSource -Description 'Steam UE5 明文 Engine.ini 配置源'
+    Assert-FileExists -Path $engineConfigSource -Description 'UE 明文 Engine.ini 配置源'
     if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在，请先原版启动一次或使用 -ConfigDirectory 指定：$ConfigDirectory" }
     Write-Log "本次配置目录：$ConfigDirectory"
-    Assert-FileExists -Path $launcherExe -Description 'Steam'
+    Assert-FileExists -Path $launcherExe -Description '启动程序'
     Assert-FileExists -Path $gameExe -Description '游戏渲染 EXE'
     Assert-FileExists -Path $projectProxy -Description '所选 DLSSG 代理'
     Assert-FileExists -Path $projectIni -Description 'DLSSG configuration INI'
@@ -359,12 +372,12 @@ try {
 
     Set-DeploymentPhase 'active'
     $setupComplete = $true
-    Write-Log ("通过 Steam 启动：{0}（AppID {1}）" -f $settings.GameName, $AppId)
+    Write-Log ("启动方式：{0}；游戏：{1}；启动程序：{2}" -f $LaunchMode,$settings.GameName,$launcherExe)
     if (-not $storageExistedBefore) {
         $record = Start-DeploymentOperation -Kind storage -Path $storageDll -Hash (Get-HashOrNull $projectProxy)
         Complete-DeploymentOperation $record
     }
-    Start-Process -FilePath $launcherExe -WorkingDirectory $launcherDir -ArgumentList @('-applaunch', $AppId) -WindowStyle Hidden
+    Start-ConfiguredUEGame -LaunchMode $LaunchMode -Executable $launcherExe -AppId $AppId
     Wait-SteamGameSession -Executable $gameExe
 
 }
@@ -382,7 +395,7 @@ finally {
         }
         elseif ($setupStarted -and -not $DryRun) {
             Set-DeploymentPhase 'retained'
-            Write-Warning '部署与记录已保留；退出目标游戏后用原 -Profile 和 -RestoreDeployment 完整恢复；清单丢失时额外指定原 -AppId。'
+            Write-Warning '部署与记录已保留；退出目标游戏后用原 -Profile 和 -RestoreDeployment 完整恢复；Steam清单丢失时额外指定原 -AppId；直接启动保留原 -LaunchMode Direct -GameKey。'
         }
 
         if ($setupStarted -and -not $DryRun) {

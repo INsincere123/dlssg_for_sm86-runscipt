@@ -51,7 +51,7 @@ $blocked=$false
 try { Resolve-PortableQuality $profile $null -Root $root | Out-Null } catch { $blocked=$true }
 Assert-Test $blocked 'Unknown engine accepted a tier.'
 foreach ($major in @(4,5)) {
-    foreach ($tier in 1..4) {
+    foreach ($tier in 1..5) {
         $profile.QualityPreset='Tier'+$tier
         $q=Resolve-PortableQuality $profile ([pscustomobject]@{Major=$major;Source='fixture'}) -Root $root
         Assert-Test ([IO.File]::Exists($q.Path) -and $q.Path.Contains("\UE$major\0$tier-")) 'Incorrect tier mapping.'
@@ -66,23 +66,23 @@ $prefs=@{SteamPath='';Profiles=@($profile)}
 $directory=Join-Path $testRoot 'prefs'
 Save-PortablePreferences $prefs -Directory $directory
 $copy=$profile | ConvertTo-Json | ConvertFrom-Json
-$copy.QualityPreset='Tier3'
+$copy.QualityPreset='Tier5'
 Save-PortableProfileChange $prefs $copy -Directory $directory
 $reloaded=Read-PortablePreferences -Directory $directory
-Assert-Test ($reloaded.Profiles[0].QualityPreset -eq 'Tier3' -and $reloaded.Profiles[0].EngineOverride -eq 'UE4') 'Selection did not persist.'
+Assert-Test ($reloaded.Profiles[0].QualityPreset -eq 'Tier5' -and $reloaded.Profiles[0].EngineOverride -eq 'UE4') 'Selection did not persist.'
 $failed=$copy | ConvertTo-Json | ConvertFrom-Json
 $failed.QualityPreset='Tier1'
 $bad=Join-Path $testRoot 'not-a-directory'
 [IO.File]::WriteAllText($bad,'inert')
 $threw=$false
 try { Save-PortableProfileChange $prefs $failed -Directory $bad } catch { $threw=$true }
-Assert-Test ($threw -and $prefs.Profiles[0].QualityPreset -eq 'Tier3') 'Failed save did not roll back preferences.'
+Assert-Test ($threw -and $prefs.Profiles[0].QualityPreset -eq 'Tier5') 'Failed save did not roll back preferences.'
 $other=$profile | ConvertTo-Json | ConvertFrom-Json
 $other.Id='two';$other.AppId='456';$other.QualityPreset='Tier2'
 Save-PortableProfileChange $prefs $other -Directory $directory
 $reloaded=Read-PortablePreferences -Directory $directory
-Assert-Test ($reloaded.Profiles.Count -eq 2 -and $reloaded.Profiles[0].QualityPreset -eq 'Tier3' -and $reloaded.Profiles[1].QualityPreset -eq 'Tier2') 'Per-game state leaked.'
-Write-Host 'PASS: UE markers, overlap/UTF16, unknown/conflict, Build.version, cache, eight mappings, overrides, legacy preferences, persistence and save rollback.'
+Assert-Test ($reloaded.Profiles.Count -eq 2 -and $reloaded.Profiles[0].QualityPreset -eq 'Tier5' -and $reloaded.Profiles[1].QualityPreset -eq 'Tier2') 'Per-game state leaked.'
+Write-Host 'PASS: UE markers, overlap/UTF16, unknown/conflict, Build.version, cache, ten mappings including custom, overrides, legacy preferences, persistence and save rollback.'
 Write-Host "Artifacts: $testRoot"
 
 $ui=Join-Path $root 'scripts\ui\Show-SteamLauncher.ps1'
@@ -95,6 +95,7 @@ function Get-PortableSteamPath { param($Preferences) return 'inert' }
 function Get-PortableGameModel {
     param($Profile,$SteamPath,$EngineDetection)
     $major=0;$source='无法确定'
+    if ($null -eq $EngineDetection) { $EngineDetection=Get-PortableSavedEngine $Profile }
     if ($null -ne $EngineDetection) {$major=$EngineDetection.Major;$source=$EngineDetection.Source}
     return [pscustomobject]@{Profile=$Profile;GameDirectory=$Profile.GameDirectory;Executable=(Join-Path $Profile.GameDirectory 'Game.exe');
         EngineMajor=$major;EngineSource=$source;Status='fixture';Ready=$true;Recovery=$script:recoverFixture;ConfigDirectory='inert';SteamPath='inert'}
@@ -104,13 +105,15 @@ $first.EngineOverride='Auto';$first.GameDirectory=$c.Directory
 $second=$first | ConvertTo-Json | ConvertFrom-Json
 $second.Id='second';$second.GameDirectory=$b.Directory
 $games=[pscustomobject]@{SelectedItem=$first}
-$script:preferences=@{}
+$script:preferences=@{SteamPath='';Profiles=@()}
+$script:engineSaveFailed=@{}
+function Get-PortableDataDirectory { return Join-Path $testRoot 'gui-engine-prefs' }
 Add-Type -AssemblyName System.Drawing
-$script:busy=$false;$script:recoverFixture=$false;$script:qualityIds=@('Current','Tier1','Tier2','Tier3','Tier4')
+$script:busy=$false;$script:recoverFixture=$false;$script:qualityIds=@('Current','Tier1','Tier2','Tier3','Tier4','Tier5')
 $script:status=[pscustomobject]@{Text='';ForeColor=$null};$script:details=[pscustomobject]@{Text=''}
 $launch=[pscustomobject]@{Enabled=$false};$restore=[pscustomobject]@{Enabled=$false};$check=[pscustomobject]@{Enabled=$false}
 $choose=[pscustomobject]@{Enabled=$false};$advancedToggle=[pscustomobject]@{Enabled=$false}
-$steamBox=[pscustomobject]@{Text=''};$sourceBox=[pscustomobject]@{Text=''}
+$steamBox=[pscustomobject]@{Text='';Enabled=$true};$browseSteam=[pscustomobject]@{Enabled=$true};$sourceBox=[pscustomobject]@{Text=''}
 $proxyBox=[pscustomobject]@{SelectedIndex=-1}
 $qualityBox=[pscustomobject]@{SelectedIndex=-1;Enabled=$true};$engineBox=[pscustomobject]@{SelectedIndex=-1;Enabled=$true}
 Refresh-Game
@@ -127,3 +130,26 @@ $script:recoverFixture=$true
 Refresh-Game
 Assert-Test (-not $qualityBox.Enabled -and -not $engineBox.Enabled -and $restore.Enabled) 'Recovery did not lock quality/engine controls.'
 Write-Host 'PASS: actual GUI refresh ignores stale game result, preserves unsaved editors and locks quality during recovery.'
+
+# A persisted successful result must work even after the EXE contents change.
+$reopened=Read-PortablePreferences -Directory (Join-Path $testRoot 'gui-engine-prefs')
+$persisted=@($reopened.Profiles | Where-Object Id -eq 'second')[0]
+Assert-Test ($persisted.DetectedEngineMajor -eq 4) 'Detected engine was not saved.'
+$games.SelectedItem=$persisted
+$script:recoverFixture=$false
+[IO.File]::WriteAllText((Join-Path $persisted.GameDirectory 'Game.exe'),'++UE5+Release-5.3 changed')
+Refresh-Game
+Assert-Test ($script:model.EngineMajor -eq 4 -and $null -eq $script:scanTask -and $script:model.EngineSource -match '已保存') 'Reopened game was rescanned or lost saved version.'
+$persisted.EngineOverride='UE5'
+Assert-Test ((Resolve-PortableQuality $persisted $null -Root $root).Major -eq 5) 'Manual calibration lost precedence over saved detection.'
+$before=$persisted.DetectedEngineMajor
+$invalid=[pscustomobject]@{Major=0;Source='conflict'}
+Save-PortableEngineDetection $script:preferences $persisted $invalid -Directory (Join-Path $testRoot 'gui-engine-prefs')
+Assert-Test ($persisted.DetectedEngineMajor -eq $before) 'Unknown result replaced a saved version.'
+$failed=$persisted | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+$failed.DetectedEngineMajor=0
+$originalProfiles=$script:preferences.Profiles
+$failedWrite=$false
+try { Save-PortableEngineDetection $script:preferences $failed ([pscustomobject]@{Major=5;Source='fixture'}) -Directory $bad } catch { $failedWrite=$true }
+Assert-Test ($failedWrite -and $failed.DetectedEngineMajor -eq 0 -and [object]::ReferenceEquals($originalProfiles,$script:preferences.Profiles)) 'Engine save failure published unsaved state.'
+Write-Host 'PASS: detected version persists per game, reopen skips scanning despite changed EXE, manual override wins, unknown is not saved and failed save rolls back.'
