@@ -40,3 +40,8 @@ Desktop.ini
 
 # Keep scripts, DLL resources, INI sources, snapshots, reference analyses and
 # intentional backups trackable. Do not ignore whole config/archive folders.
+
+# DLSS-SR 运行时资源：sr_kernels.dll（101 MiB）与 nvngx_dlss.dll（71 MiB）超出
+# GitHub 100 MiB 单文件硬上限，已从 Git 历史移除；文件保留在本地工作目录，
+# 由 Export-PortableLauncher 打包时从工作目录直接复制，不纳入版本管理。
+/dlssg_sm86/sr/
