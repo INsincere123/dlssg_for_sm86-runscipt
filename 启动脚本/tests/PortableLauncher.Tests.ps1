@@ -62,6 +62,28 @@ $settings=Get-SteamUE5Settings -AppId 456 -Profile desktop -Path $request
 Assert-Test ($settings.GameDirectory -eq $game -and $settings.RenderExecutable -eq $executable) 'GUI request does not roundtrip through actual core configuration reader.'
 Write-Host 'PASS: path-free presets, Steam library discovery, stale-device fallback, local preferences and core INI handoff.'
 
+# Quality paths must survive the real model -> launch INI -> core reader chain.
+$profile.QualityPreset='Tier2'
+$model=Get-PortableGameModel $profile $steam -Root $fixture
+Assert-Test (-not $model.Ready -and $model.Status -match '校准') 'Unknown engine did not block tier launch.'
+$detected=[pscustomobject]@{Major=5;Source='fixture'}
+$model=Get-PortableGameModel $profile $steam -Root $fixture -EngineDetection $detected
+Assert-Test (-not $model.Ready -and $model.Status -match '配置源缺失') 'Missing tier silently fell back.'
+foreach ($engine in @('UE4','UE5')) {
+    foreach ($tier in @('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅')) {
+        $tierDirectory=Join-Path $fixture "配置\虚幻通用分类\$engine\$tier"
+        [void][IO.Directory]::CreateDirectory($tierDirectory)
+        [IO.File]::WriteAllText((Join-Path $tierDirectory 'Engine.ini'),'[SystemSettings]')
+    }
+}
+$model=Get-PortableGameModel $profile $steam -Root $fixture -EngineDetection $detected
+Assert-Test ($model.Ready -and $model.EngineMajor -eq 5) 'Recognized tier did not become ready.'
+$tierRequest=Write-PortableLaunchConfig $model (Join-Path $testRoot 'tier-request')
+$tierSettings=Get-SteamUE5Settings -AppId 456 -Profile desktop -Path $tierRequest
+Assert-Test ($tierSettings.EngineConfigSource -eq $model.EngineConfigSource -and $model.EngineConfigSource.Contains('UE5\02-')) 'Check/launch effective source diverged.'
+$profile.QualityPreset='Current'
+Write-Host 'PASS: unknown-engine tier lockout, missing tier rejection and effective source handoff.'
+
 $profile.ConfigDirectory=Join-Path $testRoot 'NotYetCreated'
 $model=Get-PortableGameModel $profile $steam -Root $fixture
 Assert-Test (-not $model.Ready -and $model.Status -match '原版启动') 'Missing game config not explained.'
@@ -76,6 +98,8 @@ $state=Join-Path $fixture '.state\steam-456'
 $journal=@{Version=1;GameId='steam-456';Render=(Split-Path -Parent $executable);Engine=(Join-Path $config 'Engine.ini')}
 [IO.File]::WriteAllText((Join-Path $state 'active.json'),($journal | ConvertTo-Json))
 # A changed preference must never redirect recovery away from the recorded originals.
+$profile.QualityPreset='Tier4'
+$profile.EngineOverride='Auto'
 $profile.GameDirectory='Z:\AnotherGame'
 $profile.ConfigDirectory='Z:\AnotherConfig'
 $model=Get-PortableGameModel $profile '' -Root $fixture
