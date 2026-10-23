@@ -42,7 +42,7 @@ function Add-TestEngine {
     }
 }
 try {
-    foreach ($file in @('scripts\common\DeploymentJournal.ps1','scripts\common\LauncherResources.ps1','scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
+    foreach ($file in @('scripts\common\DeploymentJournal.ps1','scripts\common\LauncherResources.ps1','scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-SteamUE5-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
         $tokens=$null; $errors=$null
         [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $launcherRoot $file),[ref]$tokens,[ref]$errors)
         Assert-Test ($errors.Count -eq 0) "Syntax errors: $file"
@@ -185,7 +185,7 @@ try {
     Write-Host 'PASS: journal write failure stops filesystem mutation.'
 
     # Exercise each launcher's actual Prepare-EngineConfig, not a duplicate implementation.
-    foreach ($launcher in @('scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
+    foreach ($launcher in @('scripts\games\Run-WutheringWaves-DLSSG.ps1','scripts\games\Run-SteamUE5-DLSSG.ps1','scripts\games\Run-NevernessToEverness-DLSSG.ps1')) {
         $tokens=$null; $errors=$null
         $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $launcherRoot $launcher),[ref]$tokens,[ref]$errors)
         foreach ($name in @('Assert-FileExists','Write-Log','Prepare-EngineConfig')) {
@@ -208,7 +208,7 @@ try {
         Assert-Test ((Get-HashOrNull $engineConfigPath) -eq $originalHash) 'Actual launcher rollback changed original.'
         Remove-Item -LiteralPath $engineConfigPath
     }
-    Write-Host 'PASS: both actual launcher Engine.ini preparation functions recover after injected link failure.'
+    Write-Host 'PASS: all three actual launcher Engine.ini preparation functions recover after injected link failure.'
 
     # Positive file-link path using simulated link metadata when this process is not elevated.
     # Backup movement, runtime writes, journal saves/reloads and hash checks remain real filesystem operations.

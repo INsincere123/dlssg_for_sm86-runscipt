@@ -48,12 +48,14 @@ function Save-DeploymentJournal {
 }
 
 function Open-DeploymentJournal {
-    param([string]$GameId, [string]$GameProcess, [string[]]$LauncherProcess, [string]$DiagnosticPrefix)
+    param([string]$GameId, [string]$GameProcess, [string[]]$LauncherProcess, [string]$DiagnosticPrefix,
+        [string]$GameExecutable, [switch]$SelectableProxy)
     $script:journalContext = @{
         GameId = $GameId; GameProcess = $GameProcess; LauncherProcess = $LauncherProcess
         Render = [IO.Path]::GetFullPath($renderDir); Engine = [IO.Path]::GetFullPath($engineConfigPath)
         Runtime = [IO.Path]::GetFullPath($engineRuntimePath); Backup = [IO.Path]::GetFullPath($engineBackupPath)
         DiagnosticPrefix = $DiagnosticPrefix
+        GameExecutable = $GameExecutable; SelectableProxy = [bool]$SelectableProxy
     }
     $script:journalPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".state\$GameId\active.json"
     Assert-JournalOrdinaryParents $script:journalPath
@@ -81,6 +83,11 @@ function Open-DeploymentJournal {
     if ($null -ne $item) {
         if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid journal file.' }
         $script:deploymentJournal = [IO.File]::ReadAllText($script:journalPath) | ConvertFrom-Json
+        if ($SelectableProxy) {
+            # Resolve only a whitelisted proxy name, never a source path from JSON.
+            if ($null -eq $script:deploymentJournal.PSObject.Properties['ProxyName']) { throw 'Missing recorded proxy name.' }
+            Select-DlssgProxy -ProjectDirectory $deployment.Project -RenderDirectory $renderDir -ProxyName $script:deploymentJournal.ProxyName
+        }
         Assert-DeploymentJournal
     }
 }
@@ -101,6 +108,9 @@ function Close-DeploymentJournal {
 function Assert-DeploymentJournal {
     $j = $script:deploymentJournal
     if ($j.Version -ne 1 -or $j.GameId -ne $script:journalContext.GameId) { throw 'Unsupported/corrupt deployment journal.' }
+    if ($script:journalContext.ContainsKey('SelectableProxy') -and $script:journalContext.SelectableProxy) {
+        if ($j.ProxyName -cne $deployment.Proxy) { throw 'Recorded proxy does not match recovery context.' }
+    }
     foreach ($name in @('Render','Engine','Runtime','Backup')) {
         if ((Get-NormalizedPath $j.$name) -ne (Get-NormalizedPath $script:journalContext[$name])) {
             throw "Journal context changed ($name); use the original game/config directory."
@@ -149,6 +159,9 @@ function New-DeploymentJournal {
         OriginalExisted = ($null -ne (Get-JournalItem $engineConfigPath)); OriginalHash = (Get-HashOrNull $engineConfigPath)
         StorageExisted = ($null -ne (Get-JournalItem $storageDll)); Phase = 'deploying'
         Operations = @(); Reused = @()
+    }
+    if ($c.ContainsKey('SelectableProxy') -and $c.SelectableProxy) {
+        $script:deploymentJournal | Add-Member -NotePropertyName ProxyName -NotePropertyValue $deployment.Proxy
     }
     Save-DeploymentJournal
 }
@@ -325,6 +338,10 @@ function Assert-DeploymentResourcesRemoved {
 }
 
 function Assert-RecoveryProcessesStopped {
+    if ($script:journalContext.ContainsKey('GameExecutable') -and $script:journalContext.GameExecutable) {
+        if (@(Get-SteamGameProcesses -Executable $script:journalContext.GameExecutable).Count) { throw 'Game still running; deployment preserved.' }
+        return
+    }
     $allProcesses = @(Get-Process -ErrorAction Stop)
     foreach ($name in (@($script:journalContext.GameProcess) + @($script:journalContext.LauncherProcess))) {
         $running = @($allProcesses | Where-Object ProcessName -eq $name)
@@ -337,7 +354,7 @@ function Restore-RecordedDeployment {
     if ($null -eq $script:deploymentJournal) { return }
     Assert-DeploymentJournal
     # Normal exit may leave the official launcher open. Explicit recovery requires both stopped.
-    if ($Automatic) {
+    if ($Automatic -and -not ($script:journalContext.ContainsKey('GameExecutable') -and $script:journalContext.GameExecutable)) {
         if (@(Get-Process -ErrorAction Stop | Where-Object ProcessName -eq $script:journalContext.GameProcess).Count) { throw 'Game still running; deployment preserved.' }
     } else { Assert-RecoveryProcessesStopped }
     if (-not $Preview) { Set-DeploymentPhase 'recovering' }
