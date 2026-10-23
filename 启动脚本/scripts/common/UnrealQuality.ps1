@@ -87,20 +87,23 @@ function Initialize-PortableQuality {
     param($Profile)
     if ($null -eq $Profile.PSObject.Properties['QualityPreset']) { $Profile | Add-Member NoteProperty QualityPreset Current }
     if ($null -eq $Profile.PSObject.Properties['EngineOverride']) { $Profile | Add-Member NoteProperty EngineOverride Auto }
-    if ($Profile.QualityPreset -notin @('Current','Tier1','Tier2','Tier3','Tier4')) { throw '画质档位无效。' }
+    if ($null -eq $Profile.PSObject.Properties['DetectedEngineMajor']) { $Profile | Add-Member NoteProperty DetectedEngineMajor 0 }
+    if ($null -eq $Profile.PSObject.Properties['DetectedEngineSource']) { $Profile | Add-Member NoteProperty DetectedEngineSource '' }
+    if ($Profile.QualityPreset -notin @('Current','Tier1','Tier2','Tier3','Tier4','Tier5')) { throw '画质档位无效。' }
     if ($Profile.EngineOverride -notin @('Auto','UE4','UE5')) { throw '引擎校准设置无效。' }
 }
 
 function Resolve-PortableQuality {
     param($Profile, $Detection, [string]$Root=(Get-LauncherRoot))
     Initialize-PortableQuality $Profile
+    if ($null -eq $Detection) { $Detection=Get-PortableSavedEngine $Profile }
     $major=0; $source='无法确定'
     if ($null -ne $Detection) { $major=[int]$Detection.Major; $source=[string]$Detection.Source }
     if ($Profile.EngineOverride -ne 'Auto') { $major=[int]$Profile.EngineOverride.Substring(2); $source='手动校准' }
     $path=Resolve-LauncherConfigPath $Profile.EngineConfigSource '配置源' -Root $Root
     if ($Profile.QualityPreset -ne 'Current') {
         if ($major -notin @(4,5)) { throw '尚未确定UE4/UE5，请等待识别或在高级设置校准引擎版本。' }
-        $folder=@('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅')[[int]$Profile.QualityPreset.Substring(4)-1]
+        $folder=@('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅','05-自定义')[[int]$Profile.QualityPreset.Substring(4)-1]
         $path=Join-Path $Root "配置\虚幻通用分类\UE$major\$folder\Engine.ini"
     }
     return [pscustomobject]@{Major=$major;Source=$source;Path=$path}
@@ -112,4 +115,26 @@ function Save-PortableProfileChange {
     $old=$Preferences.Profiles
     try { Set-PortableProfile $Preferences $Profile; Save-PortablePreferences $Preferences -Directory $Directory }
     catch { $Preferences.Profiles=$old; throw }
+}
+
+function Get-PortableSavedEngine {
+    param($Profile)
+    if ($null -eq $Profile.PSObject.Properties['DetectedEngineMajor'] -or [string]$Profile.DetectedEngineMajor -notmatch '^[45]$') { return $null }
+    $source='已保存的识别结果'
+    if ($null -ne $Profile.PSObject.Properties['DetectedEngineSource'] -and $Profile.DetectedEngineSource) { $source+='：'+[string]$Profile.DetectedEngineSource }
+    return [pscustomobject]@{Major=[int]$Profile.DetectedEngineMajor;Source=$source}
+}
+
+function Save-PortableEngineDetection {
+    param($Preferences,$Profile,$Detection,[string]$Directory=(Get-PortableDataDirectory))
+    if ($null -eq $Detection -or [string]$Detection.Major -notmatch '^[45]$') { return }
+    $copy=$Profile | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+    Initialize-PortableQuality $copy
+    $copy.DetectedEngineMajor=[int]$Detection.Major
+    $copy.DetectedEngineSource=[string]$Detection.Source
+    Save-PortableProfileChange $Preferences $copy -Directory $Directory
+    # Publish to the selected UI object only after the atomic write succeeds.
+    Initialize-PortableQuality $Profile
+    $Profile.DetectedEngineMajor=$copy.DetectedEngineMajor
+    $Profile.DetectedEngineSource=$copy.DetectedEngineSource
 }

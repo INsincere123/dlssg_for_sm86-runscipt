@@ -16,11 +16,12 @@ try {
     $script:updating = $false
     $script:lastStatus = ''
     $script:customSourceSelected = $false
+    $script:engineSaveFailed = @{}
     $script:scanTask = $null
-    $script:qualityIds = @('Current','Tier1','Tier2','Tier3','Tier4')
+    $script:qualityIds = @('Current','Tier1','Tier2','Tier3','Tier4','Tier5')
 
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'DLSSG 游戏启动器'
+    $form.Text = '虚幻游戏启动器'
     $form.Size = New-Object Drawing.Size(790,555)
     $form.MinimumSize = $form.Size
     $form.MaximumSize = New-Object Drawing.Size(790,780)
@@ -68,7 +69,7 @@ try {
     }
     $title = New-Label $form '选好游戏，直接开始。' 26 22 700 42
     $title.Font = New-Object Drawing.Font('Microsoft YaHei UI',21,[Drawing.FontStyle]::Bold)
-    $subtitle = New-Label $form '自动寻找 Steam 游戏；退出后恢复原文件。' 28 73 700
+    $subtitle = New-Label $form '支持 Steam 和 EXE 直接启动；退出后恢复原文件。' 28 73 700
     $subtitle.ForeColor = [Drawing.Color]::DimGray
     [void](New-Label $form '游戏' 28 119 40)
     $games = New-Object Windows.Forms.ComboBox
@@ -77,7 +78,7 @@ try {
     [void](New-Label $form '画质' 328 119 44)
     $qualityBox=New-Object Windows.Forms.ComboBox
     $qualityBox.SetBounds(376,115,200,34); $qualityBox.DropDownStyle='DropDownList'
-    foreach ($item in @('当前配置','高性能均衡','主流均衡','性能优先','入门流畅')) { [void]$qualityBox.Items.Add($item) }
+    foreach ($item in @('当前配置','高性能均衡','主流均衡','性能优先','入门流畅','05-自定义')) { [void]$qualityBox.Items.Add($item) }
     $form.Controls.Add($qualityBox)
     $add = New-Button $form '添加其他游戏' 588 111 132
     $script:status = New-Label $form '正在查找…' 28 171 690 56
@@ -126,13 +127,21 @@ try {
     function Refresh-Game {
         param([switch]$PreserveEditors)
         if ($script:busy -or $null -eq $games.SelectedItem) { return }
-        $script:model = Get-PortableGameModel -Profile $games.SelectedItem -SteamPath (Get-PortableSteamPath $script:preferences)
+        $selectedSteam=if ($null -ne $games.SelectedItem.PSObject.Properties['LaunchMode'] -and $games.SelectedItem.LaunchMode -eq 'Direct') { '' } else { Get-PortableSteamPath $script:preferences }
+        $script:model = Get-PortableGameModel -Profile $games.SelectedItem -SteamPath $selectedSteam
         $script:scanTask=$null
-        if (-not $script:model.Recovery -and $script:model.Executable -and $games.SelectedItem.EngineOverride -eq 'Auto') {
+        if (-not $script:model.Recovery -and $script:model.Executable -and $games.SelectedItem.EngineOverride -eq 'Auto' -and $null -eq (Get-PortableSavedEngine $games.SelectedItem)) {
             $task=[DlssgUnrealDetector]::Start($script:model.GameDirectory,$script:model.Executable)
             if ($task.IsCompleted) {
                 $detection=if ($task.IsFaulted -or $task.IsCanceled) { [pscustomobject]@{Major=0;Source='识别失败，请手动校准'} } else { $task.Result }
-                $script:model=Get-PortableGameModel -Profile $games.SelectedItem -SteamPath (Get-PortableSteamPath $script:preferences) -EngineDetection $detection
+                if ($detection.Major -in @(4,5) -and -not $script:engineSaveFailed.ContainsKey($games.SelectedItem.Id)) {
+                    try { Save-PortableEngineDetection $script:preferences $games.SelectedItem $detection }
+                    catch {
+                        $script:engineSaveFailed[$games.SelectedItem.Id]=$true
+                        Show-Failure ('本次引擎已识别，但保存失败，下次可能需要重新识别：'+$_.Exception.Message)
+                    }
+                }
+                $script:model=Get-PortableGameModel -Profile $games.SelectedItem -SteamPath $selectedSteam -EngineDetection $detection
             } else {
                 $script:scanTask=$task
                 $script:model.EngineSource='正在后台识别…'
@@ -140,7 +149,7 @@ try {
         }
         $script:status.Text = $script:model.Status
         $script:status.ForeColor = if ($script:model.Ready) { [Drawing.Color]::FromArgb(25,125,75) } else { [Drawing.Color]::FromArgb(155,100,25) }
-        $script:details.Text = "游戏位置：$($script:model.GameDirectory)`r`n配置位置：$($script:model.ConfigDirectory)`r`n引擎：$(if ($script:model.EngineMajor) { "UE$($script:model.EngineMajor)" } else { "未知" })（$($script:model.EngineSource)） · 代理：$($script:model.Profile.ProxyDll)"
+        $script:details.Text = "游戏位置：$($script:model.GameDirectory)`r`n配置位置：$($script:model.ConfigDirectory)`r`n$(if ($null -ne $games.SelectedItem.PSObject.Properties['LaunchMode'] -and $games.SelectedItem.LaunchMode -eq 'Direct') { 'EXE' } else { 'Steam' }) · 引擎：$(if ($script:model.EngineMajor) { "UE$($script:model.EngineMajor)" } else { "未知" })（$($script:model.EngineSource)） · 代理：$($script:model.Profile.ProxyDll)"
         $launch.Enabled=$script:model.Ready
         $restore.Enabled=$script:model.Recovery
         $check.Enabled=$script:model.Ready
@@ -159,6 +168,9 @@ try {
         }
         $qualityBox.Enabled=-not $script:model.Recovery
         $engineBox.Enabled=-not $script:model.Recovery
+        $isDirect=$null -ne $games.SelectedItem.PSObject.Properties['LaunchMode'] -and $games.SelectedItem.LaunchMode -eq 'Direct'
+        $steamBox.Enabled=-not $isDirect -and -not $script:model.Recovery
+        $browseSteam.Enabled=$steamBox.Enabled
     }
     function Load-Games {
         param([string]$SelectedId='')
@@ -191,7 +203,11 @@ try {
             $requestDirectory = Join-Path (Get-PortableDataDirectory) ('runs\'+[guid]::NewGuid().ToString('N'))
             $config = Write-PortableLaunchConfig $script:model $requestDirectory
             $script:resultPath = Join-Path $requestDirectory 'result.json'
-            $command = New-PortableWorkerCommand -ScriptPath (Join-Path $root 'scripts\games\Run-SteamUE5-DLSSG.ps1') -ConfigPath $config -AppId $script:model.Profile.AppId -ResultPath $script:resultPath -Action $Action
+            $workerArguments=@{ScriptPath=(Join-Path $root 'scripts\games\Run-SteamUE5-DLSSG.ps1');ConfigPath=$config;AppId=$script:model.Profile.AppId;ResultPath=$script:resultPath;Action=$Action}
+            if ($null -ne $script:model.Profile.PSObject.Properties['LaunchMode'] -and $script:model.Profile.LaunchMode -eq 'Direct') {
+                $workerArguments.LaunchMode='Direct';$workerArguments.GameKey=$script:model.Profile.Id.Substring(7)
+            }
+            $command=New-PortableWorkerCommand @workerArguments
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
             $parameters = @{ FilePath=(Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'); ArgumentList=$arguments; PassThru=$true }
@@ -229,10 +245,17 @@ try {
     $check.Add_Click({ Start-Action Check })
     $choose.Add_Click({
         try {
-            $directory=Select-Folder '选择 Steam 游戏的安装文件夹（例如 BlackMythWukong）'
+            $directory=Select-Folder '选择当前游戏的安装文件夹（例如 BlackMythWukong）'
             if (-not $directory) { return }
-            $id=Resolve-SteamAppId $directory (Get-PortableSteamPath $script:preferences)
-            if ($id.AppId -ne $games.SelectedItem.AppId) { throw '这个文件夹不是当前选择的游戏。' }
+            if ($games.SelectedItem.LaunchMode -eq 'Steam') {
+                $id=Resolve-SteamAppId $directory (Get-PortableSteamPath $script:preferences)
+                if ($id.AppId -ne $games.SelectedItem.AppId) { throw '这个文件夹不是当前选择的游戏。' }
+            } else {
+                foreach ($relative in @($games.SelectedItem.RenderExecutable,$games.SelectedItem.LaunchExecutable)) {
+                    $path=Resolve-DirectExecutable $directory $relative
+                    if (-not [IO.File]::Exists($path)) { throw '所选目录不包含当前游戏原有的启动/渲染EXE相对路径。' }
+                }
+            }
             $games.SelectedItem.GameDirectory=$directory
             Set-PortableProfile $script:preferences $games.SelectedItem
             Save-PortablePreferences $script:preferences
@@ -248,7 +271,7 @@ try {
     $browseSource.Add_Click({ $file=Select-File '选择明文 Engine.ini 配置源' 'INI 配置 (*.ini)|*.ini'; if ($file) { $sourceBox.Text=$file; $script:customSourceSelected=$true } })
     $save.Add_Click({
         try {
-            if (-not [IO.File]::Exists($steamBox.Text)) { throw '请选择有效的 steam.exe。' }
+            if ($games.SelectedItem.LaunchMode -eq 'Steam' -and -not [IO.File]::Exists($steamBox.Text)) { throw '请选择有效的 steam.exe。' }
             if (-not [IO.File]::Exists($sourceBox.Text)) { throw '请选择有效的明文 INI 配置。' }
             if ($script:model.Recovery) { throw '请先恢复上次部署。' }
             $profile=$games.SelectedItem | ConvertTo-Json -Depth 6 | ConvertFrom-Json
@@ -259,7 +282,7 @@ try {
             $profile.EngineConfigSource=$sourceBox.Text
             $oldSteam=$script:preferences.SteamPath
             try {
-                $script:preferences.SteamPath=$steamBox.Text
+                if ($profile.LaunchMode -eq 'Steam') { $script:preferences.SteamPath=$steamBox.Text }
                 Save-PortableProfileChange $script:preferences $profile
             } catch { $script:preferences.SteamPath=$oldSteam; throw }
             Load-Games $profile.Id
@@ -272,29 +295,50 @@ try {
             Start-Process explorer.exe -ArgumentList ('"{0}"' -f $directory)
         } catch { Show-Failure $_.Exception.Message }
     })
-    $add.Add_Click({
+    function Add-LauncherGame {
+        param([ValidateSet('Steam','Direct')][string]$Mode)
         try {
-            $directory=Select-Folder '选择其他 Steam UE4/UE5 游戏的安装文件夹'
+            $directory=Select-Folder '选择UE4/UE5游戏的安装文件夹'
             if (-not $directory) { return }
-            $steam=Get-PortableSteamPath $script:preferences
-            if (-not $steam) { throw '请先在高级设置中选择 Steam。' }
-            $detected=Resolve-SteamAppId $directory $steam
-            if (@($games.Items | Where-Object AppId -eq $detected.AppId).Count) { throw '这款游戏已在列表中，请直接选择。' }
-            [void][Windows.Forms.MessageBox]::Show($form,'接下来选择真正的游戏程序，通常位于 项目名\Binaries\Win64，名称以 Shipping.exe 结尾。','添加游戏')
-            $exe=Select-File '选择游戏渲染程序（不是根目录启动入口）' '游戏程序 (*.exe)|*.exe' $directory
-            if (-not $exe) { return }
-            $prefix=$directory.TrimEnd('\')+'\'
-            if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw '请选择游戏文件夹内的程序。' }
-            $configDirectory=Select-Folder '选择包含 Engine.ini / GameUserSettings.ini 的配置文件夹；请先原版启动一次'
+            $prefix=[IO.Path]::GetFullPath($directory).TrimEnd('\')+'\'
+            $appId='';$launchExe=''
+            if ($Mode -eq 'Steam') {
+                $steam=Get-PortableSteamPath $script:preferences
+                if (-not $steam) { throw '请先在高级设置中选择Steam。' }
+                $detected=Resolve-SteamAppId $directory $steam
+                $appId=$detected.AppId
+                if (@($games.Items | Where-Object { $_.LaunchMode -eq 'Steam' -and $_.AppId -eq $appId }).Count) { throw '这款Steam游戏已在列表中，请直接选择。' }
+            } else {
+                $launchExe=Select-File '选择要直接运行的游戏EXE' '游戏程序 (*.exe)|*.exe' $directory
+                if (-not $launchExe) { return }
+                if (-not $launchExe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw '请选择安装文件夹内的EXE。' }
+            }
+            if ($Mode -eq 'Direct' -and $launchExe -match '\\Binaries\\Win64\\[^\\]+\.exe$') {
+                $exe=$launchExe
+            } else {
+                [void][Windows.Forms.MessageBox]::Show($form,'请选择真正负责渲染的游戏程序，通常位于 项目名\Binaries\Win64，以 Shipping.exe 结尾。直接启动时也可与刚选的EXE相同。','选择渲染程序')
+                $exe=Select-File '选择真正的游戏渲染EXE（用于部署和退出监控）' '游戏程序 (*.exe)|*.exe' $directory
+                if (-not $exe) { return }
+            }
+            if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw '请选择安装文件夹内的渲染EXE。' }
+            if ($Mode -eq 'Direct' -and @($games.Items | Where-Object { $_.LaunchMode -eq 'Direct' -and (Join-Path $_.GameDirectory $_.RenderExecutable) -ieq $exe }).Count) { throw '这个渲染EXE已添加，请选择已有条目。' }
+            $configDirectory=Select-Folder '选择包含Engine.ini / GameUserSettings.ini的配置文件夹；请先原版启动一次'
             if (-not $configDirectory) { return }
-            $profile=[pscustomobject]@{ Id=('custom-'+$detected.AppId); Name=(Split-Path -Leaf $directory); AppId=$detected.AppId;
-                GameDirectory=$directory; RenderExecutable=$exe.Substring($prefix.Length); ConfigDirectory=$configDirectory;
-                EngineConfigSource='配置\SteamUE5\Engine.ini'; ProxyDll=1; QualityPreset='Tier2'; EngineOverride='Auto' }
-            Set-PortableProfile $script:preferences $profile
-            Save-PortablePreferences $script:preferences
+            $id=if ($Mode -eq 'Direct') { 'direct-'+[guid]::NewGuid().ToString('N') } else { 'custom-'+$appId }
+            $profile=[pscustomobject]@{Id=$id;Name=(Split-Path -Leaf $directory);AppId=$appId;LaunchMode=$Mode;
+                GameDirectory=$directory;RenderExecutable=$exe.Substring($prefix.Length);ConfigDirectory=$configDirectory;
+                LaunchExecutable=$(if ($Mode -eq 'Direct') { $launchExe.Substring($prefix.Length) } else { $exe.Substring($prefix.Length) });
+                EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='Auto'}
+            Save-PortableProfileChange $script:preferences $profile
             Load-Games $profile.Id
         } catch { Show-Failure $_.Exception.Message }
-    })
+    }
+    $addMenu=New-Object Windows.Forms.ContextMenuStrip
+    $steamItem=$addMenu.Items.Add('添加 Steam 游戏')
+    $directItem=$addMenu.Items.Add('添加 EXE 游戏')
+    $steamItem.Add_Click({ Add-LauncherGame Steam })
+    $directItem.Add_Click({ Add-LauncherGame Direct })
+    $add.Add_Click({ $addMenu.Show($add,0,$add.Height) })
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval=250
     $timer.Add_Tick({
@@ -341,7 +385,7 @@ try {
         }
         Write-Output ("GUI smoke test passed: {0}; {1}" -f $games.SelectedItem.Name,$script:model.Status)
     } else { $timer.Start(); [void]$form.ShowDialog() }
-    $timer.Dispose(); $form.Dispose()
+    $timer.Dispose(); $addMenu.Dispose(); $form.Dispose()
 } catch {
     if ($SmokeTest) { throw }
     Add-Type -AssemblyName System.Windows.Forms
