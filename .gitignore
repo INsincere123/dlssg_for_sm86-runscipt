@@ -1,4 +1,30 @@
+# Local editor state and code indexes
+.vs/
+.idea/
 .codebase-memory/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-启动脚本/.state/
-dist/
+# Deployment records, runtime logs and captures
+/启动脚本/.state/
+/启动脚本/logs/
+/dlssg_sm86/logs/
+/dlssg_sm86/capture/
+
+# Generated portable packages (keep release resources outside dist tracked)
+/dist/
+
+# Temporary writes and editor/OS leftovers
+*.tmp
+*.tmp.previous
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Keep scripts, DLL resources, INI sources, snapshots, reference analyses and
+# intentional backups trackable. Do not ignore whole config/archive folders.
