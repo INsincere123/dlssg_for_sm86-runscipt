@@ -1,4 +1,14 @@
 ﻿# Shared 0.4.0 resource deployment. Never traverse a resource link during cleanup.
+function Select-DlssgProxy {
+    param([string]$ProjectDirectory, [string]$RenderDirectory,
+        [ValidateSet('version.dll','winmm.dll','dbghelp.dll','dinput8.dll','dxgi.dll','d3d12.dll')][string]$ProxyName)
+    $relative = if ($ProxyName -eq 'version.dll') { $ProxyName } else { "alternatives\$ProxyName" }
+    $script:projectProxy = Join-Path $ProjectDirectory $relative
+    $script:storageDll = Join-Path $RenderDirectory "_storage_\$ProxyName"
+    $script:deployment = New-DlssgDeployment -ProjectDirectory $ProjectDirectory -RenderDirectory $RenderDirectory -ProxyName $ProxyName
+    $script:linkSpecs[0] = @{ Path = (Join-Path $RenderDirectory $ProxyName); Target = $script:projectProxy }
+}
+
 function New-DlssgDeployment {
     param([string]$ProjectDirectory, [string]$RenderDirectory, [string]$ProxyName)
     $root = Join-Path $RenderDirectory 'dlssg_sm86'

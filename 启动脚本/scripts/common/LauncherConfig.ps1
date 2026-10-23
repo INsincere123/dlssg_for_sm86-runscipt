@@ -58,8 +58,11 @@ function Read-LauncherConfigSection {
         '游戏目录'='GameDirectory'; '启动器路径'='LauncherPath'; '配置源'='EngineConfigSource'
         '游戏配置目录'='ConfigDirectory'; '重启等待秒数'='RestartGraceSeconds'
         '设备实例标识'='DeviceInstanceId'; '目标显示名称'='TargetName'
+        '游戏名称'='GameName'; '渲染程序'='RenderExecutable'; '代理DLL'='ProxyDll'
     }
     $allowed = if ($Name -eq 'Gpu') { @('DeviceInstanceId','TargetName') }
+        elseif ($Name -eq 'Steam') { @('LauncherPath') }
+        elseif ($Name -match '^SteamUE5(?::[^\[\]]+)?$') { @('GameName','GameDirectory','RenderExecutable','ConfigDirectory','EngineConfigSource','ProxyDll') }
         elseif ($Name -eq 'Wuthering') { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory','RestartGraceSeconds') }
         else { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory') }
     $section = @{}; $current = ''; $found = $false; $lineNumber = 0

@@ -1,6 +1,8 @@
-# DLSSG for SM86（Proxy）- 0.4.0 版本
+﻿# DLSSG for SM86（Proxy）- 0.4.0 版本
 
 **中文** · [English](README.en.md)
+
+本仓库新增中文便携启动界面：双击 `启动脚本/启动器.bat`，当前内置黑神话：悟空自动定位预设。[使用与打包说明](启动脚本/README.md#给朋友用的中文便携界面)。
 
 在 RTX 30 系列（SM86）和 RTX 20 系列（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G），并提供 RTX 30 / 20 上的 DLSS 超分 INT8 加速。Windows x64 / D3D12，运行文件为 `version.dll`、`dlssg_sm86.ini` 和 `dlssg_sm86\` 目录。
 

@@ -1,0 +1,10 @@
+[
+  {
+    "Id": "wukong",
+    "Name": "黑神话：悟空",
+    "AppId": "2358720",
+    "RenderExecutable": "b1\\Binaries\\Win64\\b1-Win64-Shipping.exe",
+    "ConfigDirectory": "%LOCALAPPDATA%\\b1\\Saved\\Config\\Windows",
+    "EngineConfigSource": "配置\\SteamUE5\\Engine.ini"
+  }
+]

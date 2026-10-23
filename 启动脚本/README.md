@@ -1,6 +1,67 @@
-﻿# 鸣潮、异环启动脚本使用说明
+﻿# 鸣潮、异环和 Steam UE5 启动脚本使用说明
 
-适用于本仓库 main 分支（0.4.0 明文配置流程）；加密历史版本见 0.4.0带加密 分支。更新于 2026-10-20；下面的实测记录来自 2026-10-16，时间均为北京时间。
+适用于本仓库 main 分支（0.4.0 明文配置流程）；加密历史版本见 0.4.0带加密 分支。更新于 2026-10-24；下面的实测记录来自 2026-10-16，时间均为北京时间。
+
+
+## Steam UE5：黑神话：悟空及其他游戏
+
+### 给朋友用的中文便携界面
+
+双击本文件夹的 `启动器.bat`，无需填写 INI 或 AppID。首版内置黑神话：悟空预设，自动从本机 Steam 游戏库查找。先原版启动游戏一次创建用户配置，再点“启动游戏”并同意管理员提示；同意提权并成功拉起独立脚本后，界面自动隐藏并退出进程以释放内存；取消提权时界面保留。Steam 可一直运行，游戏退出后由独立脚本窗口恢复原文件。运行期间不要强行关闭该窗口。
+
+主界面提供“启动游戏”“恢复原状”“检查环境”和“选择游戏文件夹”。环境检查和手动恢复仍在界面中显示完成结果；启动后的失败改由独立脚本弹窗提示，重新打开启动器可查看日志和恢复原状。发现未完成部署时先恢复；恢复使用记录里的原路径，不随本机偏好变化。“检查环境”不启动游戏，仅运行 DryRun 并写日志。代理 DLL 和明文画质配置源放在“高级设置”，默认沿用通用候选；不是所有 UE5 游戏都能保证兼容或改善性能。
+
+“添加其他游戏”向导会自动读取 AppID，再依次选择真实渲染 EXE 和用户配置目录。未知游戏仍需正确选择这两个位置及现场验证；内置预设无需这些操作。本机路径和自定义游戏保存在当前用户 `%LOCALAPPDATA%\DlssgSteamLauncher\<包路径标识>\preferences.json`，不写进共享预设。移动启动器目录后会重新自动查找。界面不提供自动更改显卡名称或关闭保护组件的操作。
+
+导出可发送给朋友的完整目录和 ZIP：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "启动脚本\scripts\tools\Export-PortableLauncher.ps1" -Destination "D:\分享\DLSSG便携启动器" -Zip
+```
+
+目标目录必须不存在。按白名单打包六种代理、完整的 0.4.0 运行资源、中文界面、共用恢复模块、游戏预设、画质源和简要说明；排除 `.state`、日志、原件备份、个人 INI、本机偏好与 Git。朋友完整解压后进入“启动脚本”文件夹双击“启动器.bat”即可。跨设备传递新导出的 ZIP，不搬使用过的整个目录，旧设备的部署仍应在旧设备恢复。硬件兼容范围与底层 0.4.0 一致，主要为 RTX 20/30 系列，便携包不额外安装运行框架。
+
+验证使用 `tests\PortableLauncher.Tests.ps1`，另可运行 `scripts\ui\Show-SteamLauncher.ps1 -SmokeTest` 检查界面构建而不启动游戏。窗口构建、模型与进程交接测试不代替真实 UAC、游戏加载和退出恢复验收。
+
+`启动SteamUE5.bat` 当前预置黑神话：悟空，按游戏目录自动识别 AppID（本机识别为 `2358720`），无需手填。目录为 `D:\SteamLibrary\steamapps\common\BlackMythWukong`。先退出目标游戏，再双击 BAT 并同意管理员提示。部署完成后通过 `steam.exe -applaunch 2358720` 启动；Steam 可以保持运行，不修改其持久化启动选项。
+
+设备路径在统一 `启动配置.ini` 中填写：`[Steam]` 的 `启动器路径` 留空时读取当前用户注册表；`[SteamUE5:黑神话悟空]` 已标注 `游戏名称=黑神话：悟空`。`渲染程序` 是相对于游戏目录的真实渲染 EXE，不允许目录外的文件；其他相对路径仍以“启动脚本”目录为基准。黑神话使用 `b1\Binaries\Win64\b1-Win64-Shipping.exe` 和 `%LOCALAPPDATA%\b1\Saved\Config\Windows`。配置目录不存在时先原版启动一次，或明确指定已有目录。
+
+`代理DLL` / `ProxyDll` 默认 `1`，仅接受整数 1–6；命令行 `-ProxyDll` 优先于 INI：
+
+| 编号 | DLL | 仓库来源 |
+|---|---|---|
+| 1 | `version.dll` | 根目录 |
+| 2 | `winmm.dll` | `alternatives` |
+| 3 | `dbghelp.dll` | `alternatives` |
+| 4 | `dinput8.dll` | `alternatives` |
+| 5 | `dxgi.dll` | `alternatives` |
+| 6 | `d3d12.dll` | `alternatives` |
+
+每次只部署一个代理，不自动轮换；遇到其他代理或未知普通文件会停止并保留文件。选择 5、6 前请参阅 [备用代理说明](../alternatives/README.md)。日志和 DryRun 显示游戏名称、AppID、代理编号及来源。更换代理前退出游戏并恢复旧部署；恢复以记录中的代理为准，即使 INI 已改为另一个编号，也能处理旧代理及对应 `_storage_` 副本。
+
+```bat
+启动SteamUE5.bat -DryRun
+启动SteamUE5.bat -ProxyDll 2
+启动SteamUE5.bat -Profile 黑神话悟空 -EngineConfigSource "D:\配置\Engine.ini"
+启动SteamUE5.bat -Profile 黑神话悟空 -RestoreDeployment -DryRun
+启动SteamUE5.bat -Profile 黑神话悟空 -RestoreDeployment
+启动SteamUE5.bat -Profile 黑神话悟空 -RestoreEngineConfig
+```
+
+添加游戏时复制一个分组并改名为 `[SteamUE5:自选名称]`（无需填写 AppID），修改 `游戏名称`、`游戏目录`、`渲染程序`、`游戏配置目录`、`配置源`、`代理DLL`，再用 `-Profile 自选名称` 选择。只有一个游戏分组时可直接双击 BAT；多个分组时用 `-Profile` 指定，或设置一个 `[SteamUE5]` 作为默认。旧的数字分组 `[SteamUE5:<AppID>]` 和显式 `-AppId <AppID>` 继续兼容；显式 AppID 优先于自动识别，多个命名分组时同时指定 `-Profile`。英文键分别为 `GameName`、`GameDirectory`、`RenderExecutable`、`ConfigDirectory`、`EngineConfigSource`、`ProxyDll`。支持 `-ConfigDirectory`、`-EngineConfigSource`、`-KeepLinks` 和 `-VerboseLog`。仅为所选游戏匹配 AppID，不自动生成其他游戏的配置或猜测渲染 EXE、配置目录。
+
+自动识别读取游戏所在库及 Steam `libraryfolders.vdf` 所登记库中的 `appmanifest_*.acf`，将 `steamapps\common\installdir` 的完整路径与配置的游戏目录匹配，再核对清单内部 AppID 与文件名一致。日志打印实际清单来源；不写回 AppID、不修改 Steam 文件。找不到、存在多个匹配或匹配清单无效时停止，提示用 Steam 安装/识别目录，或显式传入 `-AppId`。仅复制游戏文件到任意目录且没有对应 Steam 清单时无法自动识别。
+
+Steam 入口按完整 EXE 路径识别目标，等待启动最多 120 秒；超时走恢复流程。目标路径下全部游戏进程退出后清理，不等待 Steam 关闭、不增加热重启窗口。同名的其他安装不作为目标；进程路径无法核实时保留部署并报告失败。手动恢复也只要求目标游戏退出。
+
+资源布局与异环相同，诊断配置为生成帧上限 3、`Optimized=2`、`Preset=Auto`、超分 `Mode=On`。默认明文源为 `配置\SteamUE5\Engine.ini`，筛选异环的通用流送、动画、远景、草木、传统阴影距离、过滤和色差参数；不包含异环人群/车辆、世界分区、Lumen 或插件 Paths，不强制分辨率、DLSS、光追、帧率及同步。不同游戏支持情况与画质影响需现场核对，这是一份通用候选，不保证性能收益。
+
+画面配置按字节备份，运行时副本只读，源文件可编辑。状态记录为 `.state/steam-<AppID>/active.json`，包括实际代理名称；互斥、原子记录、恢复顺序、替换 Engine.ini 归档及冲突处理沿用共用恢复模块。`-KeepLinks` 保留部署及记录；恢复使用原游戏分组和原游戏/配置目录；底层仍按实际 AppID 隔离记录。若 Steam 清单已丢失，可通过 `-Profile 原分组名 -AppId 原AppID -RestoreDeployment` 恢复，不删除记录绕过检查。DryRun 仅写脚本日志，不部署或启动游戏。
+
+验证入口为 `tests\SteamUE5.Tests.ps1`。隔离测试与真实目录 DryRun 不证明游戏实际加载、画质或性能；实际验收需用户启动、进入游戏再退出，按游戏 PID 核对 loader/backend 日志、原 Engine.ini SHA256 及残留。现有鸣潮、异环默认代理和会话策略保持各自行为。
+
+以下章节原有“两款游戏”说明指鸣潮和异环。
 
 ## 平时怎么用
 
@@ -146,7 +207,7 @@ INT8 所需的 `dlssg_sm86\sr\sr_kernels.dll` 和 `nvngx_dlss.dll` 必须齐全�
 
 ## 目录与统一配置
 
-根目录仅保留 `.gitignore`、`README.md`、`待办.md`、`启动配置.ini` 和三个中文 BAT。`scripts/games` 放游戏入口，`scripts/common` 放配置读取、提权、日志、控制台、资源及恢复模块，`scripts/tools` 放显卡工具。内部 PS1 保留英文文件名。`备份/启动配置` 保存格式迁移前的原始配置，脚本不读取这些备份。`tests` 为隔离测试，`logs` 为脚本日志，`.state` 为部署记录和恢复归档。
+根目录仅保留 `.gitignore`、`README.md`、`待办.md`、`启动配置.ini` 和五个 BAT（含 Steam UE5 与图形入口）。`scripts/games` 放游戏入口，`scripts/common` 放配置读取、提权、日志、控制台、资源及恢复模块，`scripts/tools` 放显卡工具。内部 PS1 保留英文文件名。`备份/启动配置` 保存格式迁移前的原始配置，脚本不读取这些备份。`tests` 为隔离测试，`logs` 为脚本日志，`.state` 为部署记录和恢复归档。
 
 迁移时编辑 `启动配置.ini`，无需修改 PS1。默认保存为 UTF-8，有无 BOM 均可。配置按 `[鸣潮]`、`[异环]`、`[显卡]` 分组，使用 `键=值`；中文键与以下英文别名均可识别：
 
