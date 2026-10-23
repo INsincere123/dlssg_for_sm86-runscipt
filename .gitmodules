@@ -6,3 +6,6 @@
 	path = 启动脚本/配置/异环/上游
 	url = https://github.com/AlteriaX/NTE-Configs.git
 	branch = main
+[submodule "ue-reference-commopti"]
+	path = 启动脚本/配置/虚幻参考/UE4and5CommOpti
+	url = https://github.com/smo0ths/UE4and5CommOpti.git
