@@ -1,4 +1,5 @@
-﻿# Data/model layer for the portable desktop launcher. Windows PowerShell 5.1.
+﻿. (Join-Path $PSScriptRoot 'UnrealQuality.ps1')
+# Data/model layer for the portable desktop launcher. Windows PowerShell 5.1.
 function Get-PortableDataDirectory {
     param([string]$Root = (Get-LauncherRoot))
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -60,6 +61,7 @@ function Get-PortableProfiles {
     }
     $profiles += @($Preferences.Profiles | Where-Object { $_.Id -notin $presetIds })
     foreach ($profile in $profiles) {
+        Initialize-PortableQuality $profile
         if ($profile.Id -notmatch '^[A-Za-z0-9_-]+$' -or $profile.AppId -notmatch '^[1-9][0-9]*$') { throw '游戏预设标识无效。' }
         if ([string]$profile.ProxyDll -notmatch '^[1-6]$') { throw '本机偏好的代理编号无效。' }
     }
@@ -72,11 +74,11 @@ function Set-PortableProfile {
 }
 
 function Get-PortableGameModel {
-    param($Profile, [string]$SteamPath, [string]$Root = (Get-LauncherRoot))
+    param($Profile, [string]$SteamPath, [string]$Root = (Get-LauncherRoot), $EngineDetection=$null)
     $model = [pscustomobject]@{ Profile=$Profile; SteamPath=$SteamPath; GameDirectory=[string]$Profile.GameDirectory;
         ConfigDirectory=(Resolve-LauncherConfigPath $Profile.ConfigDirectory '游戏配置目录' -Root $Root);
         EngineConfigSource=(Resolve-LauncherConfigPath $Profile.EngineConfigSource '配置源' -Root $Root);
-        Ready=$false; Recovery=$false; Status='正在查找游戏…'; Journal=(Join-Path $Root ".state\steam-$($Profile.AppId)\active.json") }
+        Executable=''; EngineMajor=0; EngineSource='无法确定'; Ready=$false; Recovery=$false; Status='正在查找游戏…'; Journal=(Join-Path $Root ".state\steam-$($Profile.AppId)\active.json") }
     try {
         if ([IO.File]::Exists($model.Journal)) {
             $journal = [IO.File]::ReadAllText($model.Journal) | ConvertFrom-Json
@@ -104,6 +106,12 @@ function Get-PortableGameModel {
         }
         $executable = Join-Path $model.GameDirectory $Profile.RenderExecutable
         if (-not [IO.File]::Exists($executable)) { throw '游戏程序与预设不符，请选择正确的游戏文件夹。' }
+        $model.Executable=$executable
+        if ($null -ne $EngineDetection) { $model.EngineMajor=[int]$EngineDetection.Major; $model.EngineSource=[string]$EngineDetection.Source }
+        Initialize-PortableQuality $Profile
+        if ($Profile.EngineOverride -ne 'Auto') { $model.EngineMajor=[int]$Profile.EngineOverride.Substring(2); $model.EngineSource='手动校准' }
+        $quality=Resolve-PortableQuality $Profile $EngineDetection -Root $Root
+        $model.EngineConfigSource=$quality.Path
         if (@(Get-SteamGameProcesses -Executable $executable).Count) { throw '游戏正在运行，请先退出游戏，再使用启动器。' }
         if (-not [IO.Directory]::Exists($model.ConfigDirectory)) { throw '请先从 Steam 原版启动游戏一次，然后点击“重新查找”。' }
         if (-not [IO.File]::Exists($model.EngineConfigSource)) { throw '画质配置源缺失，请重新解压完整启动器包。' }

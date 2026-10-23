@@ -7,18 +7,30 @@
 *.userosscache
 *.sln.docstates
 
+# Regenerable local tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Deployment records, runtime logs and captures
 /启动脚本/.state/
 /启动脚本/logs/
+# Local GUI preferences and worker requests if copied back into the workspace
+/启动脚本/preferences.json
+/启动脚本/runs/
 /dlssg_sm86/logs/
 /dlssg_sm86/capture/
 
 # Generated portable packages (keep release resources outside dist tracked)
 /dist/
+/启动脚本/dist/
 
 # Temporary writes and editor/OS leftovers
 *.tmp
 *.tmp.previous
+*.stackdump
 *.swp
 *.swo
 *~

@@ -2,12 +2,25 @@
 
 ## 入口与当前实现
 
-- 检查鸣潮或异环启动情况时，请遵循 [启动日志检查规范](docs/启动日志检查规范.md)。用户操作、启动参数与恢复命令见 [启动脚本使用说明](启动脚本/README.md)。
-- 设备相关配置统一填写 `启动脚本/启动配置.ini`；读取与路径规范化在 `启动脚本/scripts/common/LauncherConfig.ps1`，保留常见编码和路径写法兼容，不依赖系统默认 ANSI 编码。
+- 检查鸣潮、异环或 Steam 游戏启动情况时，请遵循 [启动日志检查规范](docs/启动日志检查规范.md)。用户操作、启动参数与恢复命令见 [启动脚本使用说明](启动脚本/README.md)。
+- 命令行入口的设备配置填写 `启动脚本/启动配置.ini`；读取与路径规范化在 `启动脚本/scripts/common/LauncherConfig.ps1`，保留常见编码和路径写法兼容，不依赖系统默认 ANSI 编码。图形入口使用独立的预设及本机偏好，不直接读取此 INI，见下节。
 - 两款游戏通过现有管理员 BAT 和官方启动器启动，保留控制台关闭保护。资源路径从脚本所在目录推导；修改路径处理时兼容 Windows PowerShell 5.1 和通过 `powershell.exe -File` 启动的方式。
 - 共用资源部署在 `启动脚本/scripts/common/LauncherResources.ps1`，共用持久化恢复在 `启动脚本/scripts/common/DeploymentJournal.ps1`。涉及两款游戏的修复优先落在共用模块，并检查两个入口的接入。
 - 当前使用 0.4.0 资源布局，部署 `runtime`、`backend`、`kernels`、`xefg`、`sr`；INT8 超分依赖 `sr_kernels.dll` 与 `nvngx_dlss.dll` 齐全。两款游戏各自生成临时诊断 INI，保留仓库根目录 `dlssg_sm86.ini`。
 - 保留两款游戏的会话差异：鸣潮使用可配置的热重启等待窗口，当前默认 10 秒；异环在首次游戏进程退出后清理。修改一方时不要顺带统一另一方策略。
+
+## Steam 与图形启动器
+
+- 图形入口为 `启动脚本/启动器.bat`，不是仓库根目录；界面在 `scripts/ui/Show-SteamLauncher.ps1`，模型、偏好及脚本交接在 `scripts/common/PortableLauncher.ps1`。命令行 `启动SteamUE5.bat` 直接调用 `scripts/games/Run-SteamUE5-DLSSG.ps1`，图形入口不依赖这个 BAT。
+- 当前第一版按 Steam UE5 设计，内置预设只有黑神话：悟空。第二版目标为 Steam 通用 UE4/UE5 启动器，UE4 以鸣潮为参考；目前尚未实现可靠的引擎主版本自动识别，不将计划当作现有能力，也不直接把库洛专用参数用于其他 UE4 游戏。
+- 共享预设在 `启动脚本/presets/SteamUE5.json`；本机偏好与运行请求位于 `%LOCALAPPDATA%\DlssgSteamLauncher\<启动脚本目录路径哈希>`。保留路径无关的共享预设，不将个人盘符、用户目录或请求 INI 写进共享预设；移动启动器后允许重新发现安装位置。
+- Steam 位置优先使用本机界面设置，再读注册表；游戏查找及 AppID 匹配在 `scripts/common/SteamLauncher.ps1`。扫描 Steam 登记的 `libraryfolders.vdf`，并支持从所选游戏自身的 `steamapps` 库匹配清单，不按 C/D 盘全盘扫描。核对完整游戏路径、清单内部 AppID 与文件名；零个或多个匹配时报告原因，不猜测。
+- 命令行允许省略 AppID：单个游戏配置自动选择，多配置使用 `-Profile`；`[SteamUE5]` 可作为默认组。保留数字分组及显式 `-AppId` 的兼容。图形界面将设置写入本机运行请求，通过 `-LauncherConfigPath` 交给同一底层入口。
+- Steam 入口使用 `steam.exe -applaunch <AppID>`，允许 Steam 已运行；按真实渲染 EXE 完整路径识别目标，无法核实时保留现场。等待启动最多 120 秒，超时正常恢复；目标路径下全部游戏进程退出后恢复，不加鸣潮的热重启窗口。Steam 手动恢复也无需关闭 Steam，显式 AppID 恢复不依赖 Steam 仍已安装。
+- 图形界面仅在成功创建独立提权工作进程后隐藏并退出，以释放界面进程内存；释放 Process 句柄不能终止工作进程。取消提权时保留界面。工作脚本继续负责控制台关闭保护、等待游戏及恢复；启动后的错误由工作脚本提示。“检查环境”和手动“恢复原状”保留界面直到结果返回，不因退出界面而删除运行请求或恢复依赖文件。
+- 代理编号严格为 `1=version.dll`、`2=winmm.dll`、`3=dbghelp.dll`、`4=dinput8.dll`、`5=dxgi.dll`、`6=d3d12.dll`，默认 1；只有 version.dll 位于资源根目录，其余来自 alternatives。只部署一个代理，日志说明实际编号和来源，不自动轮换；遇到其他代理或未知普通文件停止并保留。
+- Steam 部署记录保存实际代理名称。恢复旧会话先使用旧记录的代理、storage 路径及哈希，再允许新配置选择生效；本机偏好变化不能重定向原配置恢复位置。
+- 便携导出工具为 `scripts/tools/Export-PortableLauncher.ps1`，按白名单包含完整资源和预设，排除本机偏好、个人 INI、日志、备份、`.state` 和 Git 元数据。启动器入口移动时同步导出清单与说明。仅在用户要求时生成或重建包；旧 dist/ZIP 不代表当前代码。
 
 ## Engine.ini 部署约束
 
@@ -18,8 +31,8 @@
 
 ## 部署记录与恢复
 
-- 部署状态保存在 `启动脚本/.state/wuthering/active.json` 和 `启动脚本/.state/nte/active.json`。保持原子落盘、操作前记录 `intent`、成功后记录 `done`；记录写入失败必须停止后续部署。记录不保存配置正文或密钥，`.state` 不纳入 Git。
-- 保留按游戏渲染目录及配置路径设置的互斥保护。手动恢复要求对应游戏和启动器均已关闭；正常退出自动恢复允许官方启动器仍在运行，但必须确认游戏已退出。
+- 部署状态保存在 `启动脚本/.state/wuthering/active.json`、`启动脚本/.state/nte/active.json` 和 `启动脚本/.state/steam-<AppID>/active.json`。保持原子落盘、操作前记录 `intent`、成功后记录 `done`；记录写入失败必须停止后续部署。记录不保存配置正文或密钥，`.state` 不纳入 Git。
+- 保留按游戏渲染目录及配置路径设置的互斥保护。鸣潮、异环手动恢复要求对应游戏和启动器均已关闭；正常退出自动恢复允许官方启动器仍在运行，但必须确认游戏已退出。Steam 入口按上节规则允许 Steam 保持运行。
 - `-RestoreDeployment` 完整恢复；`-RestoreEngineConfig` 仅恢复画面配置并更新记录。`-KeepLinks` 保留部署及记录，并提示恢复入口。遇到未完成部署先通过既有恢复流程处理，不通过删除记录或备份绕过检查。
 - 恢复顺序保持依赖关系：`engineLink → backup → runtime → storage → link → diagnostic → directory`。单步冲突保留文件与记录，继续尝试无关步骤；配置链接或备份未恢复时保留依赖文件，避免产生悬空链接或丢失原件。
 - 经目标校验属于本项目的复用链接也纳入恢复，兼容旧版 `Reused` 记录；无记录的历史部署按现有识别逻辑回收，storage 副本按代理 DLL 哈希认领。未知普通文件、其他代理 DLL、目标变化的链接及哈希不符的副本均保留。
@@ -31,6 +44,17 @@
 
 - 个人配置位于 `启动脚本/配置/鸣潮` 和 `启动脚本/配置/异环`，由主仓库跟踪。各自 `上游` 是对应 AlteriaX 仓库的子模块；更新必须明确触发，不能自动替换个人默认源。子模块未初始化时仍可使用已保存的个人配置。
 - 默认鸣潮源为 `启动脚本/配置/鸣潮/Engine.ini`；迁移前的外部 `D:\Games\WuWa-Configs` 仓库保持原样。当前有效源以统一 INI 为准。
+- Steam 图形预设当前使用 `启动脚本/配置/SteamUE5/Engine.ini`，命令行以所选 INI 分组或显式配置源为准。配置主题片段或参考资料不自动成为默认源。
+- UE4and5CommOpti 参考仓库位于 `启动脚本/配置/虚幻参考/UE4and5CommOpti`，在 `.gitmodules` 中登记为 `ue-reference-commopti`；旧的 `配置/虚幻通用` 已停用。解析资料以实际目录和资料说明为准，不恢复过时目录引用。用户允许在参考项目内整理资料，不为保持上游目录干净而擅自搬动文件；本地操作不等于推送上游，更新参考仓库仍需明确触发。
+- 主仓库对参考子模块仅跟踪 gitlink；子模块内部未跟踪的解析文件不会自动随主仓库提交保存。迁移、提交或调整 Git 结构前确认这些资料的实际跟踪状态，并保留本地内容及必要快照，不删除 clone/记录来绕过问题。
+- 上游通用优化 README 的功能拆分不等于已适配的 UE4/UE5 或高/中/低画质方案。保留来源提交、参数原值和注释状态；不要把完整参考与同源片段重复叠加，Input.ini 与 Engine.ini 分开处理。日志、DLSS、同步、光追及实验参数的实际效果需逐游戏验证。
+
+## Git 与代码索引
+
+- 主仓库 `origin` 为 `https://github.com/INsincere123/dlssg_for_sm86-runscipt.git`，`upstream` 为 `https://github.com/sdli1995/dlssg_for_sm86.git`；main 跟踪 origin/main，默认推送到 fork。修改主仓库远程时不顺带改子模块远程；拉取、推送和发布按用户明确要求执行，提交说明用中文。
+- 忽略 IDE 缓存、本机状态、日志、捕获、临时写入及 dist 输出；不要为清理状态而整体忽略 DLL、INI、配置、解析、快照或有意保存的历史备份。
+- 当前 codebase-memory 项目名为 `D-Games-dlssg_for_sm86`，根目录为本仓库；历史同根项目 `dlssg_for_sm86` 可能陈旧，不用它替代当前索引。索引及 `.codebase-memory` 产物不纳入 Git。
+- 优先用图索引定位符号和调用关系，再读实际源码；对修改路径核对覆盖与新鲜度。PowerShell 的 tree-sitter 部分解析、INI/JSON 及二进制排除不等于运行故障，也不能宣称索引完整；覆盖缺口改用 rg/源码检查，不为消除索引告警改写正确的脚本。
 
 ## 异环配置迭代
 
@@ -43,6 +67,8 @@
 ## 验证与说明
 
 - 修改启动或恢复逻辑时，以 Windows PowerShell 5.1 为兼容基线；优先检查受影响路径和 `启动脚本/tests/DeploymentJournal.Tests.ps1` 的隔离恢复场景，测试不得触碰真实游戏目录。关注部分部署失败、重复恢复、只读副本、链接被替换、备份冲突和历史残留。
+- Steam 改动优先运行 [SteamUE5.Tests.ps1](启动脚本/tests/SteamUE5.Tests.ps1)；图形模型和交接优先运行 [PortableLauncher.Tests.ps1](启动脚本/tests/PortableLauncher.Tests.ps1)、[PortableLauncherHandoff.Tests.ps1](启动脚本/tests/PortableLauncherHandoff.Tests.ps1) 及界面 `-SmokeTest`。按变更选择必要测试，不因文档或索引更新重复运行全部游戏检查，也不自动启动游戏或打包。
+- PowerShell 5.1 的 ConvertFrom-Json 数组先赋值再规范化，避免管道结果套 @() 形成嵌套数组。预设修改要覆盖首次读取、保存后重开、单/多预设和自定义游戏合并，不能只以无本机偏好的界面冒烟检查代替。
 - 语法检查、隔离文件系统测试及 DryRun 只证明各自检查范围。真实符号链接因权限跳过或用 junction 模拟时明确说明；游戏加载、配置实际应用、退出恢复、稳定性与性能收益需另有现场证据。
 - 性能对照区分基础渲染 FPS 和插帧后显示 FPS，保持路线、画质与供电等条件一致并重复采样。收益未超过重复测试波动时，不标记为有效优化；loader/backend 计数不当作 FPS。
 - 启动参数、配置处理或恢复行为改变时同步 `启动脚本/README.md`；异环参数与候选关系改变时同步对应配置说明。中文读取和输出使用 UTF-8，保留脚本对 Windows PowerShell 5.1 的编码兼容。

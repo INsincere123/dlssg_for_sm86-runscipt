@@ -15,6 +15,9 @@ try {
     $script:busy = $false
     $script:updating = $false
     $script:lastStatus = ''
+    $script:customSourceSelected = $false
+    $script:scanTask = $null
+    $script:qualityIds = @('Current','Tier1','Tier2','Tier3','Tier4')
 
     $form = New-Object Windows.Forms.Form
     $form.Text = 'DLSSG 游戏启动器'
@@ -67,11 +70,16 @@ try {
     $title.Font = New-Object Drawing.Font('Microsoft YaHei UI',21,[Drawing.FontStyle]::Bold)
     $subtitle = New-Label $form '自动寻找 Steam 游戏；退出后恢复原文件。' 28 73 700
     $subtitle.ForeColor = [Drawing.Color]::DimGray
-    [void](New-Label $form '游戏' 28 119 60)
+    [void](New-Label $form '游戏' 28 119 40)
     $games = New-Object Windows.Forms.ComboBox
-    $games.SetBounds(90,115,390,34); $games.DropDownStyle='DropDownList'; $games.DisplayMember='Name'
+    $games.SetBounds(76,115,240,34); $games.DropDownStyle='DropDownList'; $games.DisplayMember='Name'
     $form.Controls.Add($games)
-    $add = New-Button $form '添加其他游戏' 500 111 220
+    [void](New-Label $form '画质' 328 119 44)
+    $qualityBox=New-Object Windows.Forms.ComboBox
+    $qualityBox.SetBounds(376,115,200,34); $qualityBox.DropDownStyle='DropDownList'
+    foreach ($item in @('当前配置','高性能均衡','主流均衡','性能优先','入门流畅')) { [void]$qualityBox.Items.Add($item) }
+    $form.Controls.Add($qualityBox)
+    $add = New-Button $form '添加其他游戏' 588 111 132
     $script:status = New-Label $form '正在查找…' 28 171 690 56
     $script:status.Font = New-Object Drawing.Font('Microsoft YaHei UI',12,[Drawing.FontStyle]::Bold)
     $script:details = New-Object Windows.Forms.TextBox
@@ -85,7 +93,7 @@ try {
     $restore = New-Button $form '恢复原状' 254 327 150
     $check = New-Button $form '检查环境' 420 327 140
     $refresh = New-Button $form '重新查找' 576 327 144
-    $choose = New-Button $form '选择游戏文件夹' 28 383 210
+    $choose = New-Button $form '重选当前游戏目录' 28 383 210
     $advancedToggle = New-Button $form '高级设置' 254 383 150
     $logs = New-Button $form '查看日志' 420 383 140
     $script:note = New-Label $form '启动后本界面自动退出以释放内存；请保留负责恢复的独立脚本窗口。' 28 450 695 50
@@ -107,23 +115,50 @@ try {
     $sourceBox = New-Object Windows.Forms.TextBox
     $sourceBox.SetBounds(88,118,478,28); $advanced.Controls.Add($sourceBox)
     $browseSource = New-Button $advanced '选择' 576 114 100
+    [void](New-Label $advanced '引擎版本' 370 76 76)
+    $engineBox=New-Object Windows.Forms.ComboBox
+    $engineBox.SetBounds(450,72,226,30); $engineBox.DropDownStyle='DropDownList'
+    foreach ($item in @('自动识别','UE4','UE5')) { [void]$engineBox.Items.Add($item) }
+    $advanced.Controls.Add($engineBox)
     $save = New-Button $advanced '保存本机设置' 88 167 185
-    [void](New-Label $advanced '画质配置为通用候选，效果需游戏内核对。' 289 175 385)
+    [void](New-Label $advanced '选择新的INI并保存后使用“当前配置”。' 289 175 385)
 
     function Refresh-Game {
+        param([switch]$PreserveEditors)
         if ($script:busy -or $null -eq $games.SelectedItem) { return }
         $script:model = Get-PortableGameModel -Profile $games.SelectedItem -SteamPath (Get-PortableSteamPath $script:preferences)
+        $script:scanTask=$null
+        if (-not $script:model.Recovery -and $script:model.Executable -and $games.SelectedItem.EngineOverride -eq 'Auto') {
+            $task=[DlssgUnrealDetector]::Start($script:model.GameDirectory,$script:model.Executable)
+            if ($task.IsCompleted) {
+                $detection=if ($task.IsFaulted -or $task.IsCanceled) { [pscustomobject]@{Major=0;Source='识别失败，请手动校准'} } else { $task.Result }
+                $script:model=Get-PortableGameModel -Profile $games.SelectedItem -SteamPath (Get-PortableSteamPath $script:preferences) -EngineDetection $detection
+            } else {
+                $script:scanTask=$task
+                $script:model.EngineSource='正在后台识别…'
+            }
+        }
         $script:status.Text = $script:model.Status
         $script:status.ForeColor = if ($script:model.Ready) { [Drawing.Color]::FromArgb(25,125,75) } else { [Drawing.Color]::FromArgb(155,100,25) }
-        $script:details.Text = "游戏位置：$($script:model.GameDirectory)`r`n配置位置：$($script:model.ConfigDirectory)`r`n代理：$($script:model.Profile.ProxyDll) · Steam 可以保持运行"
+        $script:details.Text = "游戏位置：$($script:model.GameDirectory)`r`n配置位置：$($script:model.ConfigDirectory)`r`n引擎：$(if ($script:model.EngineMajor) { "UE$($script:model.EngineMajor)" } else { "未知" })（$($script:model.EngineSource)） · 代理：$($script:model.Profile.ProxyDll)"
         $launch.Enabled=$script:model.Ready
         $restore.Enabled=$script:model.Recovery
         $check.Enabled=$script:model.Ready
         $choose.Enabled=-not $script:model.Recovery
         $advancedToggle.Enabled=-not $script:model.Recovery
-        $steamBox.Text=$script:model.SteamPath
-        $sourceBox.Text=$script:model.EngineConfigSource
-        $proxyBox.SelectedIndex=[int]$script:model.Profile.ProxyDll-1
+        if (-not $PreserveEditors) {
+            $steamBox.Text=$script:model.SteamPath
+            $script:customSourceSelected=$false
+            $sourceBox.Text=Resolve-LauncherConfigPath $games.SelectedItem.EngineConfigSource '配置源' -Root $root
+            $proxyBox.SelectedIndex=[int]$script:model.Profile.ProxyDll-1
+            $script:updating=$true
+            try {
+                $qualityBox.SelectedIndex=[Array]::IndexOf($script:qualityIds,[string]$games.SelectedItem.QualityPreset)
+                $engineBox.SelectedIndex=[Array]::IndexOf(@('Auto','UE4','UE5'),[string]$games.SelectedItem.EngineOverride)
+            } finally { $script:updating=$false }
+        }
+        $qualityBox.Enabled=-not $script:model.Recovery
+        $engineBox.Enabled=-not $script:model.Recovery
     }
     function Load-Games {
         param([string]$SelectedId='')
@@ -139,7 +174,7 @@ try {
     function Set-Working {
         param([bool]$Working)
         $script:busy=$Working
-        foreach ($control in @($games,$add,$launch,$restore,$check,$refresh,$choose,$advancedToggle,$save,$browseSteam,$browseSource,$proxyBox,$steamBox,$sourceBox)) { $control.Enabled=-not $Working }
+        foreach ($control in @($qualityBox,$engineBox,$games,$add,$launch,$restore,$check,$refresh,$choose,$advancedToggle,$save,$browseSteam,$browseSource,$proxyBox,$steamBox,$sourceBox)) { $control.Enabled=-not $Working }
         if (-not $Working) { Refresh-Game }
     }
     function Start-Action {
@@ -177,6 +212,16 @@ try {
         } catch { Show-Failure $_.Exception.Message }
     }
 
+    $qualityBox.Add_SelectedIndexChanged({
+        if ($script:updating -or $script:busy -or $null -eq $games.SelectedItem) { return }
+        try {
+            if ($script:model.Recovery) { Refresh-Game; return }
+            $profile=$games.SelectedItem | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+            $profile.QualityPreset=$script:qualityIds[$qualityBox.SelectedIndex]
+            Save-PortableProfileChange $script:preferences $profile
+            Load-Games $profile.Id
+        } catch { Refresh-Game; Show-Failure $_.Exception.Message }
+    })
     $games.Add_SelectedIndexChanged({ if (-not $script:updating) { Refresh-Game } })
     $refresh.Add_Click({ Refresh-Game })
     $launch.Add_Click({ Start-Action Launch })
@@ -200,17 +245,24 @@ try {
         $script:note.Top=if ($advanced.Visible) { 688 } else { 450 }
     })
     $browseSteam.Add_Click({ $file=Select-File '选择 Steam 程序' 'Steam (steam.exe)|steam.exe'; if ($file) { $steamBox.Text=$file } })
-    $browseSource.Add_Click({ $file=Select-File '选择明文 Engine.ini 配置源' 'INI 配置 (*.ini)|*.ini'; if ($file) { $sourceBox.Text=$file } })
+    $browseSource.Add_Click({ $file=Select-File '选择明文 Engine.ini 配置源' 'INI 配置 (*.ini)|*.ini'; if ($file) { $sourceBox.Text=$file; $script:customSourceSelected=$true } })
     $save.Add_Click({
         try {
             if (-not [IO.File]::Exists($steamBox.Text)) { throw '请选择有效的 steam.exe。' }
             if (-not [IO.File]::Exists($sourceBox.Text)) { throw '请选择有效的明文 INI 配置。' }
-            $script:preferences.SteamPath=$steamBox.Text
-            $games.SelectedItem.ProxyDll=$proxyBox.SelectedIndex+1
-            $games.SelectedItem.EngineConfigSource=$sourceBox.Text
-            Set-PortableProfile $script:preferences $games.SelectedItem
-            Save-PortablePreferences $script:preferences
-            Refresh-Game
+            if ($script:model.Recovery) { throw '请先恢复上次部署。' }
+            $profile=$games.SelectedItem | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+            $profile.ProxyDll=$proxyBox.SelectedIndex+1
+            $profile.EngineOverride=@('Auto','UE4','UE5')[$engineBox.SelectedIndex]
+            $oldSource=Resolve-LauncherConfigPath $profile.EngineConfigSource '配置源' -Root $root
+            if ($script:customSourceSelected -or $sourceBox.Text -ne $oldSource) { $profile.QualityPreset='Current' }
+            $profile.EngineConfigSource=$sourceBox.Text
+            $oldSteam=$script:preferences.SteamPath
+            try {
+                $script:preferences.SteamPath=$steamBox.Text
+                Save-PortableProfileChange $script:preferences $profile
+            } catch { $script:preferences.SteamPath=$oldSteam; throw }
+            Load-Games $profile.Id
         } catch { Show-Failure $_.Exception.Message }
     })
     $logs.Add_Click({
@@ -222,7 +274,7 @@ try {
     })
     $add.Add_Click({
         try {
-            $directory=Select-Folder '选择其他 Steam UE5 游戏的安装文件夹'
+            $directory=Select-Folder '选择其他 Steam UE4/UE5 游戏的安装文件夹'
             if (-not $directory) { return }
             $steam=Get-PortableSteamPath $script:preferences
             if (-not $steam) { throw '请先在高级设置中选择 Steam。' }
@@ -237,16 +289,19 @@ try {
             if (-not $configDirectory) { return }
             $profile=[pscustomobject]@{ Id=('custom-'+$detected.AppId); Name=(Split-Path -Leaf $directory); AppId=$detected.AppId;
                 GameDirectory=$directory; RenderExecutable=$exe.Substring($prefix.Length); ConfigDirectory=$configDirectory;
-                EngineConfigSource='配置\SteamUE5\Engine.ini'; ProxyDll=1 }
+                EngineConfigSource='配置\SteamUE5\Engine.ini'; ProxyDll=1; QualityPreset='Tier2'; EngineOverride='Auto' }
             Set-PortableProfile $script:preferences $profile
             Save-PortablePreferences $script:preferences
             Load-Games $profile.Id
         } catch { Show-Failure $_.Exception.Message }
     })
     $timer = New-Object Windows.Forms.Timer
-    $timer.Interval=700
+    $timer.Interval=250
     $timer.Add_Tick({
-        if (-not $script:busy) { return }
+        if (-not $script:busy) {
+            if ($null -ne $script:scanTask -and $script:scanTask.IsCompleted) { Refresh-Game -PreserveEditors }
+            return
+        }
         try {
             if (-not $script:worker.HasExited) { return }
             $script:worker.Dispose(); $script:worker=$null
@@ -264,14 +319,25 @@ try {
     })
     Load-Games
     if ($SmokeTest) {
+        foreach ($pair in @(@($games,$qualityBox),@($qualityBox,$add),@($proxyBox,$engineBox))) {
+            if ($pair[0].Bounds.IntersectsWith($pair[1].Bounds)) { throw '界面控件重叠。' }
+        }
+        if ($engineBox.Right -gt $advanced.ClientSize.Width -or $add.Right -gt $form.ClientSize.Width) { throw '界面控件超出边界。' }
         # Materialize child handles for DrawToBitmap without displaying a window.
         $form.ShowInTaskbar=$false; $form.Opacity=0
         $form.Show(); [Windows.Forms.Application]::DoEvents()
         if ($PreviewPath) {
             [void][IO.Directory]::CreateDirectory((Split-Path -Parent $PreviewPath))
-            $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
-            try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png) }
-            finally { $bitmap.Dispose() }
+            foreach ($expanded in @($false,$true)) {
+                $advanced.Visible=$expanded
+                $form.Height=if ($expanded) { 765 } else { 555 }
+                $script:note.Top=if ($expanded) { 688 } else { 450 }
+                [Windows.Forms.Application]::DoEvents()
+                $outputPath=if ($expanded) { [IO.Path]::Combine([IO.Path]::GetDirectoryName($PreviewPath),[IO.Path]::GetFileNameWithoutExtension($PreviewPath)+'.advanced.png') } else { $PreviewPath }
+                $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
+                try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($outputPath,[Drawing.Imaging.ImageFormat]::Png) }
+                finally { $bitmap.Dispose() }
+            }
         }
         Write-Output ("GUI smoke test passed: {0}; {1}" -f $games.SelectedItem.Name,$script:model.Status)
     } else { $timer.Start(); [void]$form.ShowDialog() }

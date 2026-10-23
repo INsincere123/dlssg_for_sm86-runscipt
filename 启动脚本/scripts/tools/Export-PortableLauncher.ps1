@@ -15,6 +15,11 @@ $files=@('启动脚本\启动器.bat','version.dll','dlssg_sm86.ini','THIRD_PART
     'dlssg_sm86\xefg\xefg_kernels.dll','dlssg_sm86\sr\sr_kernels.dll','dlssg_sm86\sr\nvngx_dlss.dll',
     '启动脚本\presets\SteamUE5.json','启动脚本\配置\SteamUE5\Engine.ini',
     '启动脚本\scripts\ui\Show-SteamLauncher.ps1','启动脚本\scripts\games\Run-SteamUE5-DLSSG.ps1')
+foreach ($engine in @('UE4','UE5')) {
+    foreach ($tier in @('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅')) {
+        $files+='启动脚本\配置\虚幻通用分类\'+$engine+'\'+$tier+'\Engine.ini'
+    }
+}
 $files+=@(Get-ChildItem -LiteralPath (Join-Path $root 'scripts\common') -File -Filter '*.ps1' | ForEach-Object { '启动脚本\scripts\common\'+$_.Name })
 foreach ($relative in $files) {
     $source=Join-Path $project $relative
@@ -41,7 +46,9 @@ DLSSG 便携启动器 · 开始使用
 请先从 Steam 原版启动游戏一次，让它创建配置目录。
 Steam 可以一直运行。不要强行关闭运行中的脚本窗口。
 发现未完成部署时点击“恢复原状”，保留现场和记录，不手动删除备份。
-代理和画质配置放在“高级设置”；默认画质参数为候选，效果需游戏内核对。
+主界面画质按游戏保存；已有游戏保留当前配置，新增游戏默认主流均衡（第二档）。
+自动识别UE4/UE5，无法确定时请在高级设置手动校准；代理和自定义INI也在高级设置。
+四档均为候选，效果需游戏内核对。
 “添加其他游戏”需要选择安装文件夹、真实渲染 EXE 和用户配置目录。
 AppID 自动读取 Steam 清单；未适配游戏仍需自行验证兼容性。
 
