@@ -3,6 +3,7 @@ $script:deploymentJournal = $null
 $script:deploymentMutex = $null
 $script:configurationMutex = $null
 $script:journalPath = $null
+$script:journalContext = $null
 
 function Get-JournalItem {
     param([string]$Path)
@@ -47,15 +48,24 @@ function Save-DeploymentJournal {
     }
 }
 
+function Test-JournalDlssgOnly {
+    return ($null -ne $script:journalContext -and $script:journalContext.ContainsKey('DlssgOnly') -and $script:journalContext.DlssgOnly)
+}
+
 function Open-DeploymentJournal {
     param([string]$GameId, [string]$GameProcess, [string[]]$LauncherProcess, [string]$DiagnosticPrefix,
-        [string]$GameExecutable, [switch]$SelectableProxy)
+        [string]$GameExecutable, [switch]$SelectableProxy, [switch]$DlssgOnly)
     $script:journalContext = @{
         GameId = $GameId; GameProcess = $GameProcess; LauncherProcess = $LauncherProcess
-        Render = [IO.Path]::GetFullPath($renderDir); Engine = [IO.Path]::GetFullPath($engineConfigPath)
-        Runtime = [IO.Path]::GetFullPath($engineRuntimePath); Backup = [IO.Path]::GetFullPath($engineBackupPath)
+        Render = [IO.Path]::GetFullPath($renderDir); Engine = ''; Runtime = ''; Backup = ''
+        DlssgOnly = [bool]$DlssgOnly
         DiagnosticPrefix = $DiagnosticPrefix
         GameExecutable = $GameExecutable; SelectableProxy = [bool]$SelectableProxy
+    }
+    if (-not $DlssgOnly) {
+        $script:journalContext.Engine = [IO.Path]::GetFullPath($engineConfigPath)
+        $script:journalContext.Runtime = [IO.Path]::GetFullPath($engineRuntimePath)
+        $script:journalContext.Backup = [IO.Path]::GetFullPath($engineBackupPath)
     }
     $script:journalPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".state\$GameId\active.json"
     Assert-JournalOrdinaryParents $script:journalPath
@@ -67,6 +77,20 @@ function Open-DeploymentJournal {
     try { $acquired = $script:deploymentMutex.WaitOne(0) }
     catch [Threading.AbandonedMutexException] { $acquired = $true }
     if (-not $acquired) { $script:deploymentMutex.Dispose(); $script:deploymentMutex = $null; throw 'Another deployment/recovery is running for this game.' }
+    # A different profile can still own a retained deployment in this rendering directory.
+    $stateRoot=Split-Path -Parent (Split-Path -Parent $script:journalPath)
+    foreach ($directory in @(Get-ChildItem -LiteralPath $stateRoot -Directory -ErrorAction SilentlyContinue)) {
+        if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '部署状态目录不能是链接。' }
+        $otherPath=Join-Path $directory.FullName 'active.json'
+        if ($otherPath -ieq $script:journalPath -or -not [IO.File]::Exists($otherPath)) { continue }
+        Assert-JournalOrdinaryParents $otherPath
+        $otherItem=Get-JournalItem $otherPath
+        if ($otherItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '部署记录不能是链接。' }
+        try { $other=[IO.File]::ReadAllText($otherPath) | ConvertFrom-Json }
+        catch { throw "其他部署记录损坏，已保留：$otherPath" }
+        if ((Get-NormalizedPath $other.Render) -eq (Get-NormalizedPath $renderDir)) { throw "该渲染目录仍由其他游戏设置占用，请使用原入口恢复：$otherPath" }
+    }
+    if (-not $DlssgOnly) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $identity = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-NormalizedPath $engineConfigPath))))).Replace('-', '') }
     finally { $sha.Dispose() }
@@ -78,6 +102,7 @@ function Open-DeploymentJournal {
         $script:configurationMutex.Dispose(); $script:configurationMutex = $null
         Close-DeploymentJournal
         throw 'Another deployment/recovery is using this configuration directory.'
+    }
     }
     $item = Get-JournalItem $script:journalPath
     if ($null -ne $item) {
@@ -108,10 +133,16 @@ function Close-DeploymentJournal {
 function Assert-DeploymentJournal {
     $j = $script:deploymentJournal
     if ($j.Version -ne 1 -or $j.GameId -ne $script:journalContext.GameId) { throw 'Unsupported/corrupt deployment journal.' }
+    $mode = if ($null -ne $j.PSObject.Properties['DeploymentMode']) { [string]$j.DeploymentMode } else { 'EngineConfig' }
+    $expectedMode = if (Test-JournalDlssgOnly) { 'DlssgOnly' } else { 'EngineConfig' }
+    if ($mode -ne $expectedMode) { throw '部署模式不同，请先使用原启动器恢复原状；不要删除记录。' }
     if ($script:journalContext.ContainsKey('SelectableProxy') -and $script:journalContext.SelectableProxy) {
         if ($j.ProxyName -cne $deployment.Proxy) { throw 'Recorded proxy does not match recovery context.' }
     }
-    foreach ($name in @('Render','Engine','Runtime','Backup')) {
+    $contextNames = @('Render')
+    if (-not (Test-JournalDlssgOnly)) { $contextNames += @('Engine','Runtime','Backup') }
+    elseif ($j.Engine -or $j.Runtime -or $j.Backup) { throw '仅 DLSSG 记录不能包含画面配置路径。' }
+    foreach ($name in $contextNames) {
         if ((Get-NormalizedPath $j.$name) -ne (Get-NormalizedPath $script:journalContext[$name])) {
             throw "Journal context changed ($name); use the original game/config directory."
         }
@@ -121,6 +152,7 @@ function Assert-DeploymentJournal {
     foreach ($spec in $expectedLinks) { $allowed[(Get-NormalizedPath $spec.Path)] = (Get-NormalizedPath $spec.Target) }
     $seen = @{}
     foreach ($op in @($j.Operations)) {
+        if ((Test-JournalDlssgOnly) -and $op.Kind -in @('backup','runtime','engineLink')) { throw '仅 DLSSG 记录包含非法画面配置操作。' }
         if ($op.State -notin @('intent','done','restored')) { throw 'Invalid operation state.' }
         $key = Get-NormalizedPath $op.Path
         $operationKey = $op.Kind + ':' + $key
@@ -156,9 +188,15 @@ function New-DeploymentJournal {
         Version = 1; GameId = $c.GameId; Session = [guid]::NewGuid().ToString('N')
         ScriptPid = $PID; ScriptStarted = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
         Render = $c.Render; Engine = $c.Engine; Runtime = $c.Runtime; Backup = $c.Backup
-        OriginalExisted = ($null -ne (Get-JournalItem $engineConfigPath)); OriginalHash = (Get-HashOrNull $engineConfigPath)
+        OriginalExisted = $false; OriginalHash = $null
         StorageExisted = ($null -ne (Get-JournalItem $storageDll)); Phase = 'deploying'
         Operations = @(); Reused = @()
+    }
+    if (Test-JournalDlssgOnly) {
+        $script:deploymentJournal | Add-Member NoteProperty DeploymentMode DlssgOnly
+    } else {
+        $script:deploymentJournal.OriginalExisted = ($null -ne (Get-JournalItem $engineConfigPath))
+        $script:deploymentJournal.OriginalHash = Get-HashOrNull $engineConfigPath
     }
     if ($c.ContainsKey('SelectableProxy') -and $c.SelectableProxy) {
         $script:deploymentJournal | Add-Member -NotePropertyName ProxyName -NotePropertyValue $deployment.Proxy
@@ -182,7 +220,7 @@ function Test-DeploymentInputs {
     try {
         $DryRun = $true
         foreach ($spec in $linkSpecs) { [void](Assert-LinkOrAbsent -Path $spec.Path -ExpectedTarget $spec.Target) }
-        Prepare-EngineConfig
+        if (-not (Test-JournalDlssgOnly)) { Prepare-EngineConfig }
     }
     finally { $DryRun = $previousDryRun }
 }
@@ -207,6 +245,7 @@ function Resolve-LegacyEngineDeployment {
 function Start-DeploymentOperation {
     param([string]$Kind, [string]$Path, [string]$Target = '', [string]$Hash = '')
     if ($null -eq $script:deploymentJournal) { throw 'Deployment journal not initialized.' }
+    if ((Test-JournalDlssgOnly) -and $Kind -in @('engineLink','backup','runtime')) { throw '仅 DLSSG 模式禁止画面配置操作。' }
     $op = [pscustomobject]@{ Kind = $Kind; Path = [IO.Path]::GetFullPath($Path); Target = $Target; Hash = $Hash; State = 'intent' }
     $script:deploymentJournal.Operations = @($script:deploymentJournal.Operations) + @($op)
     Save-DeploymentJournal
@@ -329,7 +368,9 @@ function Restore-LegacyResourceDeployment {
 
 function Assert-DeploymentResourcesRemoved {
     # Logs may remain. Loadable proxy/resource links and temporary configuration may not.
-    foreach ($path in (@($deployment.Specs | ForEach-Object { $_.Path }) + @($linkSpecs | ForEach-Object { $_.Path }) + @($engineRuntimePath, $engineBackupPath))) {
+    $paths = @($deployment.Specs | ForEach-Object { $_.Path }) + @($linkSpecs | ForEach-Object { $_.Path })
+    if (-not (Test-JournalDlssgOnly)) { $paths += @($engineRuntimePath, $engineBackupPath) }
+    foreach ($path in $paths) {
         if ($null -ne (Get-JournalItem $path)) { throw "Deployment residue preserved; recovery incomplete: $path" }
     }
     if ($null -ne (Get-JournalItem $storageDll) -and (Get-HashOrNull $storageDll) -eq (Get-HashOrNull $linkSpecs[0].Target)) {
@@ -352,6 +393,7 @@ function Assert-RecoveryProcessesStopped {
 function Restore-RecordedDeployment {
     param([switch]$EngineOnly, [switch]$Preview, [switch]$Automatic)
     if ($null -eq $script:deploymentJournal) { return }
+    if ($EngineOnly -and (Test-JournalDlssgOnly)) { throw '仅 DLSSG 模式没有画面配置恢复操作。' }
     Assert-DeploymentJournal
     # Normal exit may leave the official launcher open. Explicit recovery requires both stopped.
     if ($Automatic -and -not ($script:journalContext.ContainsKey('GameExecutable') -and $script:journalContext.GameExecutable)) {

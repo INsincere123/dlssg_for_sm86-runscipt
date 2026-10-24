@@ -51,10 +51,10 @@ foreach ($action in @('Launch','Restore','Check','CancelledLaunch')) {
 Write-Host 'PASS: actual GUI handoff, independent worker handle, cancelled UAC and retained check/restore UI.'
 
 # Verify the moved BAT resolves its entry relative to itself, from any working directory.
-$bat=Join-Path $root '启动器.bat'
+$bat=Join-Path $root '虚幻启动器.bat'
 $text=[IO.File]::ReadAllText($bat)
 Assert-Test ($text.Contains('%~dp0scripts\ui\Show-SteamLauncher.ps1')) 'Moved BAT target is wrong.'
-Assert-Test (-not [IO.File]::Exists((Join-Path (Split-Path -Parent $root) '启动器.bat'))) 'Old root entry remains.'
+Assert-Test (-not [IO.File]::Exists((Join-Path (Split-Path -Parent $root) '虚幻启动器.bat'))) 'Old root entry remains.'
 foreach ($relative in @('scripts\common\PortableLauncher.ps1','scripts\tools\Export-PortableLauncher.ps1')) {
     $tokens=$null; $errors=$null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $root $relative),[ref]$tokens,[ref]$errors)

@@ -11,6 +11,7 @@ param(
     [switch]$VerboseLog,
     [switch]$RestoreEngineConfig,
     [switch]$RestoreDeployment,
+    [switch]$DlssgOnly,
     [string]$ConfigDirectory,
     [string]$EngineConfigSource
 )
@@ -35,7 +36,7 @@ if ($LaunchMode -eq 'Direct') {
     if ($LauncherConfigPath) { $settingsArguments.Path=$LauncherConfigPath }
     $settings=Get-DirectUESettings @settingsArguments
     $gameId=$settings.GameId
-    Write-Host ("配置分组：{0}；直接EXE启动；游戏标识：{1}" -f $settings.Profile,$gameId)
+    Write-Host ("配置分组：{0}；EXE启动；游戏标识：{1}" -f $settings.Profile,$gameId)
 } else {
     $settingsArguments = @{ AppId=$AppId; Profile=$Profile; Overrides=$PSBoundParameters }
     if ($LauncherConfigPath) { $settingsArguments.Path = $LauncherConfigPath }
@@ -47,12 +48,19 @@ if ($LaunchMode -eq 'Direct') {
 $enginePrepared = $false
 $engineOriginalMoved = $false
 $engineRuntimeCreated = $false
+$engineConfigSource = $null
+$engineConfigPath = $null
+$engineRuntimePath = $null
+$engineBackupPath = $null
+if (-not $DlssgOnly) {
 $engineConfigSource = $settings.EngineConfigSource
 $engineRuntimeMarker = if ($LaunchMode -eq 'Steam') { '; Steam UE5 launcher runtime copy v1 appid=' + $AppId } else { '; Direct UE launcher runtime copy v1 game=' + $gameId }
 $ConfigDirectory = $settings.ConfigDirectory
 $engineConfigPath = Join-Path $ConfigDirectory 'Engine.ini'
 $engineRuntimePath = Join-Path $ConfigDirectory ('Engine.' + $gameId + '-runtime.ini')
 $engineBackupPath = Join-Path $ConfigDirectory ('Engine.ini.before-' + $gameId + '-link')
+}
+if ($DlssgOnly -and $RestoreEngineConfig) { throw '仅 DLSSG 模式不处理 Engine.ini，请使用原启动器恢复画面配置。' }
 $createdLinks = [Collections.Generic.List[string]]::new()
 $setupComplete = $false
 $consoleState = $null
@@ -136,6 +144,7 @@ function Assert-FileExists {
 }
 
 function Assert-SteamEnginePaths {
+    if ($DlssgOnly) { return }
     foreach ($path in @($engineConfigPath, $engineRuntimePath, $engineBackupPath)) {
         if ((Get-NormalizedPath $engineConfigSource) -eq (Get-NormalizedPath $path)) {
             throw '配置源不能使用游戏原文件、临时文件或备份路径。'
@@ -174,6 +183,7 @@ function Restore-EngineConfig {
 }
 
 function Prepare-EngineConfig {
+    if (Test-JournalDlssgOnly) { return }
     # 固定名称便于中断后恢复；恢复前征求同意，不直接覆盖遗留文件。
     $leftovers = @(@($engineBackupPath, $engineRuntimePath) | Where-Object {
         $null -ne (Get-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue)
@@ -313,13 +323,13 @@ if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { 
 try {
     Assert-SteamEnginePaths
     Assert-SteamGameStopped -Executable $gameExe
-    Open-DeploymentJournal -GameId $gameId -GameProcess $gameProcessName -LauncherProcess @() -DiagnosticPrefix ("dlssg_sm86-$gameId-") -GameExecutable $gameExe -SelectableProxy
+    Open-DeploymentJournal -GameId $gameId -GameProcess $gameProcessName -LauncherProcess @() -DiagnosticPrefix ("dlssg_sm86-$gameId-") -GameExecutable $gameExe -SelectableProxy -DlssgOnly:$DlssgOnly
     if ($null -ne $script:deploymentJournal) {
         Write-Log ("旧部署恢复代理：{0}；来源：{1}" -f $deployment.Proxy, $projectProxy)
     }
     if ($RestoreDeployment) {
         if ($null -ne $script:deploymentJournal) { Restore-RecordedDeployment -Preview:$DryRun; exit 0 }
-        elseif ($null -ne (Get-JournalItem $engineBackupPath) -or $null -ne (Get-JournalItem $engineRuntimePath)) { Restore-EngineConfig }
+        elseif (-not $DlssgOnly -and ($null -ne (Get-JournalItem $engineBackupPath) -or $null -ne (Get-JournalItem $engineRuntimePath))) { Restore-EngineConfig }
         Restore-LegacyResourceDeployment -Preview:$DryRun
         exit 0
     }
@@ -333,10 +343,12 @@ try {
     Select-DlssgProxy -ProjectDirectory $projectDir -RenderDirectory $renderDir -ProxyName $settings.ProxyName
     Write-Log ("游戏：{0}（{1}）；代理 {2}：{3}；来源：{4}" -f $settings.GameName, $gameId, $settings.ProxyDll, $deployment.Proxy, $projectProxy)
     Write-Log "渲染 EXE：$gameExe"
+    if (-not $DlssgOnly) {
     Resolve-LegacyEngineDeployment
     Assert-FileExists -Path $engineConfigSource -Description 'UE 明文 Engine.ini 配置源'
     if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在，请先原版启动一次或使用 -ConfigDirectory 指定：$ConfigDirectory" }
     Write-Log "本次配置目录：$ConfigDirectory"
+    } else { Write-Log '仅 DLSSG 模式：跳过 Engine.ini；保留 INT8 超分设置。' }
     Assert-FileExists -Path $launcherExe -Description '启动程序'
     Assert-FileExists -Path $gameExe -Description '游戏渲染 EXE'
     Assert-FileExists -Path $projectProxy -Description '所选 DLSSG 代理'
@@ -395,7 +407,8 @@ finally {
         }
         elseif ($setupStarted -and -not $DryRun) {
             Set-DeploymentPhase 'retained'
-            Write-Warning '部署与记录已保留；退出目标游戏后用原 -Profile 和 -RestoreDeployment 完整恢复；Steam清单丢失时额外指定原 -AppId；直接启动保留原 -LaunchMode Direct -GameKey。'
+            if ($DlssgOnly) { Write-Warning '部署与记录已保留；退出目标游戏后重新打开 通用启动器.bat，选择原游戏并点击恢复原状。命令行恢复需保留 -DlssgOnly 和原游戏身份参数。' }
+            else { Write-Warning '部署与记录已保留；退出目标游戏后用原 -Profile 和 -RestoreDeployment 完整恢复；Steam清单丢失时额外指定原 -AppId；EXE启动保留原 -LaunchMode Direct -GameKey。' }
         }
 
         if ($setupStarted -and -not $DryRun) {

@@ -173,11 +173,12 @@ function Write-PortableLaunchConfig {
 function New-PortableWorkerCommand {
     param([string]$ScriptPath, [string]$ConfigPath, [string]$AppId, [string]$ResultPath,
         [ValidateSet('Launch','Restore','Check')][string]$Action,
-        [ValidateSet('Steam','Direct')][string]$LaunchMode='Steam',[string]$GameKey)
+        [ValidateSet('Steam','Direct')][string]$LaunchMode='Steam',[string]$GameKey,[switch]$DlssgOnly)
     if ($LaunchMode -eq 'Steam' -and $AppId -notmatch '^[1-9][0-9]*$') { throw 'Invalid AppID.' }
     if ($LaunchMode -eq 'Direct' -and $GameKey -notmatch '^[a-f0-9]{32}$') { throw 'Invalid direct game key.' }
     $identity=if ($LaunchMode -eq 'Direct') { "-LaunchMode Direct -GameKey '$GameKey'" } else { "-AppId '$AppId'" }
     $flag = switch ($Action) { 'Restore' { '-RestoreDeployment' } 'Check' { '-DryRun' } default { '' } }
+    if ($DlssgOnly) { $flag += ' -DlssgOnly' }
     $command = @'
 $global:LASTEXITCODE = 0
 $code = 1
