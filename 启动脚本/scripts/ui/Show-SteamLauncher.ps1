@@ -69,7 +69,7 @@ try {
     }
     $title = New-Label $form '选好游戏，直接开始。' 26 22 700 42
     $title.Font = New-Object Drawing.Font('Microsoft YaHei UI',21,[Drawing.FontStyle]::Bold)
-    $subtitle = New-Label $form '支持 Steam 和 EXE 直接启动；退出后恢复原文件。' 28 73 700
+    $subtitle = New-Label $form '支持 Steam启动和EXE启动；退出后恢复原文件。' 28 73 700
     $subtitle.ForeColor = [Drawing.Color]::DimGray
     [void](New-Label $form '游戏' 28 119 40)
     $games = New-Object Windows.Forms.ComboBox
@@ -335,7 +335,7 @@ try {
     }
     $addMenu=New-Object Windows.Forms.ContextMenuStrip
     $steamItem=$addMenu.Items.Add('添加 Steam 游戏')
-    $directItem=$addMenu.Items.Add('添加 EXE 游戏')
+    $directItem=$addMenu.Items.Add('添加EXE启动游戏')
     $steamItem.Add_Click({ Add-LauncherGame Steam })
     $directItem.Add_Click({ Add-LauncherGame Direct })
     $add.Add_Click({ $addMenu.Show($add,0,$add.Height) })

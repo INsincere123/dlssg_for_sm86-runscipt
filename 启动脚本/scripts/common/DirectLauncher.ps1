@@ -31,7 +31,9 @@ function Get-DirectUESettings {
     $group=if ($Profile -like 'DirectUE:*') { $Profile } else { "DirectUE:$Profile" }
     $section=Read-LauncherConfigSection -Name $group -Path $Path
     $values=@{Profile=$group;GameId="direct-$GameKey";LauncherPath=''}
-    foreach ($key in @('GameName','GameDirectory','ConfigDirectory','EngineConfigSource')) {
+    $keys = @('GameName','GameDirectory')
+    if (-not ($Overrides.ContainsKey('DlssgOnly') -and $Overrides.DlssgOnly)) { $keys += @('ConfigDirectory','EngineConfigSource') }
+    foreach ($key in $keys) {
         $value=if ($Overrides.ContainsKey($key)) { [string]$Overrides[$key] } else { Get-LauncherText $section $key $group }
         $values[$key]=if ($key -eq 'GameName') { $value } else { Resolve-LauncherConfigPath $value "$group.$key" }
     }

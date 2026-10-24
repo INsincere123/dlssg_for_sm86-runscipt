@@ -91,7 +91,9 @@ function Get-SteamUE5Settings {
     $section = Read-LauncherConfigSection -Name $group -Path $Path
     $steam = Read-LauncherConfigSection -Name Steam -Path $Path
     $values = @{}
-    foreach ($key in @('GameName','GameDirectory','RenderExecutable','ConfigDirectory','EngineConfigSource')) {
+    $keys = @('GameName','GameDirectory','RenderExecutable')
+    if (-not ($Overrides.ContainsKey('DlssgOnly') -and $Overrides.DlssgOnly)) { $keys += @('ConfigDirectory','EngineConfigSource') }
+    foreach ($key in $keys) {
         $value = if ($Overrides.ContainsKey($key)) { [string]$Overrides[$key] } else { Get-LauncherText $section $key $group }
         $values[$key] = if ($key -in @('GameName','RenderExecutable')) { $value } else { Resolve-LauncherConfigPath -Value $value -Name "$group.$key" }
     }

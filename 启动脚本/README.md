@@ -4,9 +4,23 @@
 
 ## 入口与模块
 
+### 独立 DLSSG 通用启动器
+
+`通用启动器.bat` 打开 `scripts/ui/Show-DlssgLauncher.ps1`。界面与游戏列表独立，首次为空；本机偏好和运行请求保存在 `%LOCALAPPDATA%\DlssgOnlyLauncher\<目录路径哈希>`。模型及请求在 `scripts/common/DlssgOnlyLauncher.ps1`，安装发现和渲染候选在 `scripts/common/GameDiscovery.ps1`。
+
+支持 Steam、Epic、GOG 的本机安装发现：Steam 使用登记库及严格清单匹配；Epic 读取 ProgramData 安装清单，排除 DLC/无效入口；GOG 读取安装注册信息并结合 `goggame-*.info`。不做全盘扫描。所选游戏目录的候选扫描在后台执行，可取消；不穿过目录链接，跳过工具、辅助程序及非 x64 PE。目录深度最多12层、访问目录最多12000个；跳过原因可在“扫描详情”查看。多个候选展示相对路径和证据，由用户确认，平台启动入口与渲染程序可以不同。
+
+Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”，不增加其他平台协议，也不绕过游戏的平台验证。该入口不限制 UE 主版本；识别或部署成功不代表支持帧生成。候选排序参考 [RTX-FG-Manager](https://github.com/pandaligx/RTX-FG-Manager/blob/646486bc85ec9773c374b691f4bd22467aa179d8/rust/src/scanner.rs) 的多证据筛选思路，以 PowerShell 实现；仅有超分组件不构成帧生成支持证据。
+
+工作进程仍使用 `Run-SteamUE5-DLSSG.ps1`，固定传 `-DlssgOnly`。该模式不读取、备份、部署或恢复 Engine.ini，不要求配置目录或配置源；继续部署0.4.0完整资源和临时 `dlssg_sm86.ini`，保留原有 INT8 超分（Mode=On，仅 L/M 预设使用 INT8）、代理选择和会话恢复。记录使用 `DeploymentMode=DlssgOnly`、空 Engine/Runtime/Backup，不允许配置类操作；旧记录缺少模式时按原有模式解释。两种模式不能交叉恢复；同渲染目录的其他遗留记录会阻止新部署，须回原入口恢复。共用渲染目录互斥，新模式不使用配置路径互斥。
+
+验证：`powershell.exe -NoProfile -File 启动脚本/tests/DlssgOnlyLauncher.Tests.ps1`；界面支持 `-SmokeTest` 和可选 `-PreviewPath`。测试使用隔离安装记录、伪程序及资源，不启动真实游戏。
+
+### 共用模块与原入口
+
 | 位置 | 职责 |
 |---|---|
-| `启动器.bat`、`scripts/ui/Show-SteamLauncher.ps1` | WinForms界面，保存选择、触发检查/恢复、交接独立工作脚本 |
+| `虚幻启动器.bat`、`scripts/ui/Show-SteamLauncher.ps1` | WinForms界面，保存选择、触发检查/恢复、交接独立工作脚本 |
 | `scripts/common/PortableLauncher.ps1` | 共享预设与本机偏好合并、模型校验、运行请求INI、工作进程命令 |
 | `scripts/common/SteamLauncher.ps1` | Steam库/清单解析、AppID匹配、完整EXE路径进程识别与会话等待 |
 | `scripts/common/DirectLauncher.ps1` | Steam/Direct模式兼容、稳定游戏标识、直接启动设置与EXE调度 |
@@ -54,11 +68,11 @@ powershell.exe -NoProfile -File 启动脚本/scripts/ui/Show-SteamLauncher.ps1 -
 
 ## 便携导出
 
-可选Bandizip模式：运行 `打包给朋友.bat -b`，或给导出PS1传 `-b`。调用 `C:\Bandizip\bz.exe` 输出7z，使用本机7.32版默认LZMA2及最高等级 `-l:9`；压缩及完整性检查成功后只保留7z，失败保留导出目录。三种类型与顶层文件夹命名不变；不加 `-b` 仍用内置ZIP。打包脚本和Bandizip本身不包含在分享包内。参数依据[Bandizip官方说明](https://www.bandisoft.com/bandizip/help/parameter/)。
+可选Bandizip模式：运行 `打包给朋友.bat -b`，或给导出PS1传 `-b`。调用 `C:\Bandizip\bz.exe` 输出7z，使用本机7.32版默认LZMA2及最高等级 `-l:9`；压缩及完整性检查成功后只保留7z，失败保留导出目录。四种类型均可使用；不加 `-b` 仍用内置ZIP。打包脚本和Bandizip本身不包含在分享包内。参数依据[Bandizip官方说明](https://www.bandisoft.com/bandizip/help/parameter/)。
 
-压缩包内只有一个顶层文件夹：类型1、2为“帧生成启动器”，类型3为“鸣潮异环帧生成解锁”；资源、说明和启动脚本均在其中，解压后进入该文件夹使用。
+压缩包内只有一个顶层文件夹：类型1为“帧生成启动器”，类型2为“通用启动器”，类型3为“虚幻启动器”，类型4为“鸣潮异环帧生成解锁”；资源、说明和启动脚本均在其中，解压后进入该文件夹使用。
 
-双击 `打包给朋友.bat`，输入 `1=完整（启动器+鸣潮+异环）`、`2=启动器` 或 `3=鸣潮+异环`。在仓库 `dist/DLSSG-Full/Launcher/WuWa-NTE-日期时间.zip`（按类型选择名称）生成压缩包，成功后自动删除同名临时目录，仅保留ZIP。无需管理员权限、Git、Python 或第三方压缩软件；已有目的目录或 ZIP 不覆盖。
+双击 `打包给朋友.bat`，输入 `1=完整`、`2=通用启动器`、`3=虚幻启动器` 或 `4=鸣潮+异环`。在仓库 `dist/DLSSG-<类型>-日期时间.zip`（类型标记分别为Full、General、Unreal、WuWa-NTE）生成压缩包，成功后自动删除同名临时目录，仅保留ZIP。无需管理员权限、Git、Python 或第三方压缩软件；已有目的目录或 ZIP 不覆盖。
 
 也可指定导出位置，不复制使用中的工作树：
 
@@ -66,7 +80,7 @@ powershell.exe -NoProfile -File 启动脚本/scripts/ui/Show-SteamLauncher.ps1 -
 powershell.exe -NoProfile -File 启动脚本/scripts/tools/Export-PortableLauncher.ps1 -Destination D:/分享/DLSSG便携启动器 -Zip
 ```
 
-白名单按类型包含实际依赖模块、游戏入口、配置及说明，三种均保留完整0.4.0六个资源DLL；启动器包含六种代理、UE候选/自定义配置及预设，鸣潮+异环只包含version/winmm代理、专用配置、显卡工具和入口。完整包为两者并集，另含Steam命令行BAT。含专用入口的包现场生成干净的启动配置模板，不读取个人启动INI，收件人需填写游戏目录。排除本机偏好、日志、.state、备份、测试、子模块、打包工具和Git。ZIP使用.NET内置Optimal压缩，先写临时文件再发布，输出大小和SHA256。源文件/入口增减时同步白名单，旧导出包不代表当前代码。非交互调用用 `-PackageType 1/2/3`；省略时兼容原有行为，导出启动器。
+白名单按类型包含实际依赖模块、游戏入口、配置及说明，四种均保留完整0.4.0六个资源DLL。通用包包含通用界面、游戏发现、六种代理及必要模块，不包含UE画质配置和预设；虚幻包包含虚幻界面、六种代理、UE候选/自定义配置及预设，不包含通用界面或游戏发现模块。通用模型复用PortableLauncher，因此仍包含UnrealQuality代码模块，但不包含UE配置文件。鸣潮+异环只包含version/winmm代理、专用配置、显卡工具和入口。完整包为三类并集，另含Steam命令行BAT。含专用入口的包现场生成干净的启动配置模板，不读取个人启动INI，收件人需填写游戏目录。排除本机偏好、日志、.state、备份、测试、子模块、打包工具和Git。ZIP使用.NET内置Optimal压缩，先写临时文件再发布，输出大小和SHA256。源文件/入口增减时同步白名单，旧导出包不代表当前代码。非交互调用用 `-PackageType 1/2/3/4`；省略时为2，导出通用启动器。 菜单末尾的 `0 全部依次打包` 按1→2→3→4分别生成四个包，也可传 `-PackageType 0`；沿用ZIP或 `-b` 模式。指定 `-Destination` 时将其作为前缀，分别加上 `-Full`、`-General`、`-Unreal`、`-WuWa-NTE`。整批先检查输出冲突，执行中失败则停止后续类型，保留此前成功的包和失败现场。
 
 ## 参考文档
 
