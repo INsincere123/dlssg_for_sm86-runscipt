@@ -1,4 +1,4 @@
-# DLSSG for SM86（Proxy）- 0.4.0 版本
+# DLSSG for SM86（Proxy）- 0.4.1 版本
 
 **中文** · [English](README.en.md)
 
@@ -11,9 +11,26 @@
 > 3. 代理任何时候只放一个；游戏不加载 `version.dll` 时，从 `alternatives\` 换一个（换，不是加）。
 > 4. 用新的 `dlssg_sm86.ini`：键的位置变了（`Optimized`、`Preset` 移到 `[DLSSG]`），旧 INI 还能读但会记告警，改过的设置请在新 INI 里重新改。
 >
-> 完整包（含超分文件）在 Release 附件 `dlssg-release-0.4.0-x64.zip`；第一次安装照包里的 `MANUAL.html` 一步一步做。0.3.5 的文件在 `archive\0.3.5\`。
+> 完整包（含超分文件）在 Release 附件 `dlssg-release-0.4.1-x64.zip`；第一次安装照包里的 `MANUAL.html` 一步一步做。0.3.5 的文件在 `archive\0.3.5\`。
 
 ## 本次更新说明
+
+
+### 0.4.1
+
+- **XeSS-FG 引擎（可选）**：
+  - **多帧生成（MFG）**：`[FrameGeneration] Engine=XeSS` 做到 **2X / 3X / 4X**（`MaxGeneratedFrames` 1–3）。模型是 MFG-Unlocker 1.6.0 移植的 Intel **model 15**：2X 仍是 model 18 的图（比原来多 4–5 %），3X / 4X 走 model 15 自己的多帧路径，每个真实帧的第 i 张生成帧用相位 t = i / (N + 1)。`[XeSSFG] Model` 键删除（只有一个模型），旧 INI 里写了只记一条告警。
+  - **张量核 CUDA 后端**：移植版的主干层（3×3 INT8 卷积）是手写的 INT8 IMMA 内核（`mma.sync.m16n8k16`），权重用 `cp.async` 双缓冲预取；整套图由本项目自己的 D3D12 + NVAPI CUDA 运行器在游戏的命令列表上执行，**不加载** Intel 的 `libxess_fg.dll`。
+  - **`[XeSSFG] FlowResolution=CoarseAt4K`**：输出像素数 ≥ 3840 × 2160 时自动 `Coarse`，1440p 仍 `Middle`。
+  - **`[XeSSFG] UseHudless` 改为三态**：`Auto`（出厂，逐帧判断）/ `1`（严格：缺 HUD-less 即拒绝）/ `0`（不用）。
+  - 在 RTX 30 上：1440p 及以下比 DLSS-G 快 8–15 %，4K 起慢 27–30 %，见「性能」。
+- **`[SuperResolution] Mode` 改为显式预设**：`Off`（出厂）/ `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`；0.4.0 的 `Mode=On` 删除，非法值是 `configuration_invalid`、超分不启用。
+- **`[DLSSG] Preset` 只剩 A / B / C**：`Auto` 删除（按 `A` 跑），出厂 `A`。
+- **一批键删除、不再读取**：旧位置的 `[FrameGeneration] Optimized` / `[Compatibility] OptimizedKernels` / `[Compatibility] Preset`、`[Compatibility] AccelerateNewerGpus` / `ForceGeneratedFrames` / `SM75Family` / `HardwareBilinear` / `LaunchChains` / `PlainVariant`、`[Backends]` 等；写了只记一条告警，行为按出厂值。RTX 40 / 50 一律跑本项目的内核。
+- **驱动要求变成硬性 R580**：CUDA 13 构建的 cubin 被驱动拒绝时不再改跑 PTX，直接报错并拒绝帧生成（`driver_below_floor` / `kernel_image_unavailable`）。
+- **超分 INT8 首帧卡顿修复**：12 张权重镜像的上传移出第一个观察帧（此前那一次 Evaluate 的 CPU 时间比同预设 FP16 多 5–6 ms）。
+- **显式开关做不到就拒绝，不再静默回退**：`[Runtime] Path` / `SRPath` 指错文件、随包文件缺失、RTX 40 / 50 上 `KernelImage=Cubin` 等，都拒绝并写清原因。
+- **日志**：只有一个文本日志 `dlssg_sm86\logs\dlssg_sm86.log`（0.4.0 的每进程 `frames_<pid>.jsonl` 取消）；`[Logging] FrameTiming=1` 另写 `frame_timing.txt`。
 
 ### 0.4.0
 
@@ -51,18 +68,34 @@
 - 310.9 运行库新增 6X（`MaxGeneratedFrames` 上限由 3 提到 5）。在自身支持 Dynamic MFG 的游戏上，帧生成选「动态 / 自动」时会跑到 6X。
 - 内核最优集（离线基准快约 19~32%）、两档出厂 INI、录制回放与诊断日志等见下文与 `docs/`。
 
+
+## 与公开 0.4.0 版的区别（摘要）
+
+| 面 | 0.4.0（公开版） | 0.4.1（本版） |
+|---|---|---|
+| XeSS-FG 倍率 | 2X（model 18） | 2X / 3X / 4X（model 15 移植；2X 仍是 model 18 的图） |
+| XeSS-FG 模型选择 | `[XeSSFG] Model=15` / `18` | 只有一个模型，键删除 |
+| XeSS-FG 后端 | 第一版 D3D12 / CUDA 运行器 | 张量核 INT8 IMMA 内核 + `cp.async` 双缓冲 |
+| 驱动下限 | R580，cubin 被拒时退回 PTX | R580 硬性要求，被拒即报错 |
+| 超分 INT8 首帧 | 12 张权重镜像建在第一个观察帧 | 移到进游戏前 |
+| 配置面 | 保留若干无收益 / 冲突的键 | 清理，显式开关做不到即拒绝 |
+| 20 / 30 系的数值与性能 | — | 不变（同一套内核、同一逐位一致档位） |
+
+详细账本见仓库 `docs/COMPAT.md` 的 C95–C131；每个条目都写了现象、根因、修法与钉住它的测试。
+
+
 ## 声明与后续计划
 
 - 插帧（DLSS-G）的内核级工作已基本达到现阶段的最优水平，暂不继续做内核优化；后续版本只做兼容性与 bug 修复。
 - 超分 L / M 的 INT8 已在本版提供（RTX 30 / 20）。
-- XeSS-FG 引擎本版只做到能用（2X、不做性能优化）。
+- XeSS-FG 引擎（可选）：Intel model 15 的移植，2X–4X，跑在本项目自己的张量核 CUDA 后端上；性能与 HDR（RGBA16F）后缓冲见「性能」与「已知问题」。
 - Vulkan 支持在项目当前状态下难以继续：封装层本身的游戏兼容性还不够好、覆盖测试也不多，再加上 Vulkan 只会带来更多兼容性问题。有需要的用户可以选用社区的 patch 版本。
 
 ## 运行要求
 
 - 系统与游戏：Windows 10/11 x64、D3D12。
 - GPU：RTX 30 系列（SM86）或 RTX 20 系列（Turing / SM75）。RTX 3070 上做开发验证与全部游戏内测试，RTX 3080 Ti 上跑过 0.4.0 测试包的完整测试；RTX 20 在 2080 Ti 上实测过 0.3.x 的帧生成与本版超分 INT8 的一次冒烟。
-- 驱动：带 NGX / NVAPI / CUDA 接口的 NVIDIA 驱动，591.86、610.74、610.88、617.14 实测可用。cubin 需约 R580+ 驱动，更旧的驱动自动回退 PTX（仅首帧多一次 JIT）。
+- 驱动：**R580 或更新**的 NVIDIA 驱动（CUDA 13.0），591.86、610.74、610.88、617.14 实测可用。更旧的驱动上帧生成不启用，日志里一条 `driver_below_floor`（0.4.1 起 cubin 被拒不再改跑 PTX）。
 - 不需要 CUDA Toolkit，不需要 Python。
 
 本版只有一个发布版本（随包运行库 310.9.16，最高 6X）。0.3.5 的两个版本（310.9 / 310.1）在 `archive\0.3.5\`。
@@ -92,9 +125,9 @@
 
 1. 完全退出游戏。
 2. 进入游戏的渲染 EXE 目录（如《黑神话：悟空》为 `...\b1\Binaries\Win64\`）。
-3. 复制 `version.dll`、`dlssg_sm86.ini` 和整个 `dlssg_sm86\` 目录；该目录已有同名 DLL 时先备份原文件。最省事的是直接下载 Release 附件 `dlssg-release-0.4.0-x64.zip` 解压：它与本仓库根目录相同，另外带超分的 `dlssg_sm86\sr\` 两个文件（`sr_kernels.dll` 超过 GitHub 单个文件的上限，不在仓库里；不开超分可以不要）。
+3. 复制 `version.dll`、`dlssg_sm86.ini` 和整个 `dlssg_sm86\` 目录；该目录已有同名 DLL 时先备份原文件。最省事的是直接下载 Release 附件 `dlssg-release-0.4.1-x64.zip` 解压：它与本仓库根目录相同，另外带超分的 `dlssg_sm86\sr\` 两个文件（`sr_kernels.dll` 超过 GitHub 单个文件的上限，不在仓库里；不开超分可以不要）。
 4. 启动游戏，在图形设置中开启 DLSS 帧生成，选 2X / 3X / 4X（要 6X 见「6X 说明」）。
-5. 游戏不加载 `version.dll`（`[Logging] Level=2` 下开了帧生成也没有 `dlssg_sm86\logs\loader_*.jsonl`）：删掉它，从 `alternatives\` 按 `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll` 的顺序一次换一个，任何时候只放一个。
+5. 游戏不加载 `version.dll`（`[Logging] Level=2` 下开了帧生成也没有 `dlssg_sm86\logs\dlssg_sm86.log` 里的 `install` 记录）：删掉它，从 `alternatives\` 按 `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll` 的顺序一次换一个，任何时候只放一个。
 6. 升级：退出游戏，先删掉旧的代理 DLL（0.3.x 可能放过几个，都要删）、`dlssg_sm86.ini` 和 `dlssg_sm86\`，再复制新版这三样；改过的设置在新 INI 里重新改。
 7. 卸载：删掉代理 DLL、`dlssg_sm86.ini` 和 `dlssg_sm86\` 目录，备份过的原 DLL 放回去。
 
@@ -103,7 +136,7 @@
 - `[DLSSG] Optimized`：优化内核等级 `0`–`3`。出厂 `2` = 全部加速再加有损图像内核，并排看与 `1` 没有可见差别；`1` 全部加速、画面与官方逐位一致；`0` 原厂内核不加速；`3` 全部有损加速。
 - `[DLSSG] Preset`：出厂 `Auto`；`C` = FG Lite（更快，画质略低），同样用本项目的加速内核。
 - `[FrameGeneration] MaxGeneratedFrames`：出厂 `3` 对应 4X；改成 `5` 对应 6X，实际生成帧数由游戏请求、并钳到运行库上限。
-- `[FrameGeneration] Engine`：出厂 `DLSS`；`XeSS` = Intel XeSS-FG 模型，只 2X。`[XeSSFG] FlowResolution`（出厂 `Middle`，越细越慢）与 `UseHudless`（出厂 `1`）只对 XeSS 生效。
+- `[FrameGeneration] Engine`：出厂 `DLSS`；`XeSS` = Intel XeSS-FG 模型（model 15，2X 走 model 18 的图），`MaxGeneratedFrames` 1–3（2X–4X）。`[XeSSFG] FlowResolution`（出厂 `Middle`，越细越慢；另有 `CoarseAt4K`）与 `UseHudless`（出厂 `Auto`）只对 XeSS 生效。
 - `[SuperResolution] Mode`：出厂 `Off`；RTX 30 / 20 改成 `On` 后，游戏里用 L / M 预设的超分档位换成本项目的 INT8 内核；同一次运行里只有先用上的那一档加速。需要完整包里的 `dlssg_sm86\sr\`。
 
 其余诊断/兼容项取安全默认、不在出厂文件中，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。某个键写错时只有那个键回退到默认值并记一条 `configuration_warning`，不会关掉整个 mod。
@@ -205,6 +238,20 @@ RTX 3070，驱动 617.14，帧生成关，进世界后静置窗口的帧率；�
 
 除最后一行外，提升都超过同配置重复运行差的两倍；1080p 超级性能 L 在一次运行的波动之内，但 4 次 INT8 全部高于 4 次 FP16。画质：预设 M 静止画面的闪烁略多于 FP16（游戏内静止像素的帧间稳定度 61.8 对 62.5 dB），对真值的 PSNR 不低于 FP16；预设 L 与 FP16 相差 ≤ 0.6 dB。
 
+### XeSS-FG 多帧生成（RTX 3070，离线完整路线回放）
+
+每个真实帧连同它的生成帧的 GPU 毫秒数（`Middle`、DIRECT）：
+
+| 输出 | XeSS-FG 4X | DLSS-G 默认 | 差 |
+|---|---|---|---|
+| 1440p | 4.5–5.0 ms | 5.3–5.4 ms | **快 8–15 %** |
+| 4K | 10.3–10.8 ms | 7.9–8.5 ms | 慢 27–30 % |
+
+- 预设 C 在所有档上最快；2X 走 model 18 的图，比原来的 2X 多 4–5 %（5070 游戏内实测 +1.7 %，输出逐位相同）。
+- 《黑神话：悟空》4K 游戏内真实帧率：3X 32.0 fps（DLSS 默认 34.0），4X 28.5 fps（DLSS 默认 31.5）。
+- 这是离线 GPU 时间，不等于游戏帧率；真实帧率取决于瓶颈在 CPU 还是 GPU。
+
+
 ### 帧生成整组 GPU 时间（RTX 3080 Ti，合成场景）
 
 RTX 3080 Ti，驱动 610.88，0.4.0 测试包（测试者机器）。单位为每个真实帧对应整组帧生成的 GPU 毫秒数（一组 Evaluate 一次提交的跨度）：每次运行 256 组取中位数，4 轮再取中位；降低 = (tier0 − 当前) / tier0。tier0 = 原厂内核（`Optimized=0`），tier1 = 逐位一致的加速（`1`），tier2 = 出厂默认（`2`）。同一包的一致性检查与 RTX 3070 参考逐位相同：帧生成 18/18、真实抓取 28/28、超分 32/32、超分 `Mode=On` 4/4。
@@ -264,15 +311,15 @@ RTX 3080 Ti，驱动 610.88，0.4.0 测试包（测试者机器）。单位为�
 
 ## 已知问题
 
-- XeSS-FG（`Engine=XeSS`）是可选项，默认仍是 DLSS-G。在 RTX 30 上它每生成帧比 DLSS-G 慢得多（4K：RTX 3070 +77..+86 %、约 +3 ms，RTX 3080 Ti 离线 +109..+114 %），真实帧率低 8..15 %，《A Plague Tale: Resonance》低 28 %；显存多约 0.4–0.5 GB；只 2X。后缓冲是 HDR 常用的 RGBA16F，或游戏缺深度 / 运动矢量等输入时，该游戏不用 XeSS、改跑 DLSS-G，日志写明原因（`xefg_fallback`）。
+- XeSS-FG（`Engine=XeSS`）是可选项，默认仍是 DLSS-G。RTX 30（RTX 3070，离线完整路线回放）上 **1440p 及以下比 DLSS-G 默认快 8–15 %，4K 起慢 27–30 %**（见「性能」）；每生成帧的单独成本仍高于 DLSS-G，真实帧率取决于瓶颈在 CPU 还是 GPU。显存多约 0.4–0.5 GB。`MaxGeneratedFrames` 1–3（2X–4X），写 4 以上帧生成不启用（`max_generated_frames_unsupported`）。后缓冲是 RGBA16F（HDR）时拒绝插帧（`xefg_feature_refused`），不改跑 DLSS-G。XeSS 下 `[Debug] Capture` 录不到东西。
 - `[DLSSG] Preset=B` 只在游戏同时提供 HUD-less 画面与 UI 平面时生效，多数游戏不提供；这时日志记一条 `preset_ineffective`。
 - 预设 C 没有与 RTX 40 / 50 上官方预设 C 的对照。
-- 超分 `Mode=On`：同一次运行里只有先用上的那个 L / M 档位加速，切到另一档要重启游戏。
-- RTX 20：本版帧生成只在 RTX 3070 上做过 sm_75 前向 JIT 验证，310.9.16 的三个新内核尚未在真 Turing 上跑过。RTX 40 / 50：帧生成走本项目内核的 PTX 路线，实机未测。
+- 超分 `[SuperResolution] Mode` 是显式预设：`Off`（出厂）/ `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`，所有超分画质档都用预设 L / M，因此画质 / 平衡 / DLAA 档比游戏自己的 K 慢。
+- RTX 20：310.9.16 的三个新内核与 XeSS 只在 RTX 3070 上做过 sm_75 前向 JIT 验证，在真 Turing 上没有跑过；超分 INT8 在 2080 Ti 上做过一次冒烟。RTX 40：帧生成的 PTX 路线仍无实机数据；RTX 50：帧生成与 XeSS-FG 已在 5070 / 5070 Ti 上实测。
 
 ## 诊断与边界
 
-- 日志写入游戏目录 `dlssg_sm86\logs\`（`loader_<PID>.jsonl` / `backend_<PID>.jsonl`，`[Logging] FrameTiming=1` 时另有逐帧的 `frames_<PID>.jsonl`）。默认 `[Logging] Level=1` 只记错误，排查时改 `2` 或 `3`。
+- 日志写入游戏目录 `dlssg_sm86\logs\dlssg_sm86.log`：所有模块、所有进程追加写这一个文本文件，每行先是本地时间、pid、EXE 名和级别字母，再是 JSON 记录。默认 `[Logging] Level=1` 只记错误，排查时改 `2` 或 `3`；`FrameTiming=1` 时另有 `frame_timing.txt`。
 - 帧生成未生效时先看 `backend_*.jsonl` 是否有 `install` 且 `route active=true`；缺失多为驱动/运行库不匹配，会记录原因并回退原厂路径。
 - 本版优化的是帧生成的 GPU 计算开销，不能将离线耗时下降当成实测游戏 FPS 增幅；实际帧率增益取决于游戏与瓶颈所在。
 - INI 全部键、日志字段与录制回放见 [`docs/INSTALL.md`](docs/INSTALL.md)、[`docs/CAPTURE.md`](docs/CAPTURE.md)。
@@ -282,8 +329,9 @@ RTX 3080 Ti，驱动 610.88，0.4.0 测试包（测试者机器）。单位为�
 - Coldwood1026 的 RTX 20 系列 / SM75 适配（实验性 SM75 路由的内核族来源，见 `THIRD_PARTY_NOTICES.txt`）。
 - NVIDIA 的 DLSS-G 运行库、模型与前后处理（随包、未经修改）。
 - Intel XeSS-FG 的着色器与模型权重（MIT 许可，`XeSS` 引擎用；不包含也不加载 Intel 的 `libxess_fg.dll`）。
+- dashdogy 的 [RTX40MFG-Unlock v1.4.2](https://github.com/dashdogy/RTX40MFG-Unlock/releases/tag/v1.4.2)：原生提取 MFG 模型（model 15）的方法；本项目的 model 15 移植程序与权重按这个方法取得，特此致谢。
 
 ## 许可与第三方
 
 - 本项目源码采用 GPLv3。
-- 随包的 `nvngx_dlssg.dll`（310.9.16，SHA 前缀 `cadee1aa…`）与 `nvngx_dlss.dll`（310.7.129，SHA 前缀 `d202b024…`）、提取/重编译的内核资源与 SM75 内核族为 NVIDIA 及上游第三方材料，不随源码转授权；XeSS-FG 的着色器与权重按 Intel 的 MIT 许可分发。见 `THIRD_PARTY_NOTICES.txt`。
+- 随包的 `nvngx_dlssg.dll`（310.9.16，SHA 前缀 `cadee1aa…`）与 `nvngx_dlss.dll`（310.9.16，SHA 前缀 `858ccff9…`）、提取/重编译的内核资源与 SM75 内核族为 NVIDIA 及上游第三方材料，不随源码转授权；XeSS-FG 的着色器与权重按 Intel 的 MIT 许可分发。见 `THIRD_PARTY_NOTICES.txt`。

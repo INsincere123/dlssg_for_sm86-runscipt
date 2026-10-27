@@ -24,8 +24,8 @@
 ## 使用步骤
 
 1. 先用根目录的 `version.dll`：把它、`dlssg_sm86.ini` 和 `dlssg_sm86\` 文件夹一起复制到渲染 EXE 所在目录（代理按自己所在目录找 `dlssg_sm86\`，只复制 DLL 什么都不会发生）。
-2. 启动游戏，打开 DLSS 帧生成。要确认代理在工作，把 INI 的 `[Logging] Level` 临时改成 `2`：日志 `dlssg_sm86\logs\loader_*.jsonl` 里出现 `runtime_redirect` 即代理已生效，`configuration` 记录的 `proxies.active` 写明是哪一个代理。
-3. `Level=2` 下开了帧生成也没有 `loader_*.jsonl`，最常见的原因是这个代理没被游戏加载：退出游戏，**先删掉它**，再按上表顺序把下一个从本目录复制到 EXE 旁，再试。
+2. 启动游戏，打开 DLSS 帧生成。要确认代理在工作，把 INI 的 `[Logging] Level` 临时改成 `2`：日志 `dlssg_sm86\logs\dlssg_sm86.log` 里这个游戏 EXE 名的行中出现 `runtime_redirect` 即代理已生效，`configuration` 记录的 `proxies.active` 写明是哪一个代理。
+3. `Level=2` 下开了帧生成，日志里也没有这个 EXE 名的行，最常见的原因是这个代理没被游戏加载：退出游戏，**先删掉它**，再按上表顺序把下一个从本目录复制到 EXE 旁，再试。
 4. 确认 EXE 旁只有一个本项目的代理 DLL。
 
 同目录里万一有好几个本项目的代理（例如 0.3.1 起那几版的四代理安装留下的 `winmm.dll` / `dbghelp.dll` / `dinput8.dll`）：进程里第一个被加载的那个运行本 mod，其余只转发、不装钩子、不读 INI、不写日志（列在 `configuration.proxies.standby` 里）。谁是第一个取决于游戏的加载顺序，抢到的若是旧版本的代理，跑的就是那个旧版本，所以升级时把多余的删掉，只留一个。
