@@ -1,4 +1,4 @@
-# DLSSG for SM86 (proxy) - 0.4.0 Version
+# DLSSG for SM86 (proxy) - 0.4.1 Version
 
 [中文](README.md) · **English**
 
@@ -11,9 +11,26 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 > 3. Only one proxy at any time; if the game does not load `version.dll`, swap in one from `alternatives\` (swap, do not add).
 > 4. Use the new `dlssg_sm86.ini`: keys moved (`Optimized` and `Preset` are now in `[DLSSG]`); an old INI is still read but logs warnings, so redo your changes in the new INI.
 >
-> The complete package (with the super-resolution files) is the release asset `dlssg-release-0.4.0-x64.zip`; for a first install follow `MANUAL.en.html` in it step by step. The 0.3.5 files are in `archive\0.3.5\`.
+> The complete package (with the super-resolution files) is the release asset `dlssg-release-0.4.1-x64.zip`; for a first install follow `MANUAL.en.html` step by step. The 0.3.5 files are in `archive\0.3.5\`.
 
 ## Changes in this release
+
+
+### 0.4.1
+
+- **XeSS-FG engine (optional)**:
+  - **Multi-frame generation (MFG)**: `[FrameGeneration] Engine=XeSS` goes to **2X / 3X / 4X** (`MaxGeneratedFrames` 1-3). The model is Intel's **model 15** as ported by MFG-Unlocker 1.6.0: 2X still runs model 18's graph (4-5 % more than before), 3X / 4X run model 15's own multi-frame path with the i-th generated frame of a real frame at t = i / (N + 1). The `[XeSSFG] Model` key is removed (one model); an old INI that writes it gets one warning.
+  - **Tensor-core CUDA backend**: the port's trunk layers (3x3 INT8 convolutions) are hand-written INT8 IMMA kernels (`mma.sync.m16n8k16`) with `cp.async` double buffering; the whole graph runs through this project's own D3D12 + NVAPI CUDA runner on the game's command list and **never loads** Intel's `libxess_fg.dll`.
+  - **`[XeSSFG] FlowResolution=CoarseAt4K`**: `Coarse` automatically when the output has at least 3840 x 2160 pixels, `Middle` at 1440p.
+  - **`[XeSSFG] UseHudless` is now three-state**: `Auto` (factory, decided per frame) / `1` (strict: a frame without a usable HUD-less image is refused) / `0` (never).
+  - On RTX 30 it is 8-15 % faster than DLSS-G at 1440p and below, and 27-30 % slower from 4K up (see "Performance").
+- **`[SuperResolution] Mode` is now explicit presets**: `Off` (factory) / `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`; 0.4.0's `Mode=On` is removed, and an invalid value is `configuration_invalid` with super resolution not enabled.
+- **`[DLSSG] Preset` is A / B / C only**: `Auto` is removed (it runs as `A`), factory `A`.
+- **Keys removed and no longer read**: `Optimized` / `Preset` in their old places, `[Compatibility] AccelerateNewerGpus` / `ForceGeneratedFrames` / `SM75Family` / `HardwareBilinear` / `LaunchChains` / `PlainVariant`, `[Backends]`, and more; writing one logs a warning and the factory value applies. RTX 40 / 50 always run this project's kernels.
+- **The R580 driver floor is now hard**: a CUDA 13 cubin the driver refuses is an error that refuses frame generation (`driver_below_floor` / `kernel_image_unavailable`), no longer a quiet fall back to PTX.
+- **Super-resolution INT8 first-frame hitch fixed**: the twelve weight-image uploads moved off the first observed Evaluate (that Evaluate's CPU time used to be 5-6 ms higher than the same preset in FP16).
+- **An explicit switch that cannot be carried out is refused**: a `[Runtime] Path` / `SRPath` naming a wrong file, a missing packaged file, `KernelImage=Cubin` on RTX 40 / 50 and the like are refused with the reason in the log, never replaced by another path.
+- **Logging**: one text log, `dlssg_sm86\logs\dlssg_sm86.log` (0.4.0's per-process `frames_<pid>.jsonl` is gone); `[Logging] FrameTiming=1` writes `frame_timing.txt`.
 
 ### 0.4.0
 
@@ -51,18 +68,34 @@ Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20
 - The 310.9 runtime adds 6X (`MaxGeneratedFrames` ceiling raised from 3 to 5). On games that themselves support Dynamic MFG, selecting "Dynamic / Auto" frame generation reaches 6X.
 - Optimized kernel set (~19–32% in the offline benchmark), a two-switch factory INI, capture/replay, and diagnostic logging — see below and `docs/`.
 
+
+## Differences from the public 0.4.0 (summary)
+
+| Area | 0.4.0 (public) | 0.4.1 (this build) |
+|---|---|---|
+| XeSS-FG multiplier | 2X (model 18) | 2X / 3X / 4X (model 15 port; 2X is still model 18's graph) |
+| XeSS-FG model choice | `[XeSSFG] Model=15` / `18` | one model, the key is removed |
+| XeSS-FG backend | first D3D12 / CUDA runner | tensor-core INT8 IMMA kernels + `cp.async` double buffering |
+| Driver floor | R580, refused cubin fell back to PTX | hard R580, refused cubin is an error |
+| Super-resolution INT8 first frame | twelve weight images built during the first observed Evaluate | moved before the game starts |
+| Configuration surface | several keys with no benefit or conflicting | cleaned up, explicit switches refused when impossible |
+| RTX 20 / 30 numbers and performance | - | unchanged (same kernels, same bit-identical tier) |
+
+The full ledger is `docs/COMPAT.md` C95-C131: each entry has the symptom, root cause, the fix, and the test that pins it.
+
+
 ## Statement & roadmap
 
 - Kernel-level work on frame generation (DLSS-G) has essentially reached the best this project can do at this stage; kernel optimization is paused, and later releases will carry compatibility and bug fixes only.
 - Super-resolution L / M INT8 ships in this release (RTX 30 / 20).
-- The XeSS-FG engine is functional only in this release (2X, no performance work).
+- The XeSS-FG engine (optional): the model-15 port at 2X-4X on this project's own tensor-core CUDA backend. Performance and HDR (RGBA16F) back buffers are listed under "Performance" and "Known issues".
 - Vulkan support is hard to continue in the project's current state: the wrapper layer itself still has weak game compatibility and little coverage testing, and adding Vulkan on top would only bring more compatibility problems. If you need it, use one of the community patch builds.
 
 ## Requirements
 
 - OS/game: Windows 10/11 x64, D3D12.
 - GPU: RTX 30-series (SM86) or RTX 20-series (Turing / SM75). Development validation and all in-game tests on an RTX 3070; the full 0.4.0 test kit also ran on an RTX 3080 Ti; RTX 20 was tested on a 2080 Ti for 0.3.x frame generation and one smoke run of this release's super-resolution INT8.
-- Driver: an NVIDIA driver with the NGX / NVAPI / CUDA interfaces; tested on 591.86, 610.74, 610.88 and 617.14. The cubins need roughly R580+; older drivers fall back to PTX automatically (one extra JIT on the first frame only).
+- Driver: an NVIDIA driver **R580 or newer** (CUDA 13.0); tested on 591.86, 610.74, 610.88 and 617.14. On an older driver frame generation is not enabled and the log has one `driver_below_floor` (since 0.4.1 a refused cubin no longer falls back to PTX).
 - No CUDA Toolkit and no Python.
 
 This release has a single build (bundled runtime 310.9.16, up to 6X). The two 0.3.5 builds (310.9 / 310.1) are in `archive\0.3.5\`.
@@ -93,9 +126,9 @@ For a first install, follow the manual `MANUAL.en.html` (Chinese `MANUAL.html`) 
 
 1. Exit the game completely.
 2. Go to the game's rendering-EXE directory (e.g. Black Myth: Wukong is `...\b1\Binaries\Win64\`).
-3. Copy `version.dll`, `dlssg_sm86.ini` and the whole `dlssg_sm86\` directory; if a DLL of the same name already exists, back it up first. The easiest way is to download the release asset `dlssg-release-0.4.0-x64.zip` and unzip it: it equals this repository's root plus the two super-resolution files in `dlssg_sm86\sr\` (`sr_kernels.dll` exceeds GitHub's per-file limit and is not in the repository; without super resolution you can skip them).
+3. Copy `version.dll`, `dlssg_sm86.ini` and the whole `dlssg_sm86\` directory; if a DLL of the same name already exists, back it up first. The easiest way is to download the release asset `dlssg-release-0.4.1-x64.zip` and unzip it: it equals this repository's root plus the two super-resolution files in `dlssg_sm86\sr\` (`sr_kernels.dll` exceeds GitHub's per-file limit and is not in the repository; without super resolution you can skip them).
 4. Launch the game, enable DLSS Frame Generation in the graphics settings, and select 2X / 3X / 4X (for 6X see "6X").
-5. If the game does not load `version.dll` (no `dlssg_sm86\logs\loader_*.jsonl` with `[Logging] Level=2` and frame generation on): delete it and try the proxies in `alternatives\` one at a time in the order `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll`; only one at any time.
+5. If the game does not load `version.dll` (no `install` record in `dlssg_sm86\logs\dlssg_sm86.log` with `[Logging] Level=2` and frame generation on): delete it and try the proxies in `alternatives\` one at a time in the order `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll`; only one at any time.
 6. Upgrade: exit the game, delete the old proxy DLLs (0.3.x may have placed several; delete them all), `dlssg_sm86.ini` and `dlssg_sm86\`, then copy the three new items; redo your changes in the new INI.
 7. Uninstall: delete the proxy DLL, `dlssg_sm86.ini` and the `dlssg_sm86\` directory, and put back any original DLL you backed up.
 
@@ -104,7 +137,7 @@ Switches in the factory `dlssg_sm86.ini` a player may want to change:
 - `[DLSSG] Optimized`: optimization level `0`–`3`. Factory `2` = every acceleration plus lossy image kernels, no visible difference from `1` side by side; `1` every acceleration, image bit-identical to the official one; `0` stock kernels, no acceleration; `3` everything lossy.
 - `[DLSSG] Preset`: factory `Auto`; `C` = FG Lite (faster, slightly lower quality), also on this project's accelerated kernels.
 - `[FrameGeneration] MaxGeneratedFrames`: factory `3` = 4X; `5` = 6X; the actual count is requested by the game and clamped to the runtime's ceiling.
-- `[FrameGeneration] Engine`: factory `DLSS`; `XeSS` = Intel's XeSS-FG model, 2X only. `[XeSSFG] FlowResolution` (factory `Middle`, finer is slower) and `UseHudless` (factory `1`) apply to XeSS only.
+- `[FrameGeneration] Engine`: factory `DLSS`; `XeSS` = Intel's XeSS-FG model (model 15; 2X runs model 18's graph): `MaxGeneratedFrames` 1-3 (2X-4X). `[XeSSFG] FlowResolution` (factory `Middle`, finer is slower; `CoarseAt4K` opt-in) and `UseHudless` (factory `Auto`) apply to XeSS only.
 - `[SuperResolution] Mode`: factory `Off`; on RTX 30 / 20, `On` runs the game's L / M super-resolution modes on this project's INT8 kernels; within one run only the first of those modes used is accelerated. Needs `dlssg_sm86\sr\` from the complete package.
 
 Every other diagnostic/compatibility knob takes a safe default and is omitted; the full list is in [`docs/INSTALL.en.md`](docs/INSTALL.en.md). A mistyped key only falls back to its own default and logs one `configuration_warning`; it never turns the whole mod off.
@@ -206,6 +239,20 @@ RTX 3070, driver 617.14, frame generation off, frame rate over a still window af
 
 Every gain but the last exceeds twice the same-configuration repeat spread; 1080p Ultra Performance L is within one run's spread, but all 4 INT8 runs are above all 4 FP16 runs. Image quality: preset M flickers slightly more than FP16 on still content (frame-to-frame stability of still pixels in game 61.8 vs 62.5 dB) with PSNR against ground truth no lower than FP16; preset L is within 0.6 dB of FP16.
 
+### XeSS-FG multi-frame generation (RTX 3070, offline full-route replay)
+
+GPU milliseconds per real frame together with its generated frames (`Middle`, DIRECT):
+
+| Output | XeSS-FG 4X | DLSS-G default | Difference |
+|---|---|---|---|
+| 1440p | 4.5-5.0 ms | 5.3-5.4 ms | **8-15 % faster** |
+| 4K | 10.3-10.8 ms | 7.9-8.5 ms | 27-30 % slower |
+
+- Preset C is the fastest at every size; 2X runs model 18's graph and costs 4-5 % more than the old 2X (in game on a 5070 +1.7 %, bit-identical output).
+- Black Myth: Wukong, 4K in game: 3X 32.0 fps (DLSS default 34.0), 4X 28.5 fps (DLSS default 31.5).
+- These are offline GPU times, not game frame rates; the real frame rate depends on whether the bottleneck is the CPU or the GPU.
+
+
 ### Whole generation group GPU time (RTX 3080 Ti, synthetic scene)
 
 RTX 3080 Ti, driver 610.88, the 0.4.0 test kit (a tester's machine). GPU milliseconds of the whole frame-generation group per real frame (the span of one group's Evaluates in one submission): median of 256 groups per run, median of 4 rounds; reduction = (tier0 − current) / tier0. tier0 = stock kernels (`Optimized=0`), tier1 = bit-identical acceleration (`1`), tier2 = factory default (`2`). The same kit's consistency checks match the RTX 3070 reference bit for bit: frame generation 18/18, real captures 28/28, super resolution 32/32, super resolution `Mode=On` 4/4.
@@ -265,15 +312,15 @@ Black Myth: Wukong, Cyberpunk 2077, and FH6 run 4X normally in testing; Resonanc
 
 ## Known issues
 
-- XeSS-FG (`Engine=XeSS`) is optional; DLSS-G stays the default. On RTX 30 it is much slower per generated frame than DLSS-G (4K: RTX 3070 +77..+86 %, about +3 ms; RTX 3080 Ti offline +109..+114 %), the real frame rate is 8..15 % lower and 28 % lower in A Plague Tale: Resonance; it uses about 0.4–0.5 GB more VRAM; 2X only. With an RGBA16F back buffer (common for HDR), or when the game lacks inputs such as depth or motion vectors, that game runs DLSS-G instead of XeSS and the log names the reason (`xefg_fallback`).
+- XeSS-FG (`Engine=XeSS`) is optional; the default is still DLSS-G. On RTX 30 (RTX 3070, offline full-route replay) it is **8-15 % faster than DLSS default at 1440p and below and 27-30 % slower from 4K up** (see "Performance"); the cost of one generated frame is still higher than DLSS-G and the real frame rate depends on the bottleneck. About 0.4-0.5 GB more VRAM. `MaxGeneratedFrames` 1-3 (2X-4X); 4 or more refuses frame generation (`max_generated_frames_unsupported`). An RGBA16F (HDR) back buffer is refused (`xefg_feature_refused`), it does not switch to DLSS-G. `[Debug] Capture` records nothing under XeSS.
 - `[DLSSG] Preset=B` only takes effect when the game provides both a HUD-less image and a UI plane, which most games do not; the log then has one `preset_ineffective` record.
 - Preset C has no comparison against the official preset C on RTX 40 / 50.
-- Super resolution `Mode=On`: within one run only the first L / M mode used is accelerated; switching to the other needs a game restart.
-- RTX 20: this release's frame generation was verified only by sm_75 forward JIT on an RTX 3070, and 310.9.16's three new kernels have not run on a real Turing card. RTX 40 / 50: frame generation runs this project's kernels through the PTX route, not yet run on real hardware.
+- Super resolution `[SuperResolution] Mode` is explicit presets: `Off` (factory) / `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`; every quality mode uses preset L / M, so Quality / Balanced / DLAA are slower than the game's own K.
+- RTX 20: 310.9.16's three new kernels and XeSS were verified only by forward JIT of the sm_75 kernels on the RTX 3070 and have not run on a real Turing card; super-resolution INT8 had one smoke run on a 2080 Ti. RTX 40: the PTX frame-generation route still has no on-hardware data; RTX 50: frame generation and XeSS-FG were tested on a 5070 / 5070 Ti.
 
 ## Diagnostics & boundaries
 
-- Logs go to `dlssg_sm86\logs\` in the game directory (`loader_<PID>.jsonl` / `backend_<PID>.jsonl`, plus the per-frame `frames_<PID>.jsonl` with `[Logging] FrameTiming=1`). `[Logging] Level=1` (default) records errors only; use `2` or `3` when investigating.
+- The log is `dlssg_sm86\logs\dlssg_sm86.log` in the game directory: every module and every process appends to this one text file, each line starting with the local time, pid, EXE name and a level letter, then the JSON record. Default `[Logging] Level=1` records errors only; use `2` or `3` when diagnosing. `FrameTiming=1` also writes `frame_timing.txt`.
 - If frame generation does nothing, check `backend_*.jsonl` for an `install` line with `route active=true`; if it is absent, the driver/runtime usually did not match — the reason is logged and the factory path is used.
 - This release optimizes frame generation's GPU compute cost; do not read the offline time reduction as an in-game FPS gain — the real frame-rate change depends on the game and where the bottleneck is.
 - All INI keys, log fields, and capture/replay are in [`docs/INSTALL.en.md`](docs/INSTALL.en.md) and [`docs/CAPTURE.md`](docs/CAPTURE.md).
@@ -283,8 +330,9 @@ Black Myth: Wukong, Cyberpunk 2077, and FH6 run 4X normally in testing; Resonanc
 - Coldwood1026 for the RTX 20-series / SM75 adaptation (the kernel family behind the experimental SM75 route — see `THIRD_PARTY_NOTICES.txt`).
 - NVIDIA for the DLSS-G runtime, models, and pre/post-processing (bundled, unmodified).
 - Intel for the XeSS-FG shaders and model weights (MIT license, used by the `XeSS` engine; Intel's `libxess_fg.dll` is neither shipped nor loaded).
+- dashdogy's [RTX40MFG-Unlock v1.4.2](https://github.com/dashdogy/RTX40MFG-Unlock/releases/tag/v1.4.2) for the method that natively extracts the MFG (model 15) model; the model-15 port and weights this build ships were obtained that way.
 
 ## License & third-party
 
 - The project source is GPLv3.
-- The bundled `nvngx_dlssg.dll` (310.9.16, SHA prefix `cadee1aa…`) and `nvngx_dlss.dll` (310.7.129, SHA prefix `d202b024…`), the extracted/recompiled kernel resources and the SM75 kernel family are NVIDIA and upstream third-party material, not re-licensed under GPL; the XeSS-FG shaders and weights are distributed under Intel's MIT license — see `THIRD_PARTY_NOTICES.txt`.
+- The bundled `nvngx_dlssg.dll` (310.9.16, SHA prefix `cadee1aa…`) and `nvngx_dlss.dll` (310.9.16, SHA prefix `858ccff9…`), the extracted/recompiled kernel resources and the SM75 kernel family are NVIDIA and upstream third-party material, not re-licensed under GPL; the XeSS-FG shaders and weights are distributed under Intel's MIT license — see `THIRD_PARTY_NOTICES.txt`.

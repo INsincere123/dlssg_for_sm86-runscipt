@@ -42,6 +42,8 @@ Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”�
 
 ## 配置与状态接口
 
+main 已整合上游0.4.1代理、backend、kernels、xefg及说明，资源目录布局继续沿用0.4.0。启动脚本的临时诊断INI仍保留既有 `Optimized=2`、`Preset=Auto` 和超分 `Mode=On`；0.4.1将Auto按A解释，不把上游根INI的默认Optimized=1覆盖到用户原有诊断策略。历史诊断文本用于恢复认领，不随版本号改写。0.4.1驱动要求R580+，XeSS支持2X–4X且不再静默回退；这些是上游行为，尚未做真实游戏验证。两个SR大文件继续由本地提供、不纳入Git。
+
 显卡名称工具支持 `-ResetState`（简写 `-r`）：当前不是目标伪装名称时，删除旧 ProgramData 状态备份，再走原有备份及切换流程；仍为伪装名称时拒绝重置。该参数与只读 `-Status` 互斥，提权时继续传递。
 
 - 图形预设为 `presets/SteamUE5.json`；本机偏好/请求位于 `%LOCALAPPDATA%\DlssgSteamLauncher\<目录路径哈希>`，不读取个人 `启动配置.ini`。旧偏好缺少 `LaunchMode`、`QualityPreset`、`EngineOverride` 时默认 `Steam`、`Current`、`Auto`。
