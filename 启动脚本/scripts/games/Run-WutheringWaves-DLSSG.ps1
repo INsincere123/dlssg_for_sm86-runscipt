@@ -62,7 +62,7 @@ Enabled=1
 
 [FrameGeneration]
 Optimized=1
-MaxGeneratedFrames=3
+MaxGeneratedFrames=5
 
 [Compatibility]
 Preset=Auto

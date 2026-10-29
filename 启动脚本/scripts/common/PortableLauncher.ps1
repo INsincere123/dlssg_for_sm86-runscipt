@@ -1,5 +1,6 @@
 ﻿. (Join-Path $PSScriptRoot 'DirectLauncher.ps1')
 . (Join-Path $PSScriptRoot 'UnrealQuality.ps1')
+. (Join-Path $PSScriptRoot 'GameDiscovery.ps1')
 # Data/model layer for the portable desktop launcher. Windows PowerShell 5.1.
 function Get-PortableDataDirectory {
     param([string]$Root = (Get-LauncherRoot))
@@ -68,6 +69,29 @@ function Get-PortableProfiles {
         if ([string]$profile.ProxyDll -notmatch '^[1-6]$') { throw '本机偏好的代理编号无效。' }
     }
     return $profiles
+}
+
+function New-PortableDiscoveredProfile {
+    param($Record,[string]$RenderExecutable)
+    $directory=[IO.Path]::GetFullPath($Record.GameDirectory).TrimEnd('\')
+    $render=[IO.Path]::GetFullPath($RenderExecutable)
+    if (-not $render.StartsWith($directory+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '渲染程序必须位于游戏目录。' }
+    $render=Resolve-DirectExecutable $directory $render.Substring($directory.Length+1) '渲染程序'
+    Assert-GameOrdinaryExecutable $render
+    if (-not (Test-GameX64Executable $render)) { throw '请选择有效的x64渲染程序。' }
+    $mode=if ($Record.Platform -eq 'Steam') { 'Steam' } else { 'Direct' }
+    $launch=$render
+    if ($mode -eq 'Direct' -and $Record.DeclaredExecutable -and [IO.File]::Exists($Record.DeclaredExecutable)) {
+        $launch=[IO.Path]::GetFullPath($Record.DeclaredExecutable)
+        if (-not $launch.StartsWith($directory+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '启动程序必须位于游戏目录。' }
+        $launch=Resolve-DirectExecutable $directory $launch.Substring($directory.Length+1) '启动程序'
+        Assert-GameOrdinaryExecutable $launch
+    }
+    if ($mode -eq 'Steam' -and $Record.AppId -notmatch '^[1-9][0-9]*$') { throw 'Steam AppID无效。' }
+    $id=if ($mode -eq 'Steam') { 'custom-'+$Record.AppId } else { 'direct-'+[guid]::NewGuid().ToString('N') }
+    return [pscustomobject]@{Id=$id;Name=$Record.Name;AppId=$(if ($mode -eq 'Steam') { $Record.AppId } else { '' });LaunchMode=$mode;
+        GameDirectory=$directory;RenderExecutable=$render.Substring($directory.Length+1);LaunchExecutable=$launch.Substring($directory.Length+1);
+        ConfigDirectory='';EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='Auto'}
 }
 
 function Set-PortableProfile {

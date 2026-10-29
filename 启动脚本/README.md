@@ -16,6 +16,14 @@ Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”�
 
 验证：`powershell.exe -NoProfile -File 启动脚本/tests/DlssgOnlyLauncher.Tests.ps1`；界面支持 `-SmokeTest` 和可选 `-PreviewPath`。测试使用隔离安装记录、伪程序及资源，不启动真实游戏。
 
+### 虚幻启动器自动扫描
+
+虚幻入口的“添加其他游戏”复用 `GameDiscovery.ps1`，支持 Steam/Epic/GOG 安装发现及手动选目录。渲染候选唯一最高分且至少60分时自动采用；同分或弱证据提示选择。Epic/GOG使用Direct，优先保留平台声明的启动EXE，其缺失时用渲染EXE。扫描成功不等于UE主版本或组件兼容性验证。
+
+配置扫描根据安装目录、Binaries/Win64上方项目目录、去除平台/构建后缀的EXE名，检查安装内 `Saved/Config`、`%LOCALAPPDATA%/<项目名>/Saved/Config` 及系统文档 `My Games/<项目名>/Saved/Config` 下的 Windows、WindowsNoEditor、WindowsClient。已有普通 Engine.ini 或 GameUserSettings.ini 才形成候选，不穿过链接；去重后唯一候选自动填入，多候选选择、无候选手选。不改变优化源，不创建游戏配置、不全盘搜索。
+
+扫描后台执行，可取消，问题见“添加其他游戏 → 扫描详情”；完成选择前不保存设置。“重新查找”仅在当前配置目录失效且无遗留部署时补查，保存前再次核对恢复记录，沿用已有标识。隔离测试为 `tests/UnrealDiscovery.Tests.ps1`；虚幻便携包也包含共用GameDiscovery模块。
+
 ### 共用模块与原入口
 
 | 位置 | 职责 |
@@ -33,6 +41,8 @@ Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”�
 | `scripts/tools/Export-PortableLauncher.ps1` | 白名单导出便携目录及可选ZIP |
 
 ## 配置与状态接口
+
+显卡名称工具支持 `-ResetState`（简写 `-r`）：当前不是目标伪装名称时，删除旧 ProgramData 状态备份，再走原有备份及切换流程；仍为伪装名称时拒绝重置。该参数与只读 `-Status` 互斥，提权时继续传递。
 
 - 图形预设为 `presets/SteamUE5.json`；本机偏好/请求位于 `%LOCALAPPDATA%\DlssgSteamLauncher\<目录路径哈希>`，不读取个人 `启动配置.ini`。旧偏好缺少 `LaunchMode`、`QualityPreset`、`EngineOverride` 时默认 `Steam`、`Current`、`Auto`。
 - 模式字段为 `LaunchMode=Steam|Direct`。Steam使用AppID；Direct使用稳定的 `Id=direct-<32位GUID>`，`LaunchExecutable` 与 `RenderExecutable` 均相对游戏根目录，允许二者不同，不接受目录外EXE。Direct不查询Steam清单或注册表。

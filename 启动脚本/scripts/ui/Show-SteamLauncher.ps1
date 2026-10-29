@@ -18,6 +18,12 @@ try {
     $script:customSourceSelected = $false
     $script:engineSaveFailed = @{}
     $script:scanTask = $null
+    $script:discovery=$null
+    $script:cancellation=$null
+    $script:issues=@()
+    $script:pendingRecord=$null
+    $script:pendingProfile=$null
+    $script:repairConfig=$false
     $script:qualityIds = @('Current','Tier1','Tier2','Tier3','Tier4','Tier5')
 
     $form = New-Object Windows.Forms.Form
@@ -97,6 +103,8 @@ try {
     $choose = New-Button $form '重选当前游戏目录' 28 383 210
     $advancedToggle = New-Button $form '高级设置' 254 383 150
     $logs = New-Button $form '查看日志' 420 383 140
+    $cancelScan = New-Button $form '取消扫描' 576 383 144
+    $cancelScan.Enabled=$false
     $script:note = New-Label $form '启动后本界面自动退出以释放内存；请保留负责恢复的独立脚本窗口。' 28 450 695 50
     $script:note.ForeColor = [Drawing.Color]::DimGray
 
@@ -239,7 +247,17 @@ try {
         } catch { Refresh-Game; Show-Failure $_.Exception.Message }
     })
     $games.Add_SelectedIndexChanged({ if (-not $script:updating) { Refresh-Game } })
-    $refresh.Add_Click({ Refresh-Game })
+    $refresh.Add_Click({
+        try {
+            Refresh-Game
+            if ($null -eq $script:model -or $script:model.Recovery -or -not $script:model.Executable) { return }
+            if ([IO.Directory]::Exists($script:model.ConfigDirectory)) { return }
+            $script:issues=@(); $script:repairConfig=$true
+            $script:pendingProfile=$games.SelectedItem | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+            $script:pendingProfile.GameDirectory=$script:model.GameDirectory
+            Start-Discovery 'Config'
+        } catch { Show-Failure $_.Exception.Message }
+    })
     $launch.Add_Click({ Start-Action Launch })
     $restore.Add_Click({ Start-Action Restore })
     $check.Add_Click({ Start-Action Check })
@@ -295,53 +313,132 @@ try {
             Start-Process explorer.exe -ArgumentList ('"{0}"' -f $directory)
         } catch { Show-Failure $_.Exception.Message }
     })
+    function Select-DiscoveryRecord($Rows,[string]$Title) {
+        $dialog=[Windows.Forms.Form]::new(); $dialog.Text=$Title; $dialog.ClientSize=[Drawing.Size]::new(850,420)
+        $dialog.StartPosition='CenterParent'; $dialog.Font=$form.Font
+        $list=[Windows.Forms.ListBox]::new(); $list.SetBounds(15,15,820,335); $list.DisplayMember='Display'; $list.HorizontalScrollbar=$true
+        foreach ($row in @($Rows)) { [void]$list.Items.Add($row) }
+        if ($list.Items.Count) { $list.SelectedIndex=0 }
+        $dialog.Controls.Add($list)
+        $ok=New-Button $dialog '选择' 585 367 120; $ok.DialogResult='OK'; $dialog.AcceptButton=$ok
+        $back=New-Button $dialog '取消' 715 367 120; $back.DialogResult='Cancel'; $dialog.CancelButton=$back
+        try { if ($dialog.ShowDialog($form) -eq 'OK') { return $list.SelectedItem } }
+        finally { $dialog.Dispose() }
+        return $null
+    }
+    function Start-Discovery([string]$Mode) {
+        $script:cancellation=[Threading.CancellationTokenSource]::new()
+        $script:discovery=[powershell]::Create()
+        [void]$script:discovery.AddScript({param($Common,$Mode,$Steam,$Directory,$Declared,$Render,$Cancellation)
+            $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+            . (Join-Path $Common 'LauncherConfig.ps1'); . (Join-Path $Common 'SteamLauncher.ps1')
+            . (Join-Path $Common 'DirectLauncher.ps1'); . (Join-Path $Common 'GameDiscovery.ps1')
+            $issues=[Collections.Generic.List[string]]::new()
+            $rows=switch ($Mode) {
+                'Installed' { @(Get-InstalledGameRecords -SteamExecutable $Steam -Cancellation $Cancellation -Issues $issues) }
+                'Renderers' { @(Get-GameRendererCandidates $Directory $Declared -Cancellation $Cancellation -Issues $issues) }
+                'Config' { @(Get-UnrealConfigDirectoryCandidates $Directory $Render -Cancellation $Cancellation -Issues $issues) }
+            }
+            [pscustomobject]@{Rows=@($rows);Issues=@($issues.ToArray());Cancelled=$Cancellation.IsCancellationRequested}
+        })
+        $directory=''; $declared=''; $render=''
+        if ($Mode -eq 'Renderers') { $directory=$script:pendingRecord.GameDirectory; $declared=$script:pendingRecord.DeclaredExecutable }
+        if ($Mode -eq 'Config') { $directory=$script:pendingProfile.GameDirectory; $render=Join-Path $directory $script:pendingProfile.RenderExecutable }
+        $steam=''
+        if ($Mode -eq 'Installed') { $steam=if ([IO.File]::Exists($steamBox.Text)) { $steamBox.Text } else { Get-PortableSteamPath $script:preferences } }
+        [void]$script:discovery.AddArgument((Join-Path $root 'scripts\common')).AddArgument($Mode).AddArgument($steam).AddArgument($directory).AddArgument($declared).AddArgument($render).AddArgument($script:cancellation)
+        $script:discoveryMode=$Mode
+        $script:discoveryHandle=$script:discovery.BeginInvoke()
+        Set-Working $true; $cancelScan.Enabled=$true
+        $script:status.Text='正在扫描，可取消；不会启动或部署游戏…'
+    }
+    function Complete-Discovery([string]$Mode,$Rows) {
+        if ($Mode -eq 'Installed') {
+            if (-not @($Rows).Count) { $script:status.Text='未找到安装记录，可手动选择目录；跳过原因见扫描详情。'; return }
+            $record=Select-DiscoveryRecord $Rows '选择要添加的已安装游戏'
+            if ($null -eq $record) { return }
+            $script:pendingRecord=$record; Start-Discovery 'Renderers'; return
+        }
+        if ($Mode -eq 'Renderers') {
+            $record=$script:pendingRecord
+            $candidate=Get-TrustedGameRenderer -Candidates @($Rows)
+            if ($null -eq $candidate -and @($Rows).Count) { $candidate=Select-DiscoveryRecord $Rows '选择真实渲染程序（兼容性需确认）'; if ($null -eq $candidate) { return } }
+            $render=if ($null -ne $candidate) { $candidate.Path } else { Select-File '未找到候选，请选择x64渲染程序' '游戏程序 (*.exe)|*.exe' $record.GameDirectory }
+            if (-not $render) { return }
+            $profile=New-PortableDiscoveredProfile $record $render
+            if (@($games.Items | Where-Object { ($_.LaunchMode -eq 'Steam' -and $profile.LaunchMode -eq 'Steam' -and $_.AppId -eq $profile.AppId) -or ($_.GameDirectory -and [IO.Path]::GetFullPath($_.GameDirectory).TrimEnd('\') -ieq $profile.GameDirectory) }).Count) { throw '该游戏已在列表中，请修改原条目并保留恢复身份。' }
+            $script:pendingProfile=$profile
+            Start-Discovery 'Config'; return
+        }
+        if (@($Rows).Count -eq 1) { $config=$Rows[0].Path }
+        elseif (@($Rows).Count -gt 1) {
+            $candidate=Select-DiscoveryRecord $Rows '找到多个配置目录，请选择游戏实际使用的目录'
+            if ($null -eq $candidate) { return }; $config=$candidate.Path
+        } else {
+            $config=Select-Folder '未找到配置目录；请先原版启动一次，或选择包含Engine.ini / GameUserSettings.ini的文件夹'
+            if (-not $config) { return }
+        }
+        # Recheck recovery immediately before saving; never redirect an active deployment.
+        $profile=$script:pendingProfile
+        if ($script:repairConfig) {
+            $steam=if ($profile.LaunchMode -eq 'Steam') { Get-PortableSteamPath $script:preferences } else { '' }
+            $model=Get-PortableGameModel $profile $steam
+            if ($model.Recovery -or [IO.File]::Exists($model.Journal)) { throw '发现遗留部署，请先恢复原状。' }
+        }
+        $profile.ConfigDirectory=$config
+        Save-PortableProfileChange $script:preferences $profile
+        Load-Games $profile.Id
+    }
     function Add-LauncherGame {
         param([ValidateSet('Steam','Direct')][string]$Mode)
         try {
             $directory=Select-Folder '选择UE4/UE5游戏的安装文件夹'
             if (-not $directory) { return }
-            $prefix=[IO.Path]::GetFullPath($directory).TrimEnd('\')+'\'
-            $appId='';$launchExe=''
+            $appId=''
             if ($Mode -eq 'Steam') {
                 $steam=Get-PortableSteamPath $script:preferences
                 if (-not $steam) { throw '请先在高级设置中选择Steam。' }
-                $detected=Resolve-SteamAppId $directory $steam
-                $appId=$detected.AppId
-                if (@($games.Items | Where-Object { $_.LaunchMode -eq 'Steam' -and $_.AppId -eq $appId }).Count) { throw '这款Steam游戏已在列表中，请直接选择。' }
-            } else {
-                $launchExe=Select-File '选择要直接运行的游戏EXE' '游戏程序 (*.exe)|*.exe' $directory
-                if (-not $launchExe) { return }
-                if (-not $launchExe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw '请选择安装文件夹内的EXE。' }
+                $appId=(Resolve-SteamAppId $directory $steam).AppId
             }
-            if ($Mode -eq 'Direct' -and $launchExe -match '\\Binaries\\Win64\\[^\\]+\.exe$') {
-                $exe=$launchExe
-            } else {
-                [void][Windows.Forms.MessageBox]::Show($form,'请选择真正负责渲染的游戏程序，通常位于 项目名\Binaries\Win64，以 Shipping.exe 结尾。直接启动时也可与刚选的EXE相同。','选择渲染程序')
-                $exe=Select-File '选择真正的游戏渲染EXE（用于部署和退出监控）' '游戏程序 (*.exe)|*.exe' $directory
-                if (-not $exe) { return }
-            }
-            if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw '请选择安装文件夹内的渲染EXE。' }
-            if ($Mode -eq 'Direct' -and @($games.Items | Where-Object { $_.LaunchMode -eq 'Direct' -and (Join-Path $_.GameDirectory $_.RenderExecutable) -ieq $exe }).Count) { throw '这个渲染EXE已添加，请选择已有条目。' }
-            $configDirectory=Select-Folder '选择包含Engine.ini / GameUserSettings.ini的配置文件夹；请先原版启动一次'
-            if (-not $configDirectory) { return }
-            $id=if ($Mode -eq 'Direct') { 'direct-'+[guid]::NewGuid().ToString('N') } else { 'custom-'+$appId }
-            $profile=[pscustomobject]@{Id=$id;Name=(Split-Path -Leaf $directory);AppId=$appId;LaunchMode=$Mode;
-                GameDirectory=$directory;RenderExecutable=$exe.Substring($prefix.Length);ConfigDirectory=$configDirectory;
-                LaunchExecutable=$(if ($Mode -eq 'Direct') { $launchExe.Substring($prefix.Length) } else { $exe.Substring($prefix.Length) });
-                EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='Auto'}
-            Save-PortableProfileChange $script:preferences $profile
-            Load-Games $profile.Id
+            $script:issues=@(); $script:repairConfig=$false
+            $script:pendingRecord=[pscustomobject]@{Platform=$Mode;Name=(Split-Path -Leaf $directory);GameDirectory=$directory;AppId=$appId;DeclaredExecutable=''}
+            Start-Discovery 'Renderers'
         } catch { Show-Failure $_.Exception.Message }
     }
     $addMenu=New-Object Windows.Forms.ContextMenuStrip
     $steamItem=$addMenu.Items.Add('添加 Steam 游戏')
     $directItem=$addMenu.Items.Add('添加EXE启动游戏')
+    $discoverItem=$addMenu.Items.Add('扫描已安装游戏（Steam / Epic / GOG）')
+    $detailsItem=$addMenu.Items.Add('扫描详情')
+    $discoverItem.Add_Click({ try { $script:issues=@(); $script:repairConfig=$false; Start-Discovery 'Installed' } catch { Show-Failure $_.Exception.Message } })
+    $detailsItem.Add_Click({ [void][Windows.Forms.MessageBox]::Show($form,$(if ($script:issues.Count) { $script:issues -join "`r`n" } else { '没有扫描跳过记录。' }),'扫描详情') })
+    $cancelScan.Add_Click({ if ($null -ne $script:cancellation) { $script:cancellation.Cancel(); $cancelScan.Enabled=$false } })
     $steamItem.Add_Click({ Add-LauncherGame Steam })
     $directItem.Add_Click({ Add-LauncherGame Direct })
     $add.Add_Click({ $addMenu.Show($add,0,$add.Height) })
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval=250
     $timer.Add_Tick({
+        if ($null -ne $script:discovery) {
+            if (-not $script:discoveryHandle.IsCompleted) { return }
+            try {
+                $results=@($script:discovery.EndInvoke($script:discoveryHandle))
+                if ($script:discovery.HadErrors) { throw ($script:discovery.Streams.Error | Out-String) }
+                $result=$results[0]; $mode=$script:discoveryMode
+                $cancelled=$result.Cancelled -or $script:cancellation.IsCancellationRequested
+                $script:issues+=@($result.Issues)
+                $script:discovery.Dispose(); $script:discovery=$null
+                $script:cancellation.Dispose(); $script:cancellation=$null
+                $cancelScan.Enabled=$false; Set-Working $false
+                if ($cancelled) { $script:pendingProfile=$null; $script:status.Text='扫描已取消；未保存游戏设置。'; return }
+                Complete-Discovery $mode @($result.Rows)
+            } catch {
+                if ($null -ne $script:discovery) { $script:discovery.Dispose(); $script:discovery=$null }
+                if ($null -ne $script:cancellation) { $script:cancellation.Dispose(); $script:cancellation=$null }
+                $script:pendingProfile=$null; $cancelScan.Enabled=$false; Set-Working $false; Show-Failure $_.Exception.Message
+            }
+            return
+        }
         if (-not $script:busy) {
             if ($null -ne $script:scanTask -and $script:scanTask.IsCompleted) { Refresh-Game -PreserveEditors }
             return
@@ -359,6 +456,7 @@ try {
         } catch { Set-Working $false; Show-Failure $_.Exception.Message }
     })
     $form.Add_FormClosing({ param($sender,$eventArgs)
+        if ($null -ne $script:discovery) { $script:cancellation.Cancel(); $eventArgs.Cancel=$true; $script:status.Text='正在取消扫描，完成后可关闭界面。'; return }
         if ($script:busy) { $eventArgs.Cancel=$true; Show-Failure '请等待游戏退出和恢复完成，再关闭启动器。' }
     })
     Load-Games

@@ -77,7 +77,7 @@ if (Test-Path -LiteralPath $destinationPath) { throw '导出位置已存在，�
 $extension=if ($b) { '.7z' } else { '.zip' }
 $archive=$destinationPath+$extension
 if ($Zip -and (Test-Path -LiteralPath $archive)) { throw '目标压缩包已存在，请换一个新名字。' }
-$files=@('启动脚本\使用说明.md','version.dll','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt',
+$files=@('version.dll','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt',
     'alternatives\winmm.dll',
     'alternatives\README.md',
     'dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll','dlssg_sm86\kernels\fg_kernels.dll',
@@ -87,7 +87,7 @@ if ($includeLauncher) {
     $files+=@('alternatives\dbghelp.dll','alternatives\dinput8.dll','alternatives\dxgi.dll','alternatives\d3d12.dll',
         '启动脚本\scripts\games\Run-SteamUE5-DLSSG.ps1')
     # PortableLauncher loads UnrealQuality; code dependencies do not require UE configuration files.
-    $modules+=@('SteamLauncher','PortableLauncher','DirectLauncher','UnrealQuality')
+    $modules+=@('SteamLauncher','PortableLauncher','DirectLauncher','UnrealQuality','GameDiscovery')
 }
 if ($includeGeneral) {
     $files+=@('启动脚本\通用启动器.bat','启动脚本\scripts\ui\Show-DlssgLauncher.ps1')
@@ -129,20 +129,22 @@ foreach ($relative in $files) {
     Copy-Item -LiteralPath (Join-Path $project $relative) -Destination $target
 }
 $guide=@'
-DLSSG 便携启动器 · 开始使用
+DLSSG 便携启动器 · 开始使用（小白版）
 
-完整操作步骤见“启动脚本/使用说明.md”。
-适用于 Windows 10/11 x64，硬件兼容范围沿用 0.4.0（主要为 RTX 20/30 系列）。
-将整个压缩包解压到可写文件夹，不要在压缩包内运行；保留所有文件的相对位置。
+这是一份完整的操作说明，照着做就行，不用懂技术。
+
+适用环境：Windows 10/11 64 位，NVIDIA RTX 20/30 系列显卡。
+解压要求：把整个压缩包完整解压到电脑上的普通文件夹（例如 D:\游戏工具），
+不要在压缩包里面直接运行；解压后整个文件夹一起用，不要单独移动里面的文件。
 '@
 if ($includeGeneral) {
-    $guide+="`r`n`r`n通用启动器：`r`n1. 打开 启动脚本\通用启动器.bat，首次列表为空。`r`n2. 发现Steam、Epic、GOG已安装游戏，或手动添加安装目录。`r`n3. 核实真实渲染程序，启动程序可另选；保存设置后检查环境并启动。`r`n此入口保留游戏Engine.ini，保留帧生成及现有INT8超分，不需要画质配置目录。`r`nSteam游戏使用Steam启动，Epic/GOG和手动添加使用EXE启动，仍需满足游戏自身的平台验证。`r`n"
+    $guide+="`r`n`r`n■ 通用启动器（不动游戏画面设置，主要用于开 DLSS 帧生成）`r`n第一次使用：`r`n1. 双击 启动脚本\通用启动器.bat，首次游戏列表是空的，正常。`r`n2. 点「发现已安装游戏」，从 Steam、Epic、GOG 安装记录里勾选游戏；找不到就点「手动添加游戏」，选择游戏安装文件夹。`r`n3. 核对列表里的「渲染程序」：通常选游戏安装目录 Binaries\Win64 里以 Shipping.exe 结尾的那个 EXE，不确定就用默认候选。`r`n4. Steam 游戏用「Steam 启动」；Epic、GOG 和手动添加的用「EXE 启动」，仍需满足游戏自身的登录/授权。`r`n5. 点「保存设置」→ 可先点「检查环境」→ 点「启动游戏」，弹窗点「是」同意管理员权限。`r`n6. 界面会自动退出，黑色脚本窗口会留下继续工作，不要关它。`r`n7. 进游戏后，在画面设置里打开「DLSS 帧生成」。`r`n8. 退出游戏后，等黑色窗口自动清理完成并退出。`r`n提示：此入口不修改游戏 Engine.ini，不需要画质配置；游戏搬盘后重新用「选择当前游戏文件夹」指定位置。`r`n"
 }
 if ($includeUnreal) {
-    $guide+="`r`n`r`n虚幻启动器：`r`n1. 先原版启动游戏一次，让它创建配置目录，然后退出。`r`n2. 打开 启动脚本\虚幻启动器.bat，内置黑神话：悟空，也可添加Steam或EXE启动游戏。`r`n3. 选择画质档位，检查环境，再启动游戏。此入口临时替换Engine.ini，退出后恢复。`r`nUE4/UE5识别未知时可在高级设置校准；代理和配置源也在高级设置。`r`n提供四档候选及05-自定义，新增游戏默认第二档；实际效果需游戏内确认。`r`n"
+    $guide+="`r`n`r`n■ 虚幻启动器（自动套用画质配置，适合 UE4/UE5 游戏）`r`n第一次使用：`r`n1. 先原版启动一次游戏，进入后正常退出，让游戏生成配置文件。`r`n2. 双击 启动脚本\虚幻启动器.bat，内置黑神话：悟空，也可添加其他游戏。`r`n3. 选好游戏和画质档位，可先点「检查环境」，再点「启动游戏」，弹窗点「是」同意管理员权限。`r`n4. 界面自动退出，黑色脚本窗口继续工作，不要关它。`r`n5. 进游戏后在画面设置里打开「DLSS 帧生成」。`r`n6. 退出游戏后等脚本自动恢复原画面配置并退出。`r`n怎么选画质：新增游戏默认「主流均衡」，从这档开始试；卡顿就换「性能优先」或「入门流畅」，想更精细换「高性能均衡」；「05-自定义」用自己准备的配置。切档前先退出游戏并等恢复完成。`r`nUE4/UE5 识别不了时：打开 高级设置 → 引擎版本，手动选对后点保存。`r`n"
 }
 if ($includeLauncher) {
-    $guide+="`r`n同意Windows管理员权限提示后，界面交接并退出；请保留负责等待游戏与恢复的独立脚本窗口。`r`n游戏内按需开启DLSS帧生成，退出后等待恢复完成。Steam可以保持运行。`r`n遗留部署先用原入口恢复，不删除.state或备份。识别成功不代表游戏支持帧生成。`r`n"
+    $guide+="`r`n通用提示：同意管理员权限后界面会交接退出，请保留负责等待游戏与恢复的黑色脚本窗口；Steam 可以保持运行。识别到游戏不代表它一定支持帧生成，以游戏内是否有「DLSS 帧生成」选项为准。遗留部署先用原入口「恢复原状」，不要删除 .state 或备份记录绕过。`r`n"
 }
 if ($includeGames) {
     # Generate a device-neutral template; never export the provider's personal INI.
@@ -170,9 +172,9 @@ if ($includeGames) {
         $config+="`r`n`r`n[Steam]`r`n启动器路径=`r`n`r`n[SteamUE5:黑神话悟空]`r`n游戏名称=黑神话：悟空`r`n游戏目录=C:\Games\BlackMythWukong`r`n渲染程序=b1\Binaries\Win64\b1-Win64-Shipping.exe`r`n游戏配置目录=%LOCALAPPDATA%\b1\Saved\Config\Windows`r`n配置源=配置\SteamUE5\Engine.ini`r`n代理DLL=1`r`n"
     }
     [IO.File]::WriteAllText((Join-Path $packagePath '启动脚本\启动配置.ini'),$config,[Text.UTF8Encoding]::new($true))
-    $guide+="`r`n鸣潮、异环专用入口：`r`n1. 完整解压到本地可写目录。适用于 Windows 10/11 x64、受支持的 RTX 20/30 显卡。`r`n2. 编辑 启动脚本\启动配置.ini，填写本机游戏目录。`r`n3. 关闭游戏和对应官方启动器，双击 启动鸣潮.bat 或 启动异环.bat，同意提权。`r`n4. 从官方启动器进入游戏，退出后等脚本恢复完成，不要强关脚本窗口。`r`n鸣潮默认等待热重启10秒，异环首次退出后恢复。详细恢复命令见使用说明。`r`n切换显卡.bat 为可选工具，仅修改显示名称，不改变实际硬件能力。`r`n迁移前先恢复旧设备部署，不携带旧 .state、日志或备份。`r`n"
+    $guide+="`r`n`r`n■ 鸣潮 / 异环专用入口（开 DLSS 帧生成 + 自动套用画面优化）`r`n第一次使用（只做一次）：`r`n1. 改游戏路径：用记事本打开 启动脚本\启动配置.ini，把 [鸣潮] 和 [异环] 两段里的「游戏目录」改成你自己电脑上游戏的安装位置（不知道在哪：打开官方启动器，在设置里查看安装位置）；「启动器路径」留空，脚本会自动找到，改完保存。`r`n2. 切换显卡并重启：双击 启动脚本\切换显卡.bat，同意管理员授权，然后重启电脑。`r`n注意：这一步必须做！不切换显卡并重启，游戏里不会出现「DLSS 帧生成」选项。只在第一次或更换显卡时需要；想还原再运行一次切换显卡.bat 即可，一般不用管。`r`n每次怎么玩：`r`n1. 先彻底关闭游戏和官方启动器；`r`n2. 玩鸣潮双击 启动脚本\启动鸣潮.bat，玩异环双击 启动脚本\启动异环.bat；`r`n3. 弹窗点「是」，同意管理员权限；`r`n4. 脚本会自动打开官方启动器，之后不用管脚本窗口；`r`n5. 正常开始游戏或更新，不影响更新；`r`n6. 进游戏后，在画面设置里打开「帧生成」（即 DLSS 帧生成）；`r`n7. 退出游戏后别急着关窗口，等脚本自动清理完成（鸣潮会多等约 10 秒）。`r`n出问题怎么办：`r`n- 双击没反应或报错：再双击一次；仍失败把 启动脚本\logs 里的日志发给 AI 分析。`r`n- 游戏异常退出（强退、断电）后：关闭游戏和官方启动器，在 启动脚本 文件夹打开 PowerShell，输入 & '.\启动鸣潮.bat' -RestoreDeployment（异环换成 启动异环），回车即可恢复。`r`n切换显卡.bat 是可选工具，仅修改显示名称，不改变实际硬件能力；迁移前先恢复旧设备部署，不携带旧 .state、日志或备份。`r`n"
 }
-$guide+="`r`n跨设备只传递新压缩包，到新设备重新解压；本机偏好、运行请求、日志和部署状态不随包导出。`r`n不要把使用过的工作目录或旧.state搬到其他设备；迁移前先恢复旧部署。`r`n"
+$guide+="`r`n`r`n■ 遇到问题怎么办`r`n- 游戏进不去或没有帧生成选项：回头核对对应入口的「第一次使用」步骤有没有漏做（尤其切换显卡并重启）。`r`n- 报错、闪退：把 启动脚本\logs 文件夹里的日志发给豆包等 AI 分析，这是最快的排查方式。`r`n- 上次断电、崩溃或脚本被结束：关闭游戏，重新打开对应 BAT，点「恢复原状」。`r`n`r`n■ 别动这些`r`n- 根目录的 version.dll、「dlssg_sm86」文件夹、「dlssg_sm86.ini」：脚本靠它们工作，不要删除、改名或移动。`r`n- 整个文件夹要一起复制、一起移动，不要只拷某一个 BAT。`r`n- 不要删除 .state 或备份记录来绕过恢复；恢复失败时保留现场，把最新日志交给提供者。`r`n`r`n■ 换电脑或发给朋友`r`n- 只传新解压出来的这份文件夹/压缩包；本机偏好、日志、部署状态不会打包进去。`r`n- 不要把使用过的旧目录、旧 .state 或旧电脑的运行记录带到新设备；迁移前先恢复旧部署。`r`n- 换到新电脑后重新解压，再按上面对应入口的「第一次使用」操作。`r`n"
 [IO.File]::WriteAllText((Join-Path $packagePath '先看这里.txt'),$guide,[Text.UTF8Encoding]::new($true))
 if ($Zip) {
     if (-not $b) { Add-Type -AssemblyName System.IO.Compression.FileSystem }
