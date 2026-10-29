@@ -1,140 +1,101 @@
-# 鸣潮、异环启动脚本使用说明
+﻿# 启动脚本：实现与开发
 
-适用于本仓库 main 分支（0.4.0 明文配置流程）；加密历史版本见 0.4.0带加密 分支。更新于 2026-10-17；下面的实测记录来自 2026-10-16，时间均为北京时间。
+基线：Windows PowerShell 5.1、Windows 10/11 x64、0.4.0资源布局。普通用户操作见 [使用说明](使用说明.md)；完整配置接口见 [配置与命令行参考](docs/配置与命令行参考.md)。本文只保留代码结构、行为约束和开发入口。
 
-## 平时怎么用
+## 入口与模块
 
-1. 先关闭对应游戏和官方启动器。
-2. 双击对应的 BAT：鸣潮用 `Run-WutheringWaves-DLSSG.bat`，异环用 `Run-NevernessToEverness-DLSSG.bat`。
-3. 同意 Windows 管理员权限提示。BAT 会退出，另一个窗口负责准备资源、记录日志和等待游戏结束。
-4. 在打开的官方启动器里启动游戏。需要插帧时，在游戏设置里开启 DLSS 帧生成。
-5. 正常退出游戏，等脚本完成清理。鸣潮退出后默认还会等待 10 秒，以便保留热更新重启所需的文件。
+### 独立 DLSSG 通用启动器
 
-运行期间脚本会禁用自身窗口的关闭按钮，减少误关导致配置未恢复的情况。不要强行结束脚本进程；它负责游戏退出后的收尾。
+`通用启动器.bat` 打开 `scripts/ui/Show-DlssgLauncher.ps1`。界面与游戏列表独立，首次为空；本机偏好和运行请求保存在 `%LOCALAPPDATA%\DlssgOnlyLauncher\<目录路径哈希>`。模型及请求在 `scripts/common/DlssgOnlyLauncher.ps1`，安装发现和渲染候选在 `scripts/common/GameDiscovery.ps1`。
 
-脚本通过官方启动器启动游戏，不绕过或关闭 ACE。它们是这台电脑的本地配置，换电脑或移动游戏后需要调整路径。
+支持 Steam、Epic、GOG 的本机安装发现：Steam 使用登记库及严格清单匹配；Epic 读取 ProgramData 安装清单，排除 DLC/无效入口；GOG 读取安装注册信息并结合 `goggame-*.info`。不做全盘扫描。所选游戏目录的候选扫描在后台执行，可取消；不穿过目录链接，跳过工具、辅助程序及非 x64 PE。目录深度最多12层、访问目录最多12000个；跳过原因可在“扫描详情”查看。多个候选展示相对路径和证据，由用户确认，平台启动入口与渲染程序可以不同。
 
-## 脚本自动做了什么
+Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”，不增加其他平台协议，也不绕过游戏的平台验证。该入口不限制 UE 主版本；识别或部署成功不代表支持帧生成。候选排序参考 [RTX-FG-Manager](https://github.com/pandaligx/RTX-FG-Manager/blob/646486bc85ec9773c374b691f4bd22467aa179d8/rust/src/scanner.rs) 的多证据筛选思路，以 PowerShell 实现；仅有超分组件不构成帧生成支持证据。
 
-- 将代理 DLL 和资源目录临时链接到游戏目录。链接类似快捷入口，资源仍放在仓库里，不必每次复制大文件。
-- 两个游戏分别生成自己的临时 INI，不修改仓库根目录的 `dlssg_sm86.ini`。
-- 两者默认使用 DLSS 插帧、`Optimized=2`、`Preset=Auto`，最多 3 个生成帧，即 4X 上限；游戏实际倍率还受自身设置和插件限制。
-- 两者都开启 INT8 超分开关，并部署 `sr` 目录。是否真正使用 INT8，取决于当前超分预设。
-- 鸣潮另外备份原 `Engine.ini`，使用画面配置的只读临时副本，结束后恢复原文件。
-- 退出时只移除本次创建且仍指向预期目标的链接，保留已有资源链接和日志。游戏仍在运行时会保留链接。
+工作进程仍使用 `Run-SteamUE5-DLSSG.ps1`，固定传 `-DlssgOnly`。该模式不读取、备份、部署或恢复 Engine.ini，不要求配置目录或配置源；继续部署0.4.0完整资源和临时 `dlssg_sm86.ini`，保留原有 INT8 超分（Mode=On，仅 L/M 预设使用 INT8）、代理选择和会话恢复。记录使用 `DeploymentMode=DlssgOnly`、空 Engine/Runtime/Backup，不允许配置类操作；旧记录缺少模式时按原有模式解释。两种模式不能交叉恢复；同渲染目录的其他遗留记录会阻止新部署，须回原入口恢复。共用渲染目录互斥，新模式不使用配置路径互斥。
 
-已有同名普通文件、普通资源子目录、指向其他位置的链接或其他代理 DLL 时，脚本会停止并提示冲突，不自动覆盖。先确认文件来源再处理。
+验证：`powershell.exe -NoProfile -File 启动脚本/tests/DlssgOnlyLauncher.Tests.ps1`；界面支持 `-SmokeTest` 和可选 `-PreviewPath`。测试使用隔离安装记录、伪程序及资源，不启动真实游戏。
 
-## 插帧和 INT8 是两件事
+### 虚幻启动器自动扫描
 
-**插帧**是在真实帧之间补生成帧。`Optimized=2` 优化的是插帧计算，在逐位一致的档位 1 上再增加有损图像内核；作者表示并排观察没有可见差别，但输出不再逐位一致。
+虚幻入口的“添加其他游戏”复用 `GameDiscovery.ps1`，支持 Steam/Epic/GOG 安装发现及手动选目录。渲染候选唯一最高分且至少60分时自动采用；同分或弱证据提示选择。Epic/GOG使用Direct，优先保留平台声明的启动EXE，其缺失时用渲染EXE。扫描成功不等于UE主版本或组件兼容性验证。
 
-**INT8 超分**是在重建画面时，使用适合 RTX 20/30 的另一套计算内核，尝试降低超分开销。它不是额外插帧，也不会让所有 DLSS 档位都加速。
+配置扫描根据安装目录、Binaries/Win64上方项目目录、去除平台/构建后缀的EXE名，检查安装内 `Saved/Config`、`%LOCALAPPDATA%/<项目名>/Saved/Config` 及系统文档 `My Games/<项目名>/Saved/Config` 下的 Windows、WindowsNoEditor、WindowsClient。已有普通 Engine.ini 或 GameUserSettings.ini 才形成候选，不穿过链接；去重后唯一候选自动填入，多候选选择、无候选手选。不改变优化源，不创建游戏配置、不全盘搜索。
 
-在本次鸣潮实际记录中的映射是：
+扫描后台执行，可取消，问题见“添加其他游戏 → 扫描详情”；完成选择前不保存设置。“重新查找”仅在当前配置目录失效且无遗留部署时补查，保存前再次核对恢复记录，沿用已有标识。隔离测试为 `tests/UnrealDiscovery.Tests.ps1`；虚幻便携包也包含共用GameDiscovery模块。
 
-| 游戏内档位 | 最终预设 | INT8 情况 |
-|---|---|---|
-| 质量、平衡 | K | 使用官方内核，不启用 INT8 |
-| 性能 | M | 可以启用 INT8 |
-| 超级性能 | L | 可以启用 INT8 |
+### 共用模块与原入口
 
-这是本次运行中的映射，不是所有游戏永远固定的规则。NVIDIA App 的预设覆盖、游戏请求和运行库版本都可能影响最终预设。只为使用脚本，无需专门修改 NVIDIA 控制面板，也无需强制覆盖预设。
-
-### 为什么性能与超级性能互换后可能要重启
-
-当前项目的 L/M 预设共用一些 GPU 计算入口，运行库在同一游戏进程中缓存这些入口。先用上的 L 或 M 决定 INT8 替代内核为谁建立，随后换到另一个预设时，项目会保留它的官方内核，避免套用不匹配的实现。
-
-例如：性能 M → 平衡 K → 性能 M，M 仍可以使用 INT8；但性能 M → 超级性能 L，这一局的 L 会使用官方内核。想让 L 使用 INT8，保存超级性能档后退出并重新启动，让 L 成为本次进程首先使用的 L/M 预设。反过来也一样。
-
-这是当前项目的限制，不是显卡坏了，也不是每次切换质量档都要重启。若游戏开启光线重建，超分可能由光线重建路径接管，此处 INT8 超分开关不再起作用。
-
-## 最近的实际运行结果
-
-以下记录的显卡均为 NVIDIA GeForce RTX 3080 Ti Laptop GPU。这里记录的是加载与执行证据，不是帧率对比测试。
-
-| 游戏与启动时间 | 游戏 PID | 实际超分路径 | 插帧与退出情况 |
-|---|---|---|---|
-| 异环，10-16 23:31:34 | 26992 | 超级性能 L；确认 INT8 执行，最后一次采样累计 6008 帧 | 帧生成功能创建成功，请求 3 个生成帧；23:34:53 退出并清理 |
-| 异环，10-16 23:35:20 | 5868 | 超级性能 L；确认 INT8 执行，最后一次采样累计 3008 帧 | 帧生成功能创建成功，请求 3 个生成帧；23:37:49 退出并清理 |
-| 鸣潮，10-16 23:47:43 | 26652 | 质量/平衡 K 使用官方内核；性能 M 确认 INT8 执行；后来切到 L 时因内核已为 M 建立而回退官方内核 | 帧生成功能创建成功；23:56:22 退出，23:56:32 清理并恢复原 Engine.ini |
-
-三次均正确加载 310.9.16 帧生成后端，启用 `Optimized=2`，配置告警为 0。异环两次没有观察到 INT8 路由拒绝；鸣潮有一条 `sr_route_preset_refused`，原因正是同一局从 M 切到 L。
-
-鸣潮的 L 在创建记录中可能仍写着 `kernels=int8`，那表示配置选择；后续执行记录显示 L 被拒绝，因此判断实际生效要结合执行日志，不能只看开关或创建记录。
-
-退出后现场检查确认：异环本次临时 INI 和 `sr` 链接已清理；鸣潮本次代理、临时 INI 和全部资源链接已清理，原 `Engine.ini` 已恢复，临时副本与备份没有残留。
-
-**这些日志不能证明提升了多少 FPS，也不能判断画面是否更好。** 本次没有同场景 FP16 对照或逐帧 GPU 耗时记录；脚本打印的游戏退出代码为空，单凭它也不能区分主动退出和异常退出。
-
-## 日志在哪里，怎么看是否生效
-
-- 脚本日志：本目录的 `logs` 文件夹。每次启动一个文件，启动时清理超过一天的旧脚本日志；需要保留证据时及时复制。
-- 游戏组件日志：各自渲染 EXE 目录下的 `dlssg_sm86\logs`。`loader_游戏PID.jsonl` 记录加载情况，`backend_游戏PID.jsonl` 记录内核和功能运行情况。这里的 PID 与脚本日志文件名中的脚本 PID 不同。
-
-几个常见标记：
-
-| 日志内容 | 通俗含义 |
+| 位置 | 职责 |
 |---|---|
-| `backend_loaded` 中 `loaded=true` | 后端已经加载；还不能单凭这一条断言插帧实际运行 |
-| `fg_gate_create_feature` 中 `feature_id=11`、`succeeded=true` | 帧生成功能创建成功；不等于证明显示帧率达到 4X |
-| `sr_evaluate` 中 `replaced` 持续增加、路由启用 | INT8 替代内核确实在执行 |
-| `preset_not_l_or_m` | 当前是 K 等其他预设，正常使用官方内核 |
-| `shared_kernels_built_for_other_preset` | 本局先用了另一个 L/M 预设；要加速当前预设需重启 |
+| `虚幻启动器.bat`、`scripts/ui/Show-SteamLauncher.ps1` | WinForms界面，保存选择、触发检查/恢复、交接独立工作脚本 |
+| `scripts/common/PortableLauncher.ps1` | 共享预设与本机偏好合并、模型校验、运行请求INI、工作进程命令 |
+| `scripts/common/SteamLauncher.ps1` | Steam库/清单解析、AppID匹配、完整EXE路径进程识别与会话等待 |
+| `scripts/common/DirectLauncher.ps1` | Steam/Direct模式兼容、稳定游戏标识、直接启动设置与EXE调度 |
+| `scripts/common/UnrealQuality.ps1` | 后台UE主版本识别、缓存、画质路径映射及保存失败回退 |
+| `scripts/games/Run-SteamUE5-DLSSG.ps1` | Steam与Direct共用部署、启动、监控和恢复工作脚本 |
+| `scripts/games/Run-WutheringWaves-DLSSG.ps1`、`Run-NevernessToEverness-DLSSG.ps1` | 鸣潮、异环专用会话流程 |
+| `scripts/common/LauncherConfig.ps1` | INI编码兼容、别名、路径规范化及显式参数覆盖 |
+| `scripts/common/LauncherResources.ps1`、`DeploymentJournal.ps1` | 共用资源部署、互斥、持久化记录与恢复 |
+| `scripts/common/LauncherConsole.ps1`、`ScriptLogging.ps1` | 控制台保护、脚本日志 |
+| `scripts/tools/Export-PortableLauncher.ps1` | 白名单导出便携目录及可选ZIP |
 
-看到“找到日志”只说明文件存在，旧日志也可能在目录里。排查时应按启动时间和游戏 PID 对应本次文件。
+## 配置与状态接口
 
-## 常用参数和中断恢复
+显卡名称工具支持 `-ResetState`（简写 `-r`）：当前不是目标伪装名称时，删除旧 ProgramData 状态备份，再走原有备份及切换流程；仍为伪装名称时拒绝重置。该参数与只读 `-Status` 互斥，提权时继续传递。
 
-两款游戏现在共用持久化部署记录，位于 `启动脚本\.state\wuthering\active.json` 和 `启动脚本\.state\nte\active.json`，不纳入 Git。记录包含会话、原配置哈希、备份与临时文件路径、各次操作意图和结果，以及哪些链接是复用的；不包含配置明文或密钥。写入记录失败会停止后续部署。同一游戏目录或配置目录的并发启动/恢复会被互斥锁阻止。
+- 图形预设为 `presets/SteamUE5.json`；本机偏好/请求位于 `%LOCALAPPDATA%\DlssgSteamLauncher\<目录路径哈希>`，不读取个人 `启动配置.ini`。旧偏好缺少 `LaunchMode`、`QualityPreset`、`EngineOverride` 时默认 `Steam`、`Current`、`Auto`。
+- 模式字段为 `LaunchMode=Steam|Direct`。Steam使用AppID；Direct使用稳定的 `Id=direct-<32位GUID>`，`LaunchExecutable` 与 `RenderExecutable` 均相对游戏根目录，允许二者不同，不接受目录外EXE。Direct不查询Steam清单或注册表。
+- CLI入口读取统一INI，显式命令行覆盖配置。Steam请求使用 `[SteamUE5:desktop]`；Direct请求使用 `[DirectUE:desktop]`，工作脚本通过 `-LaunchMode Direct -GameKey <32位GUID>` 选择。Direct仅增加“启动程序 / LaunchExecutable”，不传Steam的 `-applaunch`。
+- `EngineConfigSource` 保留“当前配置”的源；`QualityPreset=Tier1..Tier5` 根据有效UE主版本映射 `配置/虚幻通用分类/UE4|UE5/<档位>/Engine.ini`，不合并配置；Tier5对应UE4/UE5各自的 `05-自定义/Engine.ini`，不是性能第五档。新添加游戏默认Tier2，旧游戏Current；高级设置选择新INI后恢复Current。
+- 引擎证据为标准 `Engine/Build/Build.version`、明确Unreal版本元数据、EXE内ASCII/UTF-16LE发行标记。首次分块后台扫描；成功结果以 `DetectedEngineMajor/DetectedEngineSource` 按游戏写入本机偏好，重开界面、检查或启动时直接复用，不因EXE更新或搬盘自动重扫。未成功识别仍可重试；单次进程中的扫描缓存包含路径、大小和修改时间，旧异步结果不覆盖当前选择。`EngineOverride=UE4|UE5` 优先，冲突/未知不允许档位启动；`.utoc/.ucas`不能单独证明UE5。
+- 恢复记录为 `.state/wuthering|nte|steam-<AppID>|direct-<GUID>/active.json`。保留稳定身份，优先恢复旧记录，不用新偏好重定向原配置位置。
 
-正常退出会依据记录恢复原配置、撤回本项目的新建及复用链接和可识别的临时文件。若已完成部署的 Engine.ini 链接被替换为普通文件，先校验原备份，再将新文件保存到 `.state\游戏\recovered\会话ID-Engine.ini` 后恢复原件；不覆盖已有恢复副本。临时副本只读并不能阻止游戏替换链接本身。其他链接目标变化、备份或 storage DLL 哈希不符时，保留有冲突的文件和记录，报告原因；无关步骤仍会尝试恢复。若崩溃、断电或使用 `-KeepLinks`，下次启动会询问是否恢复未完成部署。不要删除 `.state` 或原件备份来绕过检查。
+## 部署与会话约束
 
-关闭对应游戏和启动器后，完整恢复命令为：
+- 图形界面仅在成功创建独立提权工作进程后隐藏并退出，释放句柄不能终止工作进程；取消提权保留界面。检查与恢复保留界面等待结果。
+- Steam通过 `steam.exe -applaunch`；Direct以启动EXE所在目录为工作目录运行EXE，无自定义参数。二者按真实渲染EXE完整路径监控，等待启动上限120秒，全部目标进程退出后恢复。鸣潮保留默认10秒热重启窗口，异环首次退出后清理，不统一策略。
+- 六种代理按version、winmm、dbghelp、dinput8、dxgi、d3d12映射1–6，默认1。一次部署一个，记录实际代理及storage哈希；未知文件、其他代理或变化的链接保留并报冲突。资源为runtime、backend、kernels、xefg、sr。
+- Engine.ini从明文源生成带标记的只读临时副本，以链接部署；原件按字节备份/恢复，不解析、合并或加解密。当前默认源不使用历史test目录。加密实现仅保留于历史分支 `0.4.0带加密`。
+- 记录原子写入，操作前intent、成功后done；写入失败停止部署。恢复顺序为 `engineLink → backup → runtime → storage → link → diagnostic → directory`，依赖未恢复时保留必要文件。被游戏替换的普通Engine.ini经备份校验后归档到recovered，不覆盖冲突。
+- `-RestoreDeployment` 完整恢复，`-RestoreEngineConfig` 仅恢复画面配置并更新记录；`-KeepLinks` 保留部署。DryRun不启动或部署，但写日志；遇未完成部署只展示恢复计划并停止。只有恢复与残留校验均成功才删除记录。
 
-```bat
-Run-WutheringWaves-DLSSG.bat -RestoreDeployment
-Run-NevernessToEverness-DLSSG.bat -RestoreDeployment
+## 开发验证
+
+在仓库根目录按修改范围选择测试，不重复运行无关游戏检查：
+
+```powershell
+powershell.exe -NoProfile -File 启动脚本/tests/PortableLauncher.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/tests/PortableLauncherHandoff.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/tests/UnrealQuality.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/tests/DirectLauncher.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/tests/SteamUE5.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/tests/DeploymentJournal.Tests.ps1
+powershell.exe -NoProfile -File 启动脚本/scripts/ui/Show-SteamLauncher.ps1 -SmokeTest
 ```
 
-`-RestoreDeployment -DryRun` 只展示恢复步骤，不修改部署或记录；正常 `-DryRun` 遇到未完成部署会展示恢复计划并停止，不把“需要恢复”当作可以继续部署。两种演练均仍会写脚本日志。恢复可以重复执行；`-RestoreEngineConfig` 仍只处理画面配置，并更新记录，其他资源可随后完整恢复。没有记录时也能回收目标与本项目匹配的旧资源及代理链接，并按哈希识别 storage 副本。旧版 Reused 记录会迁移到恢复操作；清理后核验残留，有残留时保留记录并报错。资源目录中的日志和归属不符的文件保留。
+配置/编码改动另查 `tests/LauncherConfig.Tests.ps1`、`tests/Compatibility.Tests.ps1`。隔离测试不得触碰真实游戏部署；语法、模型、DryRun与界面冒烟不能证明游戏加载、画面或FPS。原生符号链接因权限跳过时需明确说明。
 
-鸣潮仍等待默认 10 秒重启窗口，异环仍在首次游戏进程退出后清理；本次没有统一这两种等待策略。脚本退出时若资源恢复不完整会返回失败并保留记录。
+## 便携导出
 
-异环正式配置参考 Config 3 的分类，采用平衡取向：保留动画更新优化、适度收缩视距、各向异性过滤上限 16，不复制鸣潮插件 Paths 或库洛专用参数。Config 3 的编号不表示比 Config 2 更费性能。读取链路已有用户实测反馈；新配置中各项支持情况、画质和帧率收益仍需同场景比较，测试目录的低画质配置保持不变。
+可选Bandizip模式：运行 `打包给朋友.bat -b`，或给导出PS1传 `-b`。调用 `C:\Bandizip\bz.exe` 输出7z，使用本机7.32版默认LZMA2及最高等级 `-l:9`；压缩及完整性检查成功后只保留7z，失败保留导出目录。四种类型均可使用；不加 `-b` 仍用内置ZIP。打包脚本和Bandizip本身不包含在分享包内。参数依据[Bandizip官方说明](https://www.bandisoft.com/bandizip/help/parameter/)。
 
-异环与鸣潮使用相同的配置流程：启动前备份游戏 `Engine.ini`，直接从 `异环配置\Engine.ini` 明文源生成带脚本标记的只读临时副本，并将游戏配置路径软链接到副本。原文件按字节备份和恢复，不读取、解密、合并或重新加密原配置；配置源不会被游戏写回。默认不使用 `test` 目录，临时副本设置只读。用户已反馈引擎可读取明文；保留加密实现的历史版本位于 `0.4.0带加密` 分支。
+压缩包内只有一个顶层文件夹：类型1为“帧生成启动器”，类型2为“通用启动器”，类型3为“虚幻启动器”，类型4为“鸣潮异环帧生成解锁”；资源、说明和启动脚本均在其中，解压后进入该文件夹使用。
 
-正常退出会移除画面配置链接和副本并恢复原文件。强行中断或使用 `-KeepLinks` 后，关闭游戏和启动器，再运行 `Run-NevernessToEverness-DLSSG.bat -RestoreEngineConfig`。此命令只恢复画面配置，不启动游戏；正常启动遇到遗留配置也会询问是否先恢复。恢复时若游戏路径已变成其他文件，脚本会保留备份并停止覆盖。
+双击 `打包给朋友.bat`，输入 `1=完整`、`2=通用启动器`、`3=虚幻启动器` 或 `4=鸣潮+异环`。在仓库 `dist/DLSSG-<类型>-日期时间.zip`（类型标记分别为Full、General、Unreal、WuWa-NTE）生成压缩包，成功后自动删除同名临时目录，仅保留ZIP。无需管理员权限、Git、Python 或第三方压缩软件；已有目的目录或 ZIP 不覆盖。
 
-异环支持 `-EngineConfigSource "明文配置完整路径"` 和 `-ConfigDirectory "游戏配置目录"`。配置源应为明文 INI，不要指定已加密的测试文件。软链接需要管理员权限，请通过现有 BAT 启动。临时副本设为只读以阻止普通写回，清理时强制移除已核验的副本；本次运行参数是否持续有效仍需实测。
+也可指定导出位置，不复制使用中的工作树：
 
-在本目录打开终端，BAT 后面可以附加参数：
-
-```bat
-Run-WutheringWaves-DLSSG.bat -DryRun
-Run-NevernessToEverness-DLSSG.bat -DryRun
-Run-WutheringWaves-DLSSG.bat -RestartGraceSeconds 90
+```powershell
+powershell.exe -NoProfile -File 启动脚本/scripts/tools/Export-PortableLauncher.ps1 -Destination D:/分享/DLSSG便携启动器 -Zip
 ```
 
-`-DryRun` 只检查路径、冲突和部署计划，不启动游戏或修改游戏文件，但仍会记录脚本日志。`-VerboseLog` 显示更多细节。`-KeepLinks` 用于排查，会保留链接和临时配置，日常使用不必加。
+白名单按类型包含实际依赖模块、游戏入口、配置及说明，四种均保留完整0.4.0六个资源DLL。通用包包含通用界面、游戏发现、六种代理及必要模块，不包含UE画质配置和预设；虚幻包包含虚幻界面、六种代理、UE候选/自定义配置及预设，不包含通用界面或游戏发现模块。通用模型复用PortableLauncher，因此仍包含UnrealQuality代码模块，但不包含UE配置文件。鸣潮+异环只包含version/winmm代理、专用配置、显卡工具和入口。完整包为三类并集，另含Steam命令行BAT。含专用入口的包现场生成干净的启动配置模板，不读取个人启动INI，收件人需填写游戏目录。排除本机偏好、日志、.state、备份、测试、子模块、打包工具和Git。ZIP使用.NET内置Optimal压缩，先写临时文件再发布，输出大小和SHA256。源文件/入口增减时同步白名单，旧导出包不代表当前代码。非交互调用用 `-PackageType 1/2/3/4`；省略时为2，导出通用启动器。 菜单末尾的 `0 全部依次打包` 按1→2→3→4分别生成四个包，也可传 `-PackageType 0`；沿用ZIP或 `-b` 模式。指定 `-Destination` 时将其作为前缀，分别加上 `-Full`、`-General`、`-Unreal`、`-WuWa-NTE`。整批先检查输出冲突，执行中失败则停止后续类型，保留此前成功的包和失败现场。
 
-鸣潮若被强行中断，先关闭游戏和启动器，再恢复画面配置：
+## 参考文档
 
-```bat
-Run-WutheringWaves-DLSSG.bat -RestoreEngineConfig
-```
-
-这个命令只恢复鸣潮的 `Engine.ini`，不会启动游戏，也不是所有资源链接的一键卸载。正常启动检测到上次画面配置遗留时，也会询问是否恢复；不要直接删除原文件备份。配置目录无法自动确认时，可用 `-ConfigDirectory "完整配置目录"` 指定包含 `GameUserSettings.ini` 的目录。
-
-当前本机路径：
-
-| 项目 | 位置 |
-|---|---|
-| 仓库资源 | 自动取本目录的上一级 |
-| 异环游戏和启动器根目录 | `C:\Games\Neverness To Everness` |
-| 鸣潮游戏目录 | `C:\Games\Wuthering Waves Game` |
-| 鸣潮官方启动器目录 | `C:\Program Files\Wuthering Waves` |
-| 鸣潮画面配置源 | `D:\Games\WuWa-Configs\当前配置\Engine.ini` |
-
-INT8 所需的 `dlssg_sm86\sr\sr_kernels.dll` 和 `nvngx_dlss.dll` 必须齐全；缺失时脚本会停止并报告路径。游戏移动后，修改对应 PS1 开头的游戏路径；资源仓库移动时，保留“启动脚本”与上级资源目录的相对结构即可。
+- [配置与命令行参考](docs/配置与命令行参考.md)：分组/别名、参数、编码、路径写法、上游子模块与迁移。
+- [画质档位与来源](配置/虚幻通用分类/README.md)：八档候选及来源哈希；参考子模块更新须明确触发，不能替换个人默认源。
+- [日志检查规范](../docs/启动日志检查规范.md)：按实际游戏PID核对加载、执行和恢复；组件计数不当作FPS。
+- [历史运行记录](docs/历史运行记录.md)：2026-10-16的现场证据，不代表当前版本验收。
+- [跨设备兼容性检查](docs/跨设备兼容性检查.md)：Windows与硬件验证边界。
