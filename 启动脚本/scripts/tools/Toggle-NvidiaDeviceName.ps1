@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [switch]$Status
+    [switch]$Status,
+    [Alias('r')]
+    [switch]$ResetState
 )
 
 Set-StrictMode -Version Latest
@@ -63,6 +65,7 @@ function Assert-Administrator {
 
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($Status) { $arguments += ' -Status' }
+    if ($ResetState) { $arguments += ' -ResetState' }
 
     Write-Log 'Requesting administrator permission...'
     $elevated = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -ArgumentList $arguments -PassThru -Wait
@@ -149,6 +152,18 @@ function Restore-FromState {
     Write-Log "Restored original DeviceDesc: $($state.OriginalValue)"
 }
 
+function Reset-SpoofState {
+    param([pscustomobject]$Description)
+
+    if ($Description.DisplayName -ieq $targetName) {
+        throw '-ResetState 不能在当前仍为伪装名称时使用；请正常运行脚本恢复原名称。'
+    }
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop
+        Write-Log '已清除旧状态备份，将按当前设备名称重新备份并切换。'
+    }
+}
+
 function Enable-Spoof {
     param(
         [string]$CurrentValue,
@@ -156,7 +171,7 @@ function Enable-Spoof {
     )
 
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-        throw "A state backup already exists. Run the script again to restore it: $statePath"
+        throw "已有状态备份：$statePath。如果更新驱动后已恢复真实型号，请使用 -ResetState 重新备份并切换。"
     }
 
     $expectedValue = $Description.Prefix + $targetName
@@ -188,6 +203,7 @@ function Enable-Spoof {
 }
 
 try {
+    if ($Status -and $ResetState) { throw '-Status 与 -ResetState 不能同时使用。' }
     Assert-Administrator
 
     if ($Status) {
@@ -199,6 +215,8 @@ try {
     $properties = Get-DeviceProperties
     $currentValue = [string]$properties.DeviceDesc
     $description = Split-DeviceDescription -Value $currentValue
+
+    if ($ResetState) { Reset-SpoofState -Description $description }
 
     if ($description.DisplayName -ieq $targetName) {
         if (Test-Path -LiteralPath $statePath -PathType Leaf) {

@@ -1,4 +1,60 @@
 ﻿# Local installation discovery and renderer suggestions. Never deploys or launches.
+function Get-TrustedGameRenderer {
+    param([object[]]$Candidates)
+    $ordered=@($Candidates | Sort-Object Score -Descending)
+    if ($ordered.Count -and $ordered[0].Score -ge 60 -and
+        ($ordered.Count -eq 1 -or $ordered[0].Score -gt $ordered[1].Score)) { return $ordered[0] }
+    return $null
+}
+
+# Exact project-name locations only; user roots are injectable for isolated tests.
+function Get-UnrealConfigDirectoryCandidates {
+    param([string]$GameDirectory,[string]$RenderExecutable,
+        [string]$LocalAppData=$env:LOCALAPPDATA,
+        [string]$Documents=[Environment]::GetFolderPath('MyDocuments'),
+        $Cancellation,[Collections.Generic.List[string]]$Issues)
+    $root=[IO.Path]::GetFullPath($GameDirectory).TrimEnd('\')
+    $render=[IO.Path]::GetFullPath($RenderExecutable)
+    if (-not $render.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '渲染程序必须位于游戏目录。' }
+    $projects=@($root)
+    $directory=Split-Path -Parent $render
+    if ($directory -match '(?i)\\Binaries\\Win64$') { $projects+=Split-Path -Parent (Split-Path -Parent $directory) }
+    $names=@($projects | ForEach-Object { Split-Path -Leaf $_ })
+    $names+=([IO.Path]::GetFileNameWithoutExtension($render) -replace '(?i)-(Shipping|Development|DebugGame|Debug|Test)$','' -replace '(?i)-(Win64|Win32|x64|x86)$','')
+    $bases=@($projects | ForEach-Object { Join-Path $_ 'Saved\Config' })
+    foreach ($name in @($names | Select-Object -Unique)) {
+        if (-not $name -or $name -in @('.','..') -or $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { continue }
+        if ($LocalAppData) { $bases+=Join-Path $LocalAppData "$name\Saved\Config" }
+        if ($Documents) { $bases+=Join-Path $Documents "My Games\$name\Saved\Config" }
+    }
+    $seen=@{}
+    foreach ($base in $bases) {
+        foreach ($platform in @('Windows','WindowsNoEditor','WindowsClient')) {
+            if (Test-DiscoveryCancelled $Cancellation) { return }
+            $path=[IO.Path]::GetFullPath((Join-Path $base $platform))
+            if ($seen.ContainsKey($path)) { continue }; $seen[$path]=$true
+            try {
+                $current=$path
+                while ($current) {
+                    try { $attributes=[IO.File]::GetAttributes($current) }
+                    catch [IO.FileNotFoundException] { $current=Split-Path -Parent $current; continue }
+                    catch [IO.DirectoryNotFoundException] { $current=Split-Path -Parent $current; continue }
+                    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "跳过链接配置路径：$current" }
+                    $current=Split-Path -Parent $current
+                }
+                if (-not [IO.Directory]::Exists($path)) { continue }
+                $files=@(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop | Where-Object {
+                    -not $_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $_.Name -in @('Engine.ini','GameUserSettings.ini')
+                })
+                if ($files.Count) {
+                    $reason='项目路径匹配；存在 '+(($files | ForEach-Object { $_.Name }) -join ' / ')
+                    [pscustomobject]@{Path=$path;Reasons=$reason;Display=($path+' — '+$reason)}
+                }
+            } catch { if ($null -ne $Issues) { $Issues.Add("配置目录无法扫描：${path}：$($_.Exception.Message)") } }
+        }
+    }
+}
+
 function Test-DiscoveryCancelled {
     param($Cancellation)
     return ($null -ne $Cancellation -and $Cancellation.IsCancellationRequested)

@@ -20,7 +20,7 @@ $resources=@('version.dll','alternatives\winmm.dll','alternatives\dbghelp.dll','
     'alternatives\README.md','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt','dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll',
     'dlssg_sm86\kernels\fg_kernels.dll','dlssg_sm86\xefg\xefg_kernels.dll','dlssg_sm86\sr\sr_kernels.dll','dlssg_sm86\sr\nvngx_dlss.dll')
 foreach ($file in $resources) { Write-Fixture (Join-Path $project $file) }
-foreach ($file in @('使用说明.md','配置\SteamUE5\Engine.ini','配置\鸣潮\Engine.ini','配置\异环\Engine.ini')) { Write-Fixture (Join-Path $fixture $file) }
+foreach ($file in @('配置\SteamUE5\Engine.ini','配置\鸣潮\Engine.ini','配置\异环\Engine.ini')) { Write-Fixture (Join-Path $fixture $file) }
 Write-Fixture (Join-Path $fixture 'presets\SteamUE5.json') '[{"Id":"test","Name":"测试","AppId":"123","RenderExecutable":"Game.exe","ConfigDirectory":"%LOCALAPPDATA%\\test","EngineConfigSource":"配置\\SteamUE5\\Engine.ini"}]'
 foreach ($engine in @('UE4','UE5')) {
     foreach ($tier in @('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅','05-自定义')) { Write-Fixture (Join-Path $fixture "配置\虚幻通用分类\$engine\$tier\Engine.ini") }
@@ -35,7 +35,8 @@ foreach ($type in @('1','2','3','4')) {
     $package=Join-Path $destination $folders[$type]
     Assert-Test ([IO.Directory]::Exists($package)) "Wrong folder for type $type"
     $general=$type -in @('1','2'); $unreal=$type -in @('1','3'); $games=$type -in @('1','4')
-    foreach ($relative in @('启动脚本\通用启动器.bat','启动脚本\scripts\ui\Show-DlssgLauncher.ps1','启动脚本\scripts\common\GameDiscovery.ps1')) {
+    Assert-Test ([IO.File]::Exists((Join-Path $package '启动脚本\scripts\common\GameDiscovery.ps1')) -eq ($general -or $unreal)) "Shared discovery mismatch: $type"
+    foreach ($relative in @('启动脚本\通用启动器.bat','启动脚本\scripts\ui\Show-DlssgLauncher.ps1')) {
         Assert-Test ([IO.File]::Exists((Join-Path $package $relative)) -eq $general) "General content mismatch: $type/$relative"
     }
     foreach ($relative in @('启动脚本\虚幻启动器.bat','启动脚本\scripts\ui\Show-SteamLauncher.ps1','启动脚本\presets\SteamUE5.json','启动脚本\配置\虚幻通用分类\UE5\05-自定义\Engine.ini')) {

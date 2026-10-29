@@ -83,7 +83,7 @@ Enabled=1
 
 [FrameGeneration]
 Engine=DLSS
-MaxGeneratedFrames=3
+MaxGeneratedFrames=5
 
 [DLSSG]
 Optimized=2
