@@ -10,6 +10,7 @@ Assert-Test ($errors.Count -eq 0) 'GUI syntax error.'
 $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-Action'},$true)
 . ([scriptblock]::Create($node.Extent.Text))
 function Refresh-Game {}
+function Save-Editors { $script:editorsSaved=$true }
 function Get-PortableDataDirectory { return $env:TEMP }
 function Set-PortableProfile { param($Preferences,$Profile) }
 function Save-PortablePreferences { param($Preferences) }
@@ -28,6 +29,7 @@ function Start-Process {
     return $process
 }
 foreach ($action in @('Launch','Restore','Check','CancelledLaunch')) {
+    $script:editorsSaved=$false
     $script:preferences=@{}
     $script:model=[pscustomobject]@{Ready=$true;Recovery=$true;GameDirectory='C:\inert';Status='ready';Profile=[pscustomobject]@{GameDirectory='';AppId='456'}}
     $script:status=[pscustomobject]@{Text=''}
@@ -38,6 +40,7 @@ foreach ($action in @('Launch','Restore','Check','CancelledLaunch')) {
     $form | Add-Member ScriptMethod Close { $this.Closed=$true }
     $runAction=if ($script:cancel) { 'Launch' } else { $action }
     Start-Action $runAction
+    Assert-Test ($script:editorsSaved -eq ($runAction -ne 'Restore')) 'Launch/check must save editors; restore must retain recorded settings.'
     if ($script:cancel) {
         Assert-Test (-not $form.Hidden -and -not $form.Closed -and $script:failure -match 'cancelled') 'Cancelled elevation hid or closed GUI.'
     } elseif ($action -eq 'Launch') {

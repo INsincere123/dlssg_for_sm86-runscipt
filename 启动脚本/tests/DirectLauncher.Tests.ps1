@@ -26,7 +26,10 @@ function Resolve-SteamAppId {throw 'Direct launch touched Steam discovery.'}
 function Find-SteamGameDirectory {throw 'Direct launch touched Steam libraries.'}
 function Get-PortableSteamPath {throw 'Direct launch required Steam.'}
 $key=[guid]::NewGuid().ToString('N')
-$profile=[pscustomobject]@{Id="direct-$key";Name='直接测试';AppId='';LaunchMode='Direct';LaunchExecutable='Launch.exe';RenderExecutable='Example\Binaries\Win64\Example-Win64-Shipping.exe';GameDirectory=$game;ConfigDirectory=$config;EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Current';EngineOverride='Auto'}
+$profile=[pscustomobject]@{Id="direct-$key";Name='直接测试';AppId='';LaunchMode='Direct';LaunchExecutable='Launch.exe';RenderExecutable='Example\Binaries\Win64\Example-Win64-Shipping.exe';GameDirectory=$game;ConfigDirectory=$config;EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='UE5'}
+$tierFile=Join-Path $fixture '配置\虚幻通用分类\UE5\02-主流均衡\Engine.ini'
+[void][IO.Directory]::CreateDirectory((Split-Path -Parent $tierFile))
+[IO.File]::WriteAllText($tierFile,'[SystemSettings]')
 $model=Get-PortableGameModel $profile '' -Root $fixture
 Assert-Test ($model.Ready -and $model.GameId -eq $profile.Id -and $model.LaunchExecutable -eq $launch) 'Direct model needs Steam or misidentified executable.'
 $request=Write-PortableLaunchConfig $model (Join-Path $testRoot 'request')
@@ -52,7 +55,7 @@ Assert-Test ($recovery.Recovery -and $recovery.GameDirectory -eq $game -and $rec
 $restoreRequest=Write-PortableLaunchConfig $recovery (Join-Path $testRoot 'restore-request')
 Assert-Test ((Get-DirectUESettings -GameKey $key -Path $restoreRequest).GameDirectory -eq $game) 'Direct restore needs Steam.'
 Remove-Item -LiteralPath (Join-Path $state 'active.json')
-$profile.GameDirectory=$game;$profile.ConfigDirectory=$config;$profile.QualityPreset='Current'
+$profile.GameDirectory=$game;$profile.ConfigDirectory=$config;$profile.QualityPreset='Tier2'
 function Start-Process {param($FilePath,$WorkingDirectory,$ArgumentList,$WindowStyle) $script:dispatch=$PSBoundParameters}
 Start-ConfiguredUEGame Direct $launch
 Assert-Test ($script:dispatch.FilePath -eq $launch -and $script:dispatch.WorkingDirectory -eq $game -and -not $script:dispatch.ContainsKey('ArgumentList')) 'Direct dispatch used Steam arguments or wrong directory.'
@@ -89,8 +92,10 @@ function Select-File {param($Title,$Filter,$InitialDirectory) return $render}
 function Get-PortableDataDirectory {return Join-Path $testRoot 'gui-prefs'}
 function Load-Games {param($SelectedId) $script:addedSelectedId=$SelectedId}
 function Show-Failure {param($Message) $script:failure=$Message}
+# Adding now dispatches renderer discovery asynchronously. Check the actual UI
+# request rather than pretending the removed synchronous picker still runs.
+function Start-Discovery { param($Mode) $script:dispatchedMode=$Mode }
 Add-LauncherGame Direct
-Assert-Test (-not $script:failure -and $script:preferences.Profiles.Count -eq 1) "Direct add failed: $script:failure"
-$added=$script:preferences.Profiles[0]
-Assert-Test ($added.LaunchMode -eq 'Direct' -and $added.QualityPreset -eq 'Tier2' -and $added.Id -eq $script:addedSelectedId -and $added.AppId -eq '') 'Direct add defaults/identity wrong.'
-Write-Host "PASS: direct add, no Steam/AppID, stable recovery, path checks, dispatch, isolated worker DryRun and encoded handoff. Artifacts: $testRoot"
+Assert-Test (-not $script:failure -and $script:dispatchedMode -eq 'Renderers') "Direct add failed: $script:failure"
+Assert-Test ($script:pendingRecord.Platform -eq 'Direct' -and $script:pendingRecord.GameDirectory -eq $game -and $script:pendingRecord.AppId -eq '') 'Direct add touched Steam or lost discovery directory.'
+Write-Host "PASS: direct add discovery dispatch, no Steam/AppID, stable recovery, path checks, isolated worker DryRun and encoded handoff. Artifacts: $testRoot"

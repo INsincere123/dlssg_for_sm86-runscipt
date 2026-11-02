@@ -124,6 +124,8 @@ function Get-SteamUE5Settings {
         $values.AppId = $detected.AppId
         $values.AppIdSource = "自动读取 $($detected.Manifest)"
     }
+    $advanced=Get-LauncherAdvancedSettings $section $Overrides
+    foreach ($key in $advanced.Keys) { $values[$key]=$advanced[$key] }
     return $values
 }
 

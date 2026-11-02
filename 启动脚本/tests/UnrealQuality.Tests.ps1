@@ -44,8 +44,7 @@ Assert-Test ([object]::ReferenceEquals($task1,$task2)) 'Unchanged file was scann
 Assert-Test ((Detect $b).Major -eq 4) 'EXE cache did not invalidate.'
 $profile=[pscustomobject]@{Id='one';Name='One';AppId='123';RenderExecutable='Game.exe';ConfigDirectory='C:\inert';GameDirectory='';EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1}
 Initialize-PortableQuality $profile
-Assert-Test ($profile.QualityPreset -eq 'Current' -and $profile.EngineOverride -eq 'Auto') 'Old preferences were not preserved.'
-$current=(Resolve-PortableQuality $profile $null -Root $root).Path
+Assert-Test ($profile.QualityPreset -eq 'Tier2' -and $profile.EngineOverride -eq 'Auto') 'Old preferences were not preserved.'
 $profile.QualityPreset='Tier2'
 $blocked=$false
 try { Resolve-PortableQuality $profile $null -Root $root | Out-Null } catch { $blocked=$true }
@@ -61,7 +60,11 @@ $profile.EngineOverride='UE4'
 $q=Resolve-PortableQuality $profile ([pscustomobject]@{Major=5;Source='fixture'}) -Root $root
 Assert-Test ($q.Major -eq 4 -and $q.Source -eq '手动校准') 'Manual engine did not win.'
 $profile.QualityPreset='Current'
-Assert-Test ((Resolve-PortableQuality $profile $null -Root $root).Path -eq $current) 'Tier switch destroyed custom source.'
+$rejected=$false
+try { Initialize-PortableQuality $profile } catch { $rejected=$true }
+Assert-Test $rejected 'Removed Current preset was accepted.'
+$profile.QualityPreset='Tier2'
+Assert-Test ((Resolve-PortableQuality $profile $null -Root $root).Path.Contains('UE4\02-')) 'Default tier not selected.'
 $prefs=@{SteamPath='';Profiles=@($profile)}
 $directory=Join-Path $testRoot 'prefs'
 Save-PortablePreferences $prefs -Directory $directory
@@ -109,13 +112,17 @@ $script:preferences=@{SteamPath='';Profiles=@()}
 $script:engineSaveFailed=@{}
 function Get-PortableDataDirectory { return Join-Path $testRoot 'gui-engine-prefs' }
 Add-Type -AssemblyName System.Drawing
-$script:busy=$false;$script:recoverFixture=$false;$script:qualityIds=@('Current','Tier1','Tier2','Tier3','Tier4','Tier5')
+$script:busy=$false;$script:recoverFixture=$false;$script:qualityIds=@('Tier1','Tier2','Tier3','Tier4','Tier5')
 $script:status=[pscustomobject]@{Text='';ForeColor=$null};$script:details=[pscustomobject]@{Text=''}
 $launch=[pscustomobject]@{Enabled=$false};$restore=[pscustomobject]@{Enabled=$false};$check=[pscustomobject]@{Enabled=$false}
 $choose=[pscustomobject]@{Enabled=$false};$advancedToggle=[pscustomobject]@{Enabled=$false}
 $steamBox=[pscustomobject]@{Text='';Enabled=$true};$browseSteam=[pscustomobject]@{Enabled=$true};$sourceBox=[pscustomobject]@{Text=''}
 $proxyBox=[pscustomobject]@{SelectedIndex=-1}
 $qualityBox=[pscustomobject]@{SelectedIndex=-1;Enabled=$true};$engineBox=[pscustomobject]@{SelectedIndex=-1;Enabled=$true}
+Add-Type -AssemblyName System.Windows.Forms
+$advancedParent=[Windows.Forms.Panel]::new()
+$advancedOptions=New-PortableAdvancedControls $advancedParent 20 580
+$save=[pscustomobject]@{Enabled=$true}
 Refresh-Game
 $lateFirst=[DlssgUnrealDetector]::Start($first.GameDirectory,(Join-Path $first.GameDirectory 'Game.exe'))
 $games.SelectedItem=$second
@@ -124,11 +131,12 @@ $games.SelectedItem=$second
 Refresh-Game
 Assert-Test ($script:model.Profile.Id -eq 'second' -and $script:model.EngineMajor -eq 4) 'Late first-game result overwrote selected game.'
 $sourceBox.Text='unsaved.ini';$engineBox.SelectedIndex=2
+$advancedOptions.SuperResolutionMode.SelectedIndex=3; $advancedOptions.DlssgPreset.SelectedIndex=2
 Refresh-Game -PreserveEditors
-Assert-Test ($sourceBox.Text -eq 'unsaved.ini' -and $engineBox.SelectedIndex -eq 2) 'Background completion discarded unsaved advanced edits.'
+Assert-Test ($sourceBox.Text -eq 'unsaved.ini' -and $engineBox.SelectedIndex -eq 2 -and $advancedOptions.SuperResolutionMode.SelectedIndex -eq 3 -and $advancedOptions.DlssgPreset.SelectedIndex -eq 2) 'Background completion discarded unsaved advanced edits.'
 $script:recoverFixture=$true
 Refresh-Game
-Assert-Test (-not $qualityBox.Enabled -and -not $engineBox.Enabled -and $restore.Enabled) 'Recovery did not lock quality/engine controls.'
+Assert-Test (-not $qualityBox.Enabled -and -not $engineBox.Enabled -and -not $advancedOptions.SuperResolutionMode.Enabled -and -not $advancedOptions.DlssgPreset.Enabled -and -not $advancedOptions.Optimized.Enabled -and -not $advancedOptions.Level.Enabled -and -not $save.Enabled -and $restore.Enabled) 'Recovery did not lock quality/engine controls.'
 Write-Host 'PASS: actual GUI refresh ignores stale game result, preserves unsaved editors and locks quality during recovery.'
 
 # A persisted successful result must work even after the EXE contents change.
@@ -153,3 +161,5 @@ $failedWrite=$false
 try { Save-PortableEngineDetection $script:preferences $failed ([pscustomobject]@{Major=5;Source='fixture'}) -Directory $bad } catch { $failedWrite=$true }
 Assert-Test ($failedWrite -and $failed.DetectedEngineMajor -eq 0 -and [object]::ReferenceEquals($originalProfiles,$script:preferences.Profiles)) 'Engine save failure published unsaved state.'
 Write-Host 'PASS: detected version persists per game, reopen skips scanning despite changed EXE, manual override wins, unknown is not saved and failed save rolls back.'
+
+$advancedParent.Dispose()

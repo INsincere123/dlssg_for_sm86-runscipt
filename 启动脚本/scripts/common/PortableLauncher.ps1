@@ -13,10 +13,24 @@ function Get-PortableDataDirectory {
 function Read-PortablePreferences {
     param([string]$Directory = (Get-PortableDataDirectory))
     $path = Join-Path $Directory 'preferences.json'
-    if (-not [IO.File]::Exists($path)) { return @{ SteamPath=''; Profiles=@() } }
+    if (-not [IO.File]::Exists($path)) { return @{ SteamPath=''; Profiles=@(); LastSelectedProfileId='' } }
     $data = [IO.File]::ReadAllText($path) | ConvertFrom-Json
     if ($data.Version -ne 1) { throw '本机偏好格式不受支持，请保留 preferences.json 并联系配置提供者。' }
-    return @{ SteamPath=[string]$data.SteamPath; Profiles=@($data.Profiles) }
+    $selected=if ($null -ne $data.PSObject.Properties['LastSelectedProfileId']) { [string]$data.LastSelectedProfileId } else { '' }
+    $preferences=@{ SteamPath=[string]$data.SteamPath; Profiles=@($data.Profiles); LastSelectedProfileId=$selected }
+    $migrated=$false
+    foreach ($profile in $preferences.Profiles) {
+        # Cleanup of a removed preference value; Current is not a runtime tier.
+        if ($null -ne $profile.PSObject.Properties['QualityPreset'] -and $profile.QualityPreset -eq 'Current') {
+            $profile.QualityPreset='Tier2'
+            $migrated=$true
+        }
+    }
+    if ($migrated) {
+        try { Save-PortablePreferences $preferences -Directory $Directory }
+        catch { throw ('旧画质偏好 Current 已停用，但无法保存为主流均衡，请检查本机偏好文件的访问权限：'+$path+'。'+$_.Exception.Message) }
+    }
+    return $preferences
 }
 
 function Save-PortablePreferences {
@@ -30,7 +44,8 @@ function Save-PortablePreferences {
     }
     $temporary = Join-Path $Directory ([guid]::NewGuid().ToString('N') + '.tmp')
     try {
-        $data = @{ Version=1; SteamPath=$Preferences.SteamPath; Profiles=@($Preferences.Profiles) }
+        $selected=if ($Preferences.ContainsKey('LastSelectedProfileId')) { [string]$Preferences.LastSelectedProfileId } else { '' }
+        $data = @{ LastSelectedProfileId=$selected; Version=1; SteamPath=$Preferences.SteamPath; Profiles=@($Preferences.Profiles) }
         [IO.File]::WriteAllText($temporary, ($data | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($true))
         if ([IO.File]::Exists($path)) { [IO.File]::Replace($temporary,$path,[System.Management.Automation.Language.NullString]::Value) }
         else { [IO.File]::Move($temporary,$path) }
@@ -63,6 +78,7 @@ function Get-PortableProfiles {
     }
     $profiles += @($Preferences.Profiles | Where-Object { $_.Id -notin $presetIds })
     foreach ($profile in $profiles) {
+        Initialize-PortableAdvanced $profile
         Initialize-PortableQuality $profile
         Initialize-PortableLaunchMode $profile
         if ($profile.Id -notmatch '^[A-Za-z0-9_-]+$' -or ($profile.LaunchMode -eq 'Steam' -and $profile.AppId -notmatch '^[1-9][0-9]*$')) { throw '游戏预设标识无效。' }
@@ -91,7 +107,7 @@ function New-PortableDiscoveredProfile {
     $id=if ($mode -eq 'Steam') { 'custom-'+$Record.AppId } else { 'direct-'+[guid]::NewGuid().ToString('N') }
     return [pscustomobject]@{Id=$id;Name=$Record.Name;AppId=$(if ($mode -eq 'Steam') { $Record.AppId } else { '' });LaunchMode=$mode;
         GameDirectory=$directory;RenderExecutable=$render.Substring($directory.Length+1);LaunchExecutable=$launch.Substring($directory.Length+1);
-        ConfigDirectory='';EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='Auto'}
+        ConfigDirectory='';EngineConfigSource='配置\SteamUE5\Engine.ini';ProxyDll=1;QualityPreset='Tier2';EngineOverride='Auto';SuperResolutionMode='Off';DlssgPreset='A';Optimized='2';Level='2'}
 }
 
 function Set-PortableProfile {
@@ -101,6 +117,7 @@ function Set-PortableProfile {
 
 function Get-PortableGameModel {
     param($Profile, [string]$SteamPath, [string]$Root = (Get-LauncherRoot), $EngineDetection=$null)
+    Initialize-PortableAdvanced $Profile
     $gameId=Get-PortableGameId $Profile
     $model = [pscustomobject]@{ Profile=$Profile;GameId=$gameId;LaunchExecutable=''; SteamPath=$SteamPath; GameDirectory=[string]$Profile.GameDirectory;
         ConfigDirectory=(Resolve-LauncherConfigPath $Profile.ConfigDirectory '游戏配置目录' -Root $Root);
@@ -164,6 +181,7 @@ function Get-PortableGameModel {
 
 function Write-PortableLaunchConfig {
     param($Model, [string]$Directory)
+    Initialize-PortableAdvanced $Model.Profile
     Initialize-PortableLaunchMode $Model.Profile
     if ($Model.Profile.LaunchMode -eq 'Steam' -and -not $Model.Recovery -and [string]::IsNullOrWhiteSpace($Model.SteamPath)) { throw '请先选择 Steam。' }
     if ($Model.SteamPath -match '[\r\n]') { throw 'Steam 路径无效。' }
@@ -184,6 +202,10 @@ function Write-PortableLaunchConfig {
 游戏配置目录=$($Model.ConfigDirectory)
 配置源=$($Model.EngineConfigSource)
 代理DLL=$($Model.Profile.ProxyDll)
+SuperResolutionMode=$($Model.Profile.SuperResolutionMode)
+DlssgPreset=$($Model.Profile.DlssgPreset)
+Optimized=$($Model.Profile.Optimized)
+Level=$($Model.Profile.Level)
 "@
     if ($Model.Profile.LaunchMode -eq 'Direct') {
         [void](Resolve-DirectExecutable $Model.GameDirectory $Model.Profile.LaunchExecutable '启动程序')
@@ -226,4 +248,90 @@ exit $code
 '@
     $detached = if ($Action -eq 'Launch') { '$true' } else { '$false' }
     return $command.Replace('__SCRIPT__',$ScriptPath.Replace("'","''")).Replace('__CONFIG__',$ConfigPath.Replace("'","''")).Replace('__IDENTITY__',$identity).Replace('__RESULT__',$ResultPath.Replace("'","''")).Replace('__FLAG__',$flag).Replace('__DETACHED__',$detached)
+}
+
+# WinForms controls are created only when called by a desktop UI (not by workers).
+function New-PortableAdvancedControls {
+    param($Parent,[int]$Top,[int]$Width)
+    $boxes=@{}
+    $index=0
+    $startTop=$Top
+    $columnWidth=[int]($Width/2)
+    foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+        $left=($index % 2)*$columnWidth
+        $Top=$startTop+[int][Math]::Floor($index/2)*38
+        $label=[Windows.Forms.Label]::new()
+        $label.Text=switch ($name) { 'SuperResolutionMode' { '超分模式' } 'DlssgPreset' { 'DLSSG 预设' } 'Optimized' { '优化档位' } 'Level' { '日志级别' } }
+        $label.SetBounds($left+12,$Top,90,26); $Parent.Controls.Add($label)
+        $box=[Windows.Forms.ComboBox]::new(); $box.DropDownStyle='DropDownList'
+        $box.SetBounds($left+102,$Top-3,$columnWidth-114,30)
+        $box.DropDownWidth=300
+        $choices=@(Get-LauncherAdvancedChoices $name)
+        foreach ($choice in $choices) {
+            $text=$choice
+            if ($name -eq 'Optimized') { $text+=@(' · 原厂',' · 逐位一致',' · 快（有损，默认）',' · 最快（有损）')[[int]$choice] }
+            elseif ($name -eq 'Level') { $text+=@(' · 关闭',' · 仅错误',' · 配置与能力（默认）',' · 详细追踪')[[int]$choice] }
+            elseif ($choice -in @('Off','A')) { $text+='（出厂）' }
+            [void]$box.Items.Add($text)
+        }
+        $box.Tag=[pscustomobject]@{Name=$name;Choices=$choices;Raw=''}
+        $Parent.Controls.Add($box); $boxes[$name]=$box; $index++
+    }
+    $warning=[Windows.Forms.Label]::new(); $warning.ForeColor=[Drawing.Color]::DarkOrange
+    $warning.SetBounds(12,$startTop+76,$Width-24,88); $Parent.Controls.Add($warning)
+    $boxes.Warning=$warning
+    return $boxes
+}
+
+function Set-PortableAdvancedControls {
+    param($Controls,$Profile)
+    Initialize-PortableAdvanced $Profile
+    $warnings=@()
+    foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+        $box=$Controls[$name]; $box.Tag.Raw=[string]$Profile.$name
+        $box.SelectedIndex=[Array]::IndexOf($box.Tag.Choices,[string]$Profile.$name)
+        if ($box.SelectedIndex -lt 0) {
+            $feature=switch ($name) { 'SuperResolutionMode' { '超分' } 'DlssgPreset' { 'DLSSG 预设' } 'Optimized' { '优化档位' } 'Level' { '日志级别' } }
+            $display=[string]$Profile.$name
+            if ($display.Length -gt 24) { $display=$display.Substring(0,24)+'…' }
+            $warnings+="$feature 值 '$display' 无效；交由运行库处理，请重新选择。"
+        }
+    }
+    $Controls.Warning.Text=$warnings -join "`r`n"
+}
+
+function Save-PortableAdvancedControls {
+    param($Controls,$Profile)
+    Initialize-PortableAdvanced $Profile
+    foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+        $box=$Controls[$name]
+        $value=if ($box.SelectedIndex -ge 0) { $box.Tag.Choices[$box.SelectedIndex] } else { $box.Tag.Raw }
+        $Profile.$name=Resolve-LauncherAdvancedValue $name $value
+    }
+}
+
+# Selected game belongs to each launcher's local preferences, never to presets.
+function Get-PortableSelectedIndex {
+    param($Profiles,$Preferences,[string]$SelectedId='')
+    if (-not $SelectedId -and $Preferences.ContainsKey('LastSelectedProfileId')) { $SelectedId=[string]$Preferences.LastSelectedProfileId }
+    for ($index=0; $index -lt $Profiles.Count; $index++) {
+        if ($Profiles[$index].Id -eq $SelectedId) { return $index }
+    }
+    if ($Profiles.Count) { return 0 }
+    return -1
+}
+
+function Save-PortableSelectedProfile {
+    param($Preferences,[string]$Id,[string]$Directory=(Get-PortableDataDirectory))
+    if (-not $Id) { return }
+    $hadSelection=$Preferences.ContainsKey('LastSelectedProfileId')
+    $old=if ($hadSelection) { $Preferences.LastSelectedProfileId } else { '' }
+    if ($old -ceq $Id) { return }
+    try {
+        $Preferences.LastSelectedProfileId=$Id
+        Save-PortablePreferences $Preferences -Directory $Directory
+    } catch {
+        if ($hadSelection) { $Preferences.LastSelectedProfileId=$old } else { $Preferences.Remove('LastSelectedProfileId') }
+        throw
+    }
 }

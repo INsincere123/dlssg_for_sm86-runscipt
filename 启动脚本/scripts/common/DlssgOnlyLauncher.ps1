@@ -14,11 +14,12 @@ function New-DlssgOnlyProfile {
     if (-not $LaunchExecutable) { $LaunchExecutable=$RenderExecutable }
     [void](Resolve-DirectExecutable $Record.GameDirectory $LaunchExecutable '启动程序')
     return [pscustomobject]@{Id=$id;Name=$Record.Name;Platform=$Record.Platform;LaunchMode=$mode;AppId=$Record.AppId;
-        GameDirectory=$Record.GameDirectory;RenderExecutable=$RenderExecutable;LaunchExecutable=$LaunchExecutable;ProxyDll=1}
+        GameDirectory=$Record.GameDirectory;RenderExecutable=$RenderExecutable;LaunchExecutable=$LaunchExecutable;ProxyDll=1;SuperResolutionMode='Off';DlssgPreset='A';Optimized='2';Level='2'}
 }
 
 function Get-DlssgOnlyModel {
     param($Profile,[string]$SteamPath='', [string]$Root=(Get-LauncherRoot))
+    Initialize-PortableAdvanced $Profile
     $model=[pscustomobject]@{Profile=$Profile;GameId='';GameDirectory=[string]$Profile.GameDirectory;SteamPath=$SteamPath;
         Executable='';Ready=$false;Recovery=$false;Status='';Journal=''}
     try {
@@ -80,6 +81,7 @@ function Get-DlssgOnlyModel {
 function Write-DlssgOnlyLaunchConfig {
     param($Model,[string]$Directory)
     $p=$Model.Profile
+    Initialize-PortableAdvanced $p
     foreach ($value in @($p.Name,$Model.GameDirectory,$p.RenderExecutable,$p.LaunchExecutable)) {
         if ([string]::IsNullOrWhiteSpace($value) -or $value -match '[\r\n]') { throw '游戏设置为空或含换行。' }
     }
@@ -97,6 +99,10 @@ function Write-DlssgOnlyLaunchConfig {
 游戏目录=$($Model.GameDirectory)
 渲染程序=$($p.RenderExecutable)
 代理DLL=$($p.ProxyDll)
+SuperResolutionMode=$($p.SuperResolutionMode)
+DlssgPreset=$($p.DlssgPreset)
+Optimized=$($p.Optimized)
+Level=$($p.Level)
 "@
     if ($p.LaunchMode -eq 'Direct') { $text+="`r`n启动程序=$($p.LaunchExecutable)`r`n" }
     foreach ($path in @($Directory,(Join-Path $Directory 'launch.ini'))) {

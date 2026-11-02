@@ -1,4 +1,66 @@
 ﻿# Shared 0.4.0 resource deployment. Never traverse a resource link during cleanup.
+function New-DlssgLogCursor {
+    param([string]$LogDirectory,[string]$Executable)
+    $path=Join-Path $LogDirectory 'dlssg_sm86.log'
+    $offset=0L; $created=$null
+    if ([IO.File]::Exists($path)) {
+        try {
+            $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            $offset=$item.Length; $created=$item.CreationTimeUtc
+        } catch { Write-Warning '无法读取日志起始位置，后续仅按时间与EXE筛选，不阻止部署恢复。' }
+    }
+    return [pscustomobject]@{Path=$path;Directory=$LogDirectory;Offset=$offset;Created=$created;
+        StartedAt=[DateTime]::Now;Executable=[IO.Path]::GetFileName($Executable)}
+}
+
+function Get-DlssgSessionLog {
+    param($Cursor)
+    $result=[pscustomobject]@{Path=$Cursor.Path;Exists=$false;Pids=@();Records=0;LegacyPaths=@()}
+    if (-not [IO.File]::Exists($Cursor.Path)) {
+        # Historical files are hints only, never evidence of this session.
+        if ([IO.Directory]::Exists($Cursor.Directory)) {
+            $result.LegacyPaths=@(Get-ChildItem -LiteralPath $Cursor.Directory -File -ErrorAction Stop |
+                Where-Object { $_.Name -match '^(loader|backend)_\d+\.jsonl$' } | ForEach-Object { $_.FullName })
+        }
+        return $result
+    }
+    $result.Exists=$true; $stream=$null; $reader=$null; $ids=@{}
+    try {
+        $stream=[IO.File]::Open($Cursor.Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $item=Get-Item -LiteralPath $Cursor.Path -Force -ErrorAction Stop
+        $offset=if ($Cursor.Created -eq $item.CreationTimeUtc -and $stream.Length -ge $Cursor.Offset) { $Cursor.Offset } else { 0L }
+        [void]$stream.Seek($offset,[IO.SeekOrigin]::Begin)
+        $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+        $pattern='^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+pid\s+(?<pid>\d+)\s+'+[regex]::Escape($Cursor.Executable)+'\s+[EID]\s+\{'
+        while ($null -ne ($line=$reader.ReadLine())) {
+            if ($line -notmatch $pattern) { continue }
+            $stamp=[DateTime]::MinValue
+            if (-not [DateTime]::TryParseExact($Matches.time,'yyyy-MM-dd HH:mm:ss.fff',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::None,[ref]$stamp)) { continue }
+            if ($stamp -lt $Cursor.StartedAt.AddMilliseconds(-1)) { continue }
+            $ids[$Matches.pid]=$true; $result.Records++
+        }
+    } finally { if ($null -ne $reader) { $reader.Dispose() } elseif ($null -ne $stream) { $stream.Dispose() } }
+    $result.Pids=@($ids.Keys | Sort-Object)
+    return $result
+}
+
+function Show-DlssgSessionLogStatus {
+    [CmdletBinding()]
+    param($Cursor)
+    try {
+        $info=Get-DlssgSessionLog $Cursor
+        if ($info.Exists) {
+            Write-Host ("组件日志：{0}" -f $info.Path)
+            if ($info.Records) { Write-Host ("本次 {0} 的日志记录：{1}；PID：{2}" -f $Cursor.Executable,$info.Records,($info.Pids -join ', ')) }
+            else { Write-Warning '统一日志中未找到本次游戏的新记录，不能据此确认组件加载或生效。' }
+        } else {
+            Write-Warning ("未找到0.4.1统一日志：{0}" -f $info.Path)
+            foreach ($path in $info.LegacyPaths) { Write-Host ("历史格式日志（未认定属于本次）：{0}" -f $path) }
+        }
+        Write-Host '日志定位不代表帧生成成功；需检查本次配置、加载、错误与执行记录。超分Mode=Off时不要求INT8执行。'
+    } catch { Write-Warning ("组件日志读取失败，不影响部署恢复结果：{0}" -f $_.Exception.Message) }
+}
+
 function Select-DlssgProxy {
     param([string]$ProjectDirectory, [string]$RenderDirectory,
         [ValidateSet('version.dll','winmm.dll','dbghelp.dll','dinput8.dll','dxgi.dll','d3d12.dll')][string]$ProxyName)

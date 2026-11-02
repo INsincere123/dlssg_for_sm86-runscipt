@@ -1,6 +1,40 @@
 ﻿param([string]$Destination, [switch]$Zip, [ValidateSet('0','1','2','3','4')][string]$PackageType='2', [switch]$Interactive, [switch]$b)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+function Get-PortableFileHash {
+    param([string]$Path)
+    $stream=[IO.File]::OpenRead($Path); $sha=[Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
+function Assert-PortableZipArchive {
+    param([string]$Path,[string]$StagingDirectory)
+    # Verify every decompressed file, without extracting or trusting archive paths.
+    $prefix=[IO.Path]::GetFullPath($StagingDirectory).TrimEnd('\')+'\'
+    $expected=@{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $StagingDirectory -Recurse -File -Force)) {
+        $relative=$file.FullName.Substring($prefix.Length).Replace('\','/')
+        $expected[$relative]=@{Length=$file.Length;SHA256=(Get-PortableFileHash $file.FullName)}
+    }
+    $zip=[IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $seen=@{}
+        foreach ($entry in $zip.Entries) {
+            $name=$entry.FullName.Replace('\','/')
+            if ($name.EndsWith('/')) { throw "ZIP含未预期的目录条目：$name" }
+            if (-not $expected.ContainsKey($name) -or $seen.ContainsKey($name)) { throw "ZIP条目缺失对应源或重复：$name" }
+            if ($entry.Length -ne $expected[$name].Length) { throw "ZIP文件大小不符：$name" }
+            $stream=$entry.Open(); $sha=[Security.Cryptography.SHA256]::Create()
+            try { $hash=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','') }
+            finally { $sha.Dispose(); $stream.Dispose() }
+            if ($hash -ne $expected[$name].SHA256) { throw "ZIP文件SHA256不符：$name" }
+            $seen[$name]=$true
+        }
+        if ($seen.Count -ne $expected.Count) { throw 'ZIP文件数量不符，有文件遗漏。' }
+    } finally { $zip.Dispose() }
+}
+
 function Remove-PortableStagingDirectory {
     param([string]$Path)
     $resolved=[IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -118,6 +152,9 @@ foreach ($module in $modules) {
 $files=@($files | Sort-Object -Unique)
 foreach ($relative in $files) {
     $source=Join-Path $project $relative
+    if ($relative -in @('dlssg_sm86\sr\sr_kernels.dll','dlssg_sm86\sr\nvngx_dlss.dll') -and -not [IO.File]::Exists($source)) {
+        throw "缺少本地SR资源：$relative。Git不提供这两个大文件，请从匹配的完整发行包或本地备份补齐后重试；超分Off也保留完整资源布局。"
+    }
     $item=Get-Item -LiteralPath $source -Force -ErrorAction Stop
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "导出源不能是链接或目录：$relative" }
 }
@@ -133,15 +170,18 @@ DLSSG 便携启动器 · 开始使用（小白版）
 
 这是一份完整的操作说明，照着做就行，不用懂技术。
 
-适用环境：Windows 10/11 64 位，NVIDIA RTX 20/30 系列显卡。
+组件基线：0.4.1；适用环境：Windows 10/11 64 位，NVIDIA RTX 20/30 系列显卡，驱动R580或更新。
+启动脚本默认Preset=A、超分Mode=Off；通用与虚幻启动器可在高级设置按游戏选择超分模式、A/B/C预设、Optimized和Level（均默认2），并在本机记住上次选择的游戏；Off只关闭本项目超分接管，游戏自己的DLSS超分仍在游戏内设置，无需调整英伟达控制面板。
+运行后组件日志优先看游戏渲染目录下 dlssg_sm86\logs\dlssg_sm86.log，结合脚本日志和本次游戏PID排查。
+包内 package-manifest.json 列出相对路径、字节数和SHA256，便于核对文件；哈希一致不等于组件已经验证兼容。
 解压要求：把整个压缩包完整解压到电脑上的普通文件夹（例如 D:\游戏工具），
 不要在压缩包里面直接运行；解压后整个文件夹一起用，不要单独移动里面的文件。
 '@
 if ($includeGeneral) {
-    $guide+="`r`n`r`n■ 通用启动器（不动游戏画面设置，主要用于开 DLSS 帧生成）`r`n第一次使用：`r`n1. 双击 启动脚本\通用启动器.bat，首次游戏列表是空的，正常。`r`n2. 点「发现已安装游戏」，从 Steam、Epic、GOG 安装记录里勾选游戏；找不到就点「手动添加游戏」，选择游戏安装文件夹。`r`n3. 核对列表里的「渲染程序」：通常选游戏安装目录 Binaries\Win64 里以 Shipping.exe 结尾的那个 EXE，不确定就用默认候选。`r`n4. Steam 游戏用「Steam 启动」；Epic、GOG 和手动添加的用「EXE 启动」，仍需满足游戏自身的登录/授权。`r`n5. 点「保存设置」→ 可先点「检查环境」→ 点「启动游戏」，弹窗点「是」同意管理员权限。`r`n6. 界面会自动退出，黑色脚本窗口会留下继续工作，不要关它。`r`n7. 进游戏后，在画面设置里打开「DLSS 帧生成」。`r`n8. 退出游戏后，等黑色窗口自动清理完成并退出。`r`n提示：此入口不修改游戏 Engine.ini，不需要画质配置；游戏搬盘后重新用「选择当前游戏文件夹」指定位置。`r`n"
+    $guide+="`r`n`r`n■ 通用启动器（不动游戏画面设置，主要用于开 DLSS 帧生成）`r`n第一次使用：`r`n1. 双击 启动脚本\通用启动器.bat，首次游戏列表是空的，正常。`r`n2. 点「发现已安装游戏」，从 Steam、Epic、GOG 安装记录里勾选游戏；找不到就点「手动添加游戏」，选择游戏安装文件夹。`r`n3. 核对列表里的「渲染程序」：通常选游戏安装目录 Binaries\Win64 里以 Shipping.exe 结尾的那个 EXE，候选只是建议，不确定时核对游戏目录和实际程序，不要盲选。`r`n4. Steam 游戏用「Steam 启动」；Epic、GOG 和手动添加的用「EXE 启动」，仍需满足游戏自身的登录/授权。`r`n5. 点「保存设置」→ 可先点「检查环境」→ 点「启动游戏」，弹窗点「是」同意管理员权限。`r`n6. 界面会自动退出，黑色脚本窗口会留下继续工作，不要关它。`r`n7. 进游戏后，在画面设置里打开「DLSS 帧生成」。`r`n8. 退出游戏后，等黑色窗口自动清理完成并退出。`r`n提示：此入口不修改游戏 Engine.ini，不需要画质配置；游戏搬盘后重新用「选择当前游戏文件夹」指定位置。`r`n"
 }
 if ($includeUnreal) {
-    $guide+="`r`n`r`n■ 虚幻启动器（自动套用画质配置，适合 UE4/UE5 游戏）`r`n第一次使用：`r`n1. 先原版启动一次游戏，进入后正常退出，让游戏生成配置文件。`r`n2. 双击 启动脚本\虚幻启动器.bat，内置黑神话：悟空，也可添加其他游戏。`r`n3. 选好游戏和画质档位，可先点「检查环境」，再点「启动游戏」，弹窗点「是」同意管理员权限。`r`n4. 界面自动退出，黑色脚本窗口继续工作，不要关它。`r`n5. 进游戏后在画面设置里打开「DLSS 帧生成」。`r`n6. 退出游戏后等脚本自动恢复原画面配置并退出。`r`n怎么选画质：新增游戏默认「主流均衡」，从这档开始试；卡顿就换「性能优先」或「入门流畅」，想更精细换「高性能均衡」；「05-自定义」用自己准备的配置。切档前先退出游戏并等恢复完成。`r`nUE4/UE5 识别不了时：打开 高级设置 → 引擎版本，手动选对后点保存。`r`n"
+    $guide+="`r`n`r`n■ 虚幻启动器（自动套用画质配置，适合 UE4/UE5 游戏）`r`n第一次使用：`r`n1. 先原版启动一次游戏，进入后正常退出，让游戏生成配置文件。`r`n2. 双击 启动脚本\虚幻启动器.bat，内置黑神话：悟空，也可在「添加其他游戏」中扫描Steam/Epic/GOG安装记录或手动选安装目录。渲染程序和Engine.ini配置目录唯一可信时自动采用；未找到或有歧义时提示选择，可取消扫描并查看扫描详情。`r`n3. 选好游戏和画质档位，可先点「检查环境」，再点「启动游戏」，弹窗点「是」同意管理员权限。`r`n4. 界面自动退出，黑色脚本窗口继续工作，不要关它。`r`n5. 进游戏后在画面设置里打开「DLSS 帧生成」。`r`n6. 退出游戏后等脚本自动恢复原画面配置并退出。`r`n怎么选画质：新增游戏默认「主流均衡」，从这档开始试；卡顿就换「性能优先」或「入门流畅」，想更精细换「高性能均衡」；「05-自定义」用自己准备的配置。切档前先退出游戏并等恢复完成。`r`nUE4/UE5 识别不了时：打开 高级设置 → 引擎版本，手动选对后点保存。`r`n"
 }
 if ($includeLauncher) {
     $guide+="`r`n通用提示：同意管理员权限后界面会交接退出，请保留负责等待游戏与恢复的黑色脚本窗口；Steam 可以保持运行。识别到游戏不代表它一定支持帧生成，以游戏内是否有「DLSS 帧生成」选项为准。遗留部署先用原入口「恢复原状」，不要删除 .state 或备份记录绕过。`r`n"
@@ -157,12 +197,25 @@ if ($includeGames) {
 配置源=配置\鸣潮\Engine.ini
 游戏配置目录=
 重启等待秒数=10
+; 超分 Off/M-INT8/L-INT8/M-FP16/L-FP16；DLSSG预设 A/B/C。
+; 优化档位0原厂/1逐位一致/2快（有损）/3最快（有损）；日志0关闭/1错误/2配置与能力/3详细追踪。
+SuperResolutionMode=Off
+DlssgPreset=A
+Optimized=2
+Level=2
 
 [异环]
 游戏目录=C:\Games\Neverness To Everness
 启动器路径=
 配置源=配置\异环\Engine.ini
 游戏配置目录=
+
+; 超分 Off/M-INT8/L-INT8/M-FP16/L-FP16；DLSSG预设 A/B/C。
+; 优化档位0原厂/1逐位一致/2快（有损）/3最快（有损）；日志0关闭/1错误/2配置与能力/3详细追踪。
+SuperResolutionMode=Off
+DlssgPreset=A
+Optimized=2
+Level=2
 
 [显卡]
 设备实例标识=
@@ -172,10 +225,20 @@ if ($includeGames) {
         $config+="`r`n`r`n[Steam]`r`n启动器路径=`r`n`r`n[SteamUE5:黑神话悟空]`r`n游戏名称=黑神话：悟空`r`n游戏目录=C:\Games\BlackMythWukong`r`n渲染程序=b1\Binaries\Win64\b1-Win64-Shipping.exe`r`n游戏配置目录=%LOCALAPPDATA%\b1\Saved\Config\Windows`r`n配置源=配置\SteamUE5\Engine.ini`r`n代理DLL=1`r`n"
     }
     [IO.File]::WriteAllText((Join-Path $packagePath '启动脚本\启动配置.ini'),$config,[Text.UTF8Encoding]::new($true))
-    $guide+="`r`n`r`n■ 鸣潮 / 异环专用入口（开 DLSS 帧生成 + 自动套用画面优化）`r`n第一次使用（只做一次）：`r`n1. 改游戏路径：用记事本打开 启动脚本\启动配置.ini，把 [鸣潮] 和 [异环] 两段里的「游戏目录」改成你自己电脑上游戏的安装位置（不知道在哪：打开官方启动器，在设置里查看安装位置）；「启动器路径」留空，脚本会自动找到，改完保存。`r`n2. 切换显卡并重启：双击 启动脚本\切换显卡.bat，同意管理员授权，然后重启电脑。`r`n注意：这一步必须做！不切换显卡并重启，游戏里不会出现「DLSS 帧生成」选项。只在第一次或更换显卡时需要；想还原再运行一次切换显卡.bat 即可，一般不用管。`r`n每次怎么玩：`r`n1. 先彻底关闭游戏和官方启动器；`r`n2. 玩鸣潮双击 启动脚本\启动鸣潮.bat，玩异环双击 启动脚本\启动异环.bat；`r`n3. 弹窗点「是」，同意管理员权限；`r`n4. 脚本会自动打开官方启动器，之后不用管脚本窗口；`r`n5. 正常开始游戏或更新，不影响更新；`r`n6. 进游戏后，在画面设置里打开「帧生成」（即 DLSS 帧生成）；`r`n7. 退出游戏后别急着关窗口，等脚本自动清理完成（鸣潮会多等约 10 秒）。`r`n出问题怎么办：`r`n- 双击没反应或报错：再双击一次；仍失败把 启动脚本\logs 里的日志发给 AI 分析。`r`n- 游戏异常退出（强退、断电）后：关闭游戏和官方启动器，在 启动脚本 文件夹打开 PowerShell，输入 & '.\启动鸣潮.bat' -RestoreDeployment（异环换成 启动异环），回车即可恢复。`r`n切换显卡.bat 是可选工具，仅修改显示名称，不改变实际硬件能力；迁移前先恢复旧设备部署，不携带旧 .state、日志或备份。`r`n"
+    $guide+="`r`n`r`n■ 鸣潮 / 异环专用入口（开 DLSS 帧生成 + 自动套用画面优化）`r`n第一次使用（只做一次）：`r`n1. 改游戏路径：用记事本打开 启动脚本\启动配置.ini，把 [鸣潮] 和 [异环] 两段里的「游戏目录」改成你自己电脑上游戏的安装位置（不知道在哪：打开官方启动器，在设置里查看安装位置）；「启动器路径」留空，脚本会自动找到，改完保存。`r`n2. 先检查游戏内是否已有DLSS帧生成选项；若仍因显卡识别门槛隐藏选项，可按需尝试 启动脚本\切换显卡.bat，同意管理员授权后重启电脑。`r`n注意：显卡名称工具是可选兼容措施，已有选项时无需使用；只改显示名称，不保证游戏一定开放选项或支持帧生成。已切换后想还原，再运行该工具并按提示重启。`r`n每次怎么玩：`r`n1. 先彻底关闭游戏和官方启动器；`r`n2. 玩鸣潮双击 启动脚本\启动鸣潮.bat，玩异环双击 启动脚本\启动异环.bat；`r`n3. 弹窗点「是」，同意管理员权限；`r`n4. 脚本会自动打开官方启动器，之后不用管脚本窗口；`r`n5. 正常开始游戏或更新，不影响更新；`r`n6. 进游戏后，在画面设置里打开「帧生成」（即 DLSS 帧生成）；`r`n7. 退出游戏后别急着关窗口，等脚本自动清理完成（鸣潮会多等约 10 秒）。`r`n出问题怎么办：`r`n- 双击没反应或报错：再双击一次；仍失败把 启动脚本\logs 里的日志发给 AI 分析。`r`n- 游戏异常退出（强退、断电）后：关闭游戏和官方启动器，在 启动脚本 文件夹打开 PowerShell，输入 & '.\启动鸣潮.bat' -RestoreDeployment（异环换成 启动异环），回车即可恢复。`r`n切换显卡.bat 是可选工具，仅修改显示名称，不改变实际硬件能力；迁移前先恢复旧设备部署，不携带旧 .state、日志或备份。`r`n"
+    $guide+="`r`n高级设置：在 启动脚本\启动配置.ini 的 [鸣潮]、[异环] 内分别修改 SuperResolutionMode、DlssgPreset、Optimized、Level，默认 Off / A / 2 / 2；命令行同名参数优先于INI。超分 Off 保留游戏自身DLSS；其他模式需要配套资源。Level=0 不生成组件日志，排查问题可设为2。`r`n"
 }
-$guide+="`r`n`r`n■ 遇到问题怎么办`r`n- 游戏进不去或没有帧生成选项：回头核对对应入口的「第一次使用」步骤有没有漏做（尤其切换显卡并重启）。`r`n- 报错、闪退：把 启动脚本\logs 文件夹里的日志发给豆包等 AI 分析，这是最快的排查方式。`r`n- 上次断电、崩溃或脚本被结束：关闭游戏，重新打开对应 BAT，点「恢复原状」。`r`n`r`n■ 别动这些`r`n- 根目录的 version.dll、「dlssg_sm86」文件夹、「dlssg_sm86.ini」：脚本靠它们工作，不要删除、改名或移动。`r`n- 整个文件夹要一起复制、一起移动，不要只拷某一个 BAT。`r`n- 不要删除 .state 或备份记录来绕过恢复；恢复失败时保留现场，把最新日志交给提供者。`r`n`r`n■ 换电脑或发给朋友`r`n- 只传新解压出来的这份文件夹/压缩包；本机偏好、日志、部署状态不会打包进去。`r`n- 不要把使用过的旧目录、旧 .state 或旧电脑的运行记录带到新设备；迁移前先恢复旧部署。`r`n- 换到新电脑后重新解压，再按上面对应入口的「第一次使用」操作。`r`n"
+$guide+="`r`n`r`n■ 遇到问题怎么办`r`n- 游戏进不去或没有帧生成选项：回头核对对应入口的「第一次使用」步骤有没有漏做；显卡名称工具仅在确有识别门槛时按需使用。`r`n- 报错、闪退：把 启动脚本\logs 文件夹里的日志发给豆包等 AI 分析，这是最快的排查方式。`r`n- 上次断电、崩溃或脚本被结束：关闭游戏，重新打开对应 BAT，点「恢复原状」。`r`n`r`n■ 别动这些`r`n- 根目录的 version.dll、「dlssg_sm86」文件夹、「dlssg_sm86.ini」：脚本靠它们工作，不要删除、改名或移动。`r`n- 整个文件夹要一起复制、一起移动，不要只拷某一个 BAT。`r`n- 不要删除 .state 或备份记录来绕过恢复；恢复失败时保留现场，把最新日志交给提供者。`r`n`r`n■ 换电脑或发给朋友`r`n- 只传新解压出来的这份文件夹/压缩包；本机偏好、日志、部署状态不会打包进去。`r`n- 不要把使用过的旧目录、旧 .state 或旧电脑的运行记录带到新设备；迁移前先恢复旧部署。`r`n- 换到新电脑后重新解压，再按上面对应入口的「第一次使用」操作。`r`n"
 [IO.File]::WriteAllText((Join-Path $packagePath '先看这里.txt'),$guide,[Text.UTF8Encoding]::new($true))
+# Include generated guide/config as well as copied resources. The manifest excludes itself.
+$manifestFiles=@()
+$packagePrefix=[IO.Path]::GetFullPath($packagePath).TrimEnd('\')+'\'
+foreach ($file in @(Get-ChildItem -LiteralPath $packagePath -Recurse -File | Sort-Object FullName)) {
+    $manifestFiles += [pscustomobject]@{Path=$file.FullName.Substring($packagePrefix.Length).Replace('\','/');
+        Length=$file.Length;SHA256=(Get-PortableFileHash $file.FullName)}
+}
+$manifest=[ordered]@{FormatVersion=1;PackageType=$PackageType;Files=@($manifestFiles)}
+[IO.File]::WriteAllText((Join-Path $packagePath 'package-manifest.json'),($manifest | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($true))
 if ($Zip) {
     if (-not $b) { Add-Type -AssemblyName System.IO.Compression.FileSystem }
     # Publish only complete archives, so failed ZIPs cannot be mistaken for ready packages.
@@ -192,6 +255,8 @@ if ($Zip) {
             } finally { Pop-Location }
         } else {
             [IO.Compression.ZipFile]::CreateFromDirectory($destinationPath,$temporaryArchive,[IO.Compression.CompressionLevel]::Optimal,$false)
+            Assert-PortableZipArchive -Path $temporaryArchive -StagingDirectory $destinationPath
+            Write-Output 'ZIP逐文件大小与SHA256校验通过。'
         }
         [IO.File]::Move($temporaryArchive,$archive)
     } finally {
@@ -208,5 +273,5 @@ if ($Zip) {
     Write-Output '已删除打包临时目录，仅保留压缩包。'
     Write-Output '将这个压缩包发给朋友；完整解压后阅读“先看这里.txt”。'
 }
-Write-Output ('运行文件：{0} 个（含说明及生成的配置）' -f ($files.Count+1+[int]$includeGames))
+Write-Output ('运行文件：{0} 个（含说明、清单及生成的配置）' -f ($files.Count+2+[int]$includeGames))
 if (-not $Zip) { Write-Output "便携目录：$packagePath" }
