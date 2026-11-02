@@ -2,6 +2,7 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $root=Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\common\LauncherConfig.ps1')
 $testRoot=Join-Path $env:TEMP ('dlssg-export-tests-'+[guid]::NewGuid().ToString('N'))
 $project=Join-Path $testRoot '源目录 O''Brien [中文]'
 $fixture=Join-Path $project '启动脚本'
@@ -54,6 +55,33 @@ foreach ($type in @('1','2','3','4')) {
         Assert-Test (-not (Test-Path -LiteralPath (Join-Path $package $relative))) "Private/tool content exported: $relative"
     }
     $guide=[IO.File]::ReadAllText((Join-Path $package '先看这里.txt'))
+    Assert-Test ($guide.Contains('0.4.1') -and $guide.Contains('R580') -and $guide.Contains('Preset=A') -and $guide.Contains('Mode=Off')) "Missing current configuration guide: $type"
+    Assert-Test (-not $guide.Contains('这一步必须做') -and -not $guide.Contains('不确定就用默认候选')) "Misleading compatibility instructions: $type"
+    if ($unreal) { Assert-Test ($guide.Contains('有歧义') -and $guide.Contains('扫描详情')) 'Unreal discovery instructions missing.' }
+    if ($games) { Assert-Test ($guide.Contains('已有选项时无需使用')) 'Conditional device-name instructions missing.' }
+    if ($games) {
+        $iniPath=Join-Path $package '启动脚本\启动配置.ini'
+        foreach ($game in @('Wuthering','Nte')) {
+            $section=Read-LauncherConfigSection -Name $game -Path $iniPath
+            foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+                Assert-Test ($section.ContainsKey($name) -and $section[$name] -ceq (Get-LauncherAdvancedDefault $name)) "Missing/wrong exported default: $type/$game/$name"
+                Assert-Test ($guide.Contains($name)) "Missing game advanced guide: $type/$name"
+            }
+            Assert-Test ($section.LauncherPath -ceq '' -and $section.ConfigDirectory -ceq '') 'Device-specific path leaked into template.'
+        }
+    }
+    $manifestPath=Join-Path $package 'package-manifest.json'
+    $manifest=[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+    Assert-Test ($manifest.FormatVersion -eq 1 -and $manifest.PackageType -eq $type) 'Manifest format/type incorrect.'
+    $payload=@(Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object FullName -ne $manifestPath)
+    Assert-Test (@($manifest.Files).Count -eq $payload.Count) 'Manifest omits files or includes itself.'
+    $seen=@{}
+    foreach ($entry in $manifest.Files) {
+        Assert-Test (-not [IO.Path]::IsPathRooted($entry.Path) -and $entry.Path -notmatch '(^|/)\.\.(/|$)' -and -not $seen.ContainsKey($entry.Path)) 'Unsafe/duplicate manifest path.'
+        $seen[$entry.Path]=$true
+        $path=Join-Path $package $entry.Path
+        Assert-Test ([IO.File]::Exists($path) -and (Get-Item -LiteralPath $path).Length -eq $entry.Length -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $entry.SHA256) "Manifest mismatch: $($entry.Path)"
+    }
     Assert-Test ($guide.Contains('通用启动器.bat') -eq $general) "Wrong general guide for $type"
     Assert-Test ($guide.Contains('虚幻启动器.bat') -eq $unreal) "Wrong unreal guide for $type"
     Assert-Test ($guide.Contains('启动鸣潮.bat') -eq $games) "Wrong game guide for $type"
@@ -131,9 +159,53 @@ try {
     Assert-Test (@($archive.Entries | Where-Object { $_.FullName -notmatch '^通用启动器[\\/]' }).Count -eq 0) 'ZIP has multiple top-level folders.'
 } finally { $archive.Dispose() }
 Expect-Failure { & $exporter -PackageType 2 -Destination $zipDestination -Zip }
+
+# Exercise the real ZIP verifier against archives with changed content and entries.
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($exporter,[ref]$tokens,[ref]$errors)
+Assert-Test ($errors.Count -eq 0) 'Exporter syntax error.'
+foreach ($name in @('Get-PortableFileHash','Assert-PortableZipArchive')) {
+    $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+    . ([scriptblock]::Create($node.Extent.Text))
+}
+$verificationRoot=Join-Path $testRoot 'verify'; Write-Fixture (Join-Path $verificationRoot 'top\file.txt') 'abc'
+foreach ($fault in @('changed','missing','extra','duplicate')) {
+    $zipPath=Join-Path $testRoot ("verify-$fault.zip")
+    [IO.Compression.ZipFile]::CreateFromDirectory($verificationRoot,$zipPath)
+    $zip=[IO.Compression.ZipFile]::Open($zipPath,[IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry=$zip.Entries[0]
+        switch ($fault) {
+            'changed' { $stream=$entry.Open(); try { $stream.WriteByte(120) } finally { $stream.Dispose() } }
+            'missing' { $entry.Delete() }
+            'extra' { [void]$zip.CreateEntry('unexpected.txt') }
+            'duplicate' { [void]$zip.CreateEntry($entry.FullName) }
+        }
+    } finally { $zip.Dispose() }
+    Expect-Failure { Assert-PortableZipArchive $zipPath $verificationRoot }
+}
+# Corrupt the real temporary archive before verification: no publication or cleanup.
+$corruptExporter=Join-Path (Split-Path -Parent $exporter) 'Export-CorruptFixture.ps1'
+$injection=@'
+$faultZip=[IO.Compression.ZipFile]::Open($temporaryArchive,[IO.Compression.ZipArchiveMode]::Update)
+try {
+    $entry=@($faultZip.Entries | Where-Object FullName -match '[\\/]version\.dll$')[0]
+    $stream=$entry.Open(); try { $stream.WriteByte(0) } finally { $stream.Dispose() }
+} finally { $faultZip.Dispose() }
+Assert-PortableZipArchive -Path $temporaryArchive -StagingDirectory $destinationPath
+'@
+Write-Fixture $corruptExporter ([IO.File]::ReadAllText($exporter).Replace('Assert-PortableZipArchive -Path $temporaryArchive -StagingDirectory $destinationPath',$injection))
+$corruptDestination=Join-Path $testRoot '校验失败'
+Expect-Failure { & $corruptExporter -PackageType 2 -Destination $corruptDestination -Zip }
+Assert-Test (-not [IO.File]::Exists($corruptDestination+'.zip') -and [IO.Directory]::Exists($corruptDestination)) 'Failed verification published archive or removed staging.'
+Assert-Test (@(Get-ChildItem -LiteralPath $testRoot -Filter '校验失败.zip.*.tmp').Count -eq 0) 'Failed temporary archive left behind.'
+Write-Host 'PASS: four manifests and updated guides, ZIP content/entry validation, failure preserves staging without publishing.'
+
 $missing=Join-Path $project 'dlssg_sm86\sr\sr_kernels.dll'
 [IO.File]::Delete($missing)
 $failedDestination=Join-Path $testRoot '缺资源'
-Expect-Failure { & $exporter -PackageType 2 -Destination $failedDestination }
+$failure=''
+try { & $exporter -PackageType 2 -Destination $failedDestination | Out-Null } catch { $failure=$_.Exception.Message }
+Assert-Test ($failure -match 'Git不提供' -and $failure -match 'sr_kernels.dll') 'Missing SR instructions absent.'
 Assert-Test (-not [IO.Directory]::Exists($failedDestination)) 'Missing resource produced a partial export.'
 Write-Host "PASS: actual tiny ZIP, single top-level folder, duplicate rejection, staging cleanup and preflight missing-resource failure. Fixtures: $testRoot"

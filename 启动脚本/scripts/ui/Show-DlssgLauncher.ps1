@@ -41,7 +41,7 @@ try {
     }
     $title=Add-Label $form 'DLSSG通用启动器' 22 16 650 40
     $title.Font=[Drawing.Font]::new('Microsoft YaHei UI',21,[Drawing.FontStyle]::Bold)
-    [void](Add-Label $form '保留游戏的 Engine.ini；启用帧生成及现有 INT8 超分功能。' 24 64 840)
+    [void](Add-Label $form '保留游戏的 Engine.ini；超分接管与插帧预设可在高级设置中选择。' 24 64 840)
     $discover=Add-Button $form '发现已安装游戏' 24 103 165
     $manual=Add-Button $form '手动添加游戏' 201 103 150
     $cancel=Add-Button $form '取消扫描' 363 103 110; $cancel.Enabled=$false
@@ -58,17 +58,31 @@ try {
     [void](Add-Label $form 'Steam程序' 290 362 95); $steamBox=Add-Box $form 390 359 380
     $steamBox.Text=Get-PortableSteamPath $script:preferences
     $browseSteam=Add-Button $form '选择' 780 356 90
-    [void](Add-Label $form '代理 DLL' 290 403 95)
-    $proxyBox=[Windows.Forms.ComboBox]::new(); $proxyBox.SetBounds(390,400,280,30); $proxyBox.DropDownStyle='DropDownList'
+    $advancedToggle=Add-Button $form '高级设置' 290 400 150
+    $advanced=[Windows.Forms.GroupBox]::new(); $advanced.Text='高级设置（按游戏保存）'
+    $advanced.SetBounds(290,445,580,232); $advanced.Visible=$false; $form.Controls.Add($advanced)
+    [void](Add-Label $advanced '代理 DLL' 12 27 100)
+    $proxyBox=[Windows.Forms.ComboBox]::new(); $proxyBox.SetBounds(118,24,446,30); $proxyBox.DropDownStyle='DropDownList'
     foreach ($text in @('1 · version.dll（默认）','2 · winmm.dll','3 · dbghelp.dll','4 · dinput8.dll','5 · dxgi.dll','6 · d3d12.dll')) { [void]$proxyBox.Items.Add($text) }
-    $form.Controls.Add($proxyBox)
+    $advanced.Controls.Add($proxyBox)
+    $advancedOptions=New-PortableAdvancedControls $advanced 66 580
     $save=Add-Button $form '保存设置' 690 441 180
     $status=Add-Label $form '尚未添加游戏，请发现或手动添加。' 290 482 580 62
     $launch=Add-Button $form '启动游戏' 24 551 180
     $restore=Add-Button $form '恢复原状' 216 551 160
     $check=Add-Button $form '检查环境' 388 551 150
     $logs=Add-Button $form '查看日志' 550 551 150
-    [void](Add-Label $form '启动后界面退出；请保留负责等待游戏及恢复的独立脚本窗口。' 24 604 850)
+    $footer=Add-Label $form '启动后界面退出；请保留负责等待游戏及恢复的独立脚本窗口。' 24 604 850
+
+    function Set-AdvancedVisible([bool]$Visible) {
+        $advanced.Visible=$Visible
+        $form.ClientSize=[Drawing.Size]::new(900,$(if ($Visible) { 894 } else { 650 }))
+        $save.Top=if ($Visible) { 685 } else { 441 }
+        $status.Top=if ($Visible) { 726 } else { 482 }
+        foreach ($button in @($launch,$restore,$check,$logs)) { $button.Top=if ($Visible) { 795 } else { 551 } }
+        $footer.Top=if ($Visible) { 848 } else { 604 }
+    }
+    $advancedToggle.Add_Click({ Set-AdvancedVisible (-not $advanced.Visible) })
 
     function Refresh-Game {
         $p=$games.SelectedItem
@@ -77,10 +91,12 @@ try {
         if ($null -eq $p) {
             $status.Text='尚未添加游戏，请发现或手动添加。'
             foreach ($c in @($nameBox,$directoryBox,$renderBox,$launchBox,$proxyBox,$save,$browseDirectory,$browseRender,$browseLaunch)) { $c.Enabled=$false }
+            foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) { $advancedOptions[$name].Enabled=$false }
             return
         }
         $script:updating=$true
         try {
+            Set-PortableAdvancedControls $advancedOptions $p
             $nameBox.Text=$p.Name; $directoryBox.Text=$p.GameDirectory; $renderBox.Text=$p.RenderExecutable; $launchBox.Text=$p.LaunchExecutable
             $proxyBox.SelectedIndex=[int]$p.ProxyDll-1
             $mode=if ($p.LaunchMode -eq 'Steam') { 'Steam启动' } else { 'EXE启动' }
@@ -88,6 +104,7 @@ try {
             $script:model=Get-DlssgOnlyModel $p $steamBox.Text
             $status.Text=$script:model.Status
             $locked=[IO.File]::Exists($script:model.Journal)
+            foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) { $advancedOptions[$name].Enabled=-not $locked -and -not $script:busy }
             foreach ($c in @($nameBox,$directoryBox,$renderBox,$launchBox,$proxyBox,$save,$browseDirectory,$browseRender,$browseLaunch)) { $c.Enabled=(-not $locked -and -not $script:busy) }
             $launchBox.Enabled=$launchBox.Enabled -and $p.LaunchMode -eq 'Direct'
             $browseLaunch.Enabled=$launchBox.Enabled
@@ -100,14 +117,18 @@ try {
         try {
             $games.Items.Clear()
             foreach ($p in @($script:preferences.Profiles)) { Initialize-PortableLaunchMode $p; [void]$games.Items.Add($p) }
-            if ($games.Items.Count) { $games.SelectedIndex=0 }
-            foreach ($p in $games.Items) { if ($p.Id -eq $SelectedId) { $games.SelectedItem=$p; break } }
+            $games.SelectedIndex=Get-PortableSelectedIndex $games.Items $script:preferences $SelectedId
         } finally { $script:updating=$false }
+        if ($SelectedId -and $null -ne $games.SelectedItem) {
+            try { Save-PortableSelectedProfile $script:preferences $games.SelectedItem.Id -Directory $dataDirectory }
+            catch { Show-Failure ('上次选择保存失败：'+$_.Exception.Message) }
+        }
         Refresh-Game
     }
     function Set-Working([bool]$Working) {
         $script:busy=$Working
         foreach ($c in @($games,$discover,$manual,$save,$browseDirectory,$browseRender,$browseLaunch,$browseSteam,$steamBox,$nameBox,$directoryBox,$renderBox,$launchBox,$proxyBox,$launch,$restore,$check)) { $c.Enabled=-not $Working }
+        foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) { $advancedOptions[$name].Enabled=-not $Working }
         if (-not $Working) { Refresh-Game }
     }
     function Save-Editors {
@@ -120,6 +141,7 @@ try {
         [void](Resolve-DirectExecutable $directory $renderBox.Text '渲染程序')
         [void](Resolve-DirectExecutable $directory $launchBox.Text '启动程序')
         $copy=$p | ConvertTo-Json | ConvertFrom-Json
+        Save-PortableAdvancedControls $advancedOptions $copy
         $copy.Name=$nameBox.Text; $copy.GameDirectory=$directory; $copy.RenderExecutable=$renderBox.Text; $copy.LaunchExecutable=$launchBox.Text; $copy.ProxyDll=$proxyBox.SelectedIndex+1
         $model=Get-DlssgOnlyModel $copy $steamBox.Text
         if (-not $model.Ready) { throw $model.Status }
@@ -235,7 +257,13 @@ try {
             } catch { Set-Working $false; Show-Failure $_.Exception.Message }
         }
     })
-    $games.Add_SelectedIndexChanged({ if (-not $script:updating) { Refresh-Game } })
+    $games.Add_SelectedIndexChanged({
+        if (-not $script:updating) {
+            try { if ($null -ne $games.SelectedItem) { Save-PortableSelectedProfile $script:preferences $games.SelectedItem.Id -Directory $dataDirectory } }
+            catch { Show-Failure ('上次选择保存失败：'+$_.Exception.Message) }
+            Refresh-Game
+        }
+    })
     $discover.Add_Click({ try { Start-Scan 'Installed' } catch { Show-Failure $_.Exception.Message } })
     $manual.Add_Click({ try {
         $path=Select-Directory
@@ -267,7 +295,7 @@ try {
     })
     Reload-Games
     if ($SmokeTest) {
-        if ($PreviewPath) { $form.Show(); [Windows.Forms.Application]::DoEvents(); $bitmap=[Drawing.Bitmap]::new($form.Width,$form.Height); try { $form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$form.Width,$form.Height)); $bitmap.Save($PreviewPath) } finally { $bitmap.Dispose() }; $form.Hide() }
+        if ($PreviewPath) { $form.ShowInTaskbar=$false; $form.Opacity=0; Set-AdvancedVisible $true; $form.Show(); [Windows.Forms.Application]::DoEvents(); $bitmap=[Drawing.Bitmap]::new($form.Width,$form.Height); try { $form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$form.Width,$form.Height)); $bitmap.Save($PreviewPath) } finally { $bitmap.Dispose() }; $form.Hide() }
         Write-Output ('PASS: DLSSG launcher UI; profiles='+$games.Items.Count)
     } else { $timer.Start(); [void]$form.ShowDialog() }
     $timer.Dispose(); $form.Dispose()

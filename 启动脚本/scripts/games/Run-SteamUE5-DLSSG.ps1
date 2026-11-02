@@ -6,6 +6,10 @@ param(
     [string]$Profile,
     [string]$LauncherConfigPath,
     [ValidatePattern('^[1-6]$')][string]$ProxyDll,
+    [string]$SuperResolutionMode,
+    [string]$DlssgPreset,
+    [string]$Optimized,
+    [string]$Level,
     [switch]$DryRun,
     [switch]$KeepLinks,
     [switch]$VerboseLog,
@@ -74,7 +78,7 @@ $launcherDir = if ($launcherExe) { Split-Path -Parent $launcherExe } else { '' }
 $projectDir = Split-Path -Parent $launcherRoot
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-{1}-{0}.ini" -f $PID, $gameId)
-$diagnosticIni = @'
+$diagnosticIni040 = @'
 ; Steam UE5 0.4.0 临时诊断配置。
 ; 由 Run-SteamUE5-DLSSG.ps1 生成。
 
@@ -99,8 +103,39 @@ Mode=Bundled
 [SuperResolution]
 Mode=On
 '@
-if ($LaunchMode -eq 'Direct') { $diagnosticIni=$diagnosticIni.Replace('; Steam UE5 0.4.0','; Direct UE 0.4.0') }
+if ($LaunchMode -eq 'Direct') { $diagnosticIni040=$diagnosticIni040.Replace('; Steam UE5 0.4.0','; Direct UE 0.4.0') }
+# Keep the exact 0.4.0 text for safe recognition of deployments without journals.
+$diagnosticIni = @'
+; Steam UE5 0.4.1 临时诊断配置。
+; 由 Run-SteamUE5-DLSSG.ps1 生成。
+
+[General]
+Enabled=1
+
+[FrameGeneration]
+Engine=DLSS
+MaxGeneratedFrames=5
+
+[DLSSG]
+Optimized=2
+Preset=A
+
+[Logging]
+Level=2
+Directory=dlssg_sm86\logs
+
+[Runtime]
+Mode=Bundled
+
+[SuperResolution]
+Mode=Off
+'@
+if ($LaunchMode -eq 'Direct') { $diagnosticIni=$diagnosticIni.Replace('; Steam UE5 0.4.1','; Direct UE 0.4.1') }
+$diagnosticTemplate=$diagnosticIni
+$diagnosticIni=Set-LauncherDiagnosticOptions $diagnosticTemplate $settings.SuperResolutionMode $settings.DlssgPreset $settings.Optimized $settings.Level
+Write-Host ("高级设置：DLSSG.Preset={0}；SuperResolution.Mode={1}；Optimized={2}；Level={3}" -f $settings.DlssgPreset,$settings.SuperResolutionMode,$settings.Optimized,$settings.Level)
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
+$componentLogCursor = New-DlssgLogCursor -LogDirectory $logDir -Executable $gameExe
 $launcherProcessName = @()
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 
@@ -242,7 +277,8 @@ function Test-StaleDiagnosticIniTarget {
     if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
 
     $contents = [System.IO.File]::ReadAllText($Target)
-    return ($contents -ceq $diagnosticIni)
+    if ($contents -ceq $diagnosticIni040) { return $true }
+    return (Test-LauncherDiagnosticOptionsText $contents $diagnosticTemplate)
 }
 
 function Assert-LinkOrAbsent {
@@ -303,19 +339,7 @@ function Ensure-Link {
 }
 
 function Show-PostRunStatus {
-    $logs = @()
-    if (Test-Path -LiteralPath $logDir) {
-        $logs = @(Get-ChildItem -LiteralPath $logDir -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
-    }
-
-    if ($logs.Count -gt 0) {
-        Write-Log ("找到 {0} 个 DLSSG 日志文件" -f $logs.Count)
-        Write-Log ("最新日志：{0}" -f $logs[0].FullName)
-        Write-Log '发现日志仅表示有日志文件，帧生成是否生效需检查加载和内核记录。'
-    }
-    else {
-        Write-Warning "目录下未找到 DLSSG 日志：$logDir"
-    }
+    Show-DlssgSessionLogStatus -Cursor $componentLogCursor
 }
 
 if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
@@ -348,7 +372,7 @@ try {
     Assert-FileExists -Path $engineConfigSource -Description 'UE 明文 Engine.ini 配置源'
     if (-not (Test-Path -LiteralPath $ConfigDirectory -PathType Container)) { throw "配置目录不存在，请先原版启动一次或使用 -ConfigDirectory 指定：$ConfigDirectory" }
     Write-Log "本次配置目录：$ConfigDirectory"
-    } else { Write-Log '仅 DLSSG 模式：跳过 Engine.ini；保留 INT8 超分设置。' }
+    } else { Write-Log '仅 DLSSG 模式：跳过 Engine.ini；超分 Mode=Off，保留游戏自身的 DLSS 超分。' }
     Assert-FileExists -Path $launcherExe -Description '启动程序'
     Assert-FileExists -Path $gameExe -Description '游戏渲染 EXE'
     Assert-FileExists -Path $projectProxy -Description '所选 DLSSG 代理'
@@ -363,7 +387,7 @@ try {
 
     if ($DryRun) {
         Install-DlssgResources -Deployment $deployment -DryRun
-        Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
+        Write-Log ("演练模式：环境检查通过；临时配置使用 Preset={0}，超分 Mode={1}，Optimized={2}，Level={3}。" -f $settings.DlssgPreset,$settings.SuperResolutionMode,$settings.Optimized,$settings.Level)
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
         Prepare-EngineConfig

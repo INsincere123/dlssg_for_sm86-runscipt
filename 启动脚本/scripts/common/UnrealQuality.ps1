@@ -85,11 +85,11 @@ public static class DlssgUnrealDetector {
 
 function Initialize-PortableQuality {
     param($Profile)
-    if ($null -eq $Profile.PSObject.Properties['QualityPreset']) { $Profile | Add-Member NoteProperty QualityPreset Current }
+    if ($null -eq $Profile.PSObject.Properties['QualityPreset']) { $Profile | Add-Member NoteProperty QualityPreset Tier2 }
     if ($null -eq $Profile.PSObject.Properties['EngineOverride']) { $Profile | Add-Member NoteProperty EngineOverride Auto }
     if ($null -eq $Profile.PSObject.Properties['DetectedEngineMajor']) { $Profile | Add-Member NoteProperty DetectedEngineMajor 0 }
     if ($null -eq $Profile.PSObject.Properties['DetectedEngineSource']) { $Profile | Add-Member NoteProperty DetectedEngineSource '' }
-    if ($Profile.QualityPreset -notin @('Current','Tier1','Tier2','Tier3','Tier4','Tier5')) { throw '画质档位无效。' }
+    if ($Profile.QualityPreset -notin @('Tier1','Tier2','Tier3','Tier4','Tier5')) { throw '画质档位无效。' }
     if ($Profile.EngineOverride -notin @('Auto','UE4','UE5')) { throw '引擎校准设置无效。' }
 }
 
@@ -100,12 +100,9 @@ function Resolve-PortableQuality {
     $major=0; $source='无法确定'
     if ($null -ne $Detection) { $major=[int]$Detection.Major; $source=[string]$Detection.Source }
     if ($Profile.EngineOverride -ne 'Auto') { $major=[int]$Profile.EngineOverride.Substring(2); $source='手动校准' }
-    $path=Resolve-LauncherConfigPath $Profile.EngineConfigSource '配置源' -Root $Root
-    if ($Profile.QualityPreset -ne 'Current') {
-        if ($major -notin @(4,5)) { throw '尚未确定UE4/UE5，请等待识别或在高级设置校准引擎版本。' }
-        $folder=@('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅','05-自定义')[[int]$Profile.QualityPreset.Substring(4)-1]
-        $path=Join-Path $Root "配置\虚幻通用分类\UE$major\$folder\Engine.ini"
-    }
+    if ($major -notin @(4,5)) { throw '尚未确定UE4/UE5，请等待识别或在高级设置校准引擎版本。' }
+    $folder=@('01-高性能均衡','02-主流均衡','03-性能优先','04-入门流畅','05-自定义')[[int]$Profile.QualityPreset.Substring(4)-1]
+    $path=Join-Path $Root "配置\虚幻通用分类\UE$major\$folder\Engine.ini"
     return [pscustomobject]@{Major=$major;Source=$source;Path=$path}
 }
 

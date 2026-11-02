@@ -27,6 +27,11 @@ $preferences=Read-PortablePreferences -Directory (Join-Path $testRoot 'prefs')
 $profiles=@(Get-PortableProfiles $preferences -Root $fixture)
 Assert-Test ($profiles.Count -eq 1 -and -not $profiles[0].GameDirectory) 'Preset contains a machine-specific game path.'
 $profile=$profiles[0]
+Assert-Test ($profile.QualityPreset -eq 'Tier2') 'Missing desktop quality did not migrate to Tier2.'
+$profile.EngineOverride='UE5'
+$initialTier=Join-Path $fixture '配置\虚幻通用分类\UE5\02-主流均衡\Engine.ini'
+[void][IO.Directory]::CreateDirectory((Split-Path -Parent $initialTier))
+[IO.File]::WriteAllText($initialTier,'[SystemSettings]')
 $executable=Join-Path $game $profile.RenderExecutable
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $executable))
 [IO.File]::WriteAllText($executable,'inert')
@@ -46,7 +51,7 @@ Save-PortablePreferences $preferences -Directory (Join-Path $testRoot 'prefs')
 $reloaded=Read-PortablePreferences -Directory (Join-Path $testRoot 'prefs')
 Assert-Test ($reloaded.Profiles[0].GameDirectory -eq $game) 'Device preference roundtrip failed.'
 $merged=@(Get-PortableProfiles $reloaded -Root $fixture)
-Assert-Test ($merged.Count -eq 1 -and $merged[0].Id -eq 'example' -and $merged[0].GameDirectory -eq $game) 'Reopening after saving duplicated or lost the preset.'
+Assert-Test ($merged.Count -eq 1 -and $merged[0].QualityPreset -eq 'Tier2' -and $merged[0].Id -eq 'example' -and $merged[0].GameDirectory -eq $game) 'Reopening after saving duplicated or lost the preset.'
 $custom=[pscustomobject]@{Id='custom-789';Name='Other';AppId='789';RenderExecutable='Other.exe';ConfigDirectory=$config;EngineConfigSource='配置\SteamUE5\Engine.ini';GameDirectory='';ProxyDll=2}
 Set-PortableProfile $reloaded $custom
 $merged=@(Get-PortableProfiles $reloaded -Root $fixture)
@@ -64,6 +69,8 @@ Write-Host 'PASS: path-free presets, Steam library discovery, stale-device fallb
 
 # Quality paths must survive the real model -> launch INI -> core reader chain.
 $profile.QualityPreset='Tier2'
+$profile.EngineOverride='Auto'
+Remove-Item -LiteralPath $initialTier
 $model=Get-PortableGameModel $profile $steam -Root $fixture
 Assert-Test (-not $model.Ready -and $model.Status -match '校准') 'Unknown engine did not block tier launch.'
 $detected=[pscustomobject]@{Major=5;Source='fixture'}
@@ -81,7 +88,8 @@ Assert-Test ($model.Ready -and $model.EngineMajor -eq 5) 'Recognized tier did no
 $tierRequest=Write-PortableLaunchConfig $model (Join-Path $testRoot 'tier-request')
 $tierSettings=Get-SteamUE5Settings -AppId 456 -Profile desktop -Path $tierRequest
 Assert-Test ($tierSettings.EngineConfigSource -eq $model.EngineConfigSource -and $model.EngineConfigSource.Contains('UE5\02-')) 'Check/launch effective source diverged.'
-$profile.QualityPreset='Current'
+$profile.QualityPreset='Tier2'
+$profile.EngineOverride='UE5'
 Write-Host 'PASS: unknown-engine tier lockout, missing tier rejection and effective source handoff.'
 
 $profile.ConfigDirectory=Join-Path $testRoot 'NotYetCreated'

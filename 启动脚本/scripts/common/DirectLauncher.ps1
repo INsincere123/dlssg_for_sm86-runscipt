@@ -44,6 +44,8 @@ function Get-DirectUESettings {
     if ($proxy -notmatch '^[1-6]$') { throw '代理DLL / ProxyDll 只接受整数 1–6。' }
     $values.ProxyDll=[int]$proxy
     $values.ProxyName=@('version.dll','winmm.dll','dbghelp.dll','dinput8.dll','dxgi.dll','d3d12.dll')[$values.ProxyDll-1]
+    $advanced=Get-LauncherAdvancedSettings $section $Overrides
+    foreach ($key in $advanced.Keys) { $values[$key]=$advanced[$key] }
     return $values
 }
 

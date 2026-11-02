@@ -62,10 +62,10 @@ function Read-LauncherConfigSection {
     }
     $allowed = if ($Name -eq 'Gpu') { @('DeviceInstanceId','TargetName') }
         elseif ($Name -eq 'Steam') { @('LauncherPath') }
-        elseif ($Name -match '^SteamUE5(?::[^\[\]]+)?$') { @('GameName','GameDirectory','RenderExecutable','ConfigDirectory','EngineConfigSource','ProxyDll') }
-        elseif ($Name -match '^DirectUE:[^\[\]]+$') { @('GameName','GameDirectory','RenderExecutable','LaunchExecutable','ConfigDirectory','EngineConfigSource','ProxyDll') }
-        elseif ($Name -eq 'Wuthering') { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory','RestartGraceSeconds') }
-        else { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory') }
+        elseif ($Name -match '^SteamUE5(?::[^\[\]]+)?$') { @('GameName','GameDirectory','RenderExecutable','ConfigDirectory','EngineConfigSource','ProxyDll','SuperResolutionMode','DlssgPreset','Optimized','Level') }
+        elseif ($Name -match '^DirectUE:[^\[\]]+$') { @('GameName','GameDirectory','RenderExecutable','LaunchExecutable','ConfigDirectory','EngineConfigSource','ProxyDll','SuperResolutionMode','DlssgPreset','Optimized','Level') }
+        elseif ($Name -eq 'Wuthering') { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory','RestartGraceSeconds','SuperResolutionMode','DlssgPreset','Optimized','Level') }
+        else { @('GameDirectory','LauncherPath','EngineConfigSource','ConfigDirectory','SuperResolutionMode','DlssgPreset','Optimized','Level') }
     $section = @{}; $current = ''; $found = $false; $lineNumber = 0
     foreach ($line in ($text -split '\r\n|\n|\r')) {
         $lineNumber++
@@ -301,6 +301,8 @@ function Get-LauncherGameSettings {
         -not $restoreOnly -and -not ($Overrides.ContainsKey('DryRun') -and $Overrides['DryRun'])) {
         $settings.LauncherPath = Save-LauncherDetectedPath -Path $Path -GameId $GameId -LauncherPath $settings.LauncherPath
     }
+    $advanced=Get-LauncherAdvancedSettings $section $Overrides
+    foreach ($key in $advanced.Keys) { $settings[$key]=$advanced[$key] }
     return $settings
 }
 
@@ -330,4 +332,90 @@ function Get-LauncherGpuSettings {
         DeviceInstanceId = Select-LauncherNvidiaDevice -Devices $devices -DeviceInstanceId $instance
         TargetName = $target
     }
+}
+
+# Shared advanced options for Steam/Direct and both desktop launchers.
+function Resolve-LauncherAdvancedValue {
+    [CmdletBinding()]
+    param([string]$Name,[AllowEmptyString()][string]$Value)
+    # Unknown enums belong to the runtime. Reject only INI structural input here.
+    if ($Value -match '[\x00-\x1f\x7f\[\];#=]' -or $Value -match '^\s|\s$') {
+        throw "高级设置 $Name 含控制字符或 INI 结构字符。"
+    }
+    if ($Name -eq 'DlssgPreset' -and $Value -ieq 'Auto') {
+        Write-Warning 'DLSSG Preset=Auto 已删除，按 A 运行。'
+        return 'A'
+    }
+    $choices=Get-LauncherAdvancedChoices $Name
+    foreach ($choice in $choices) { if ($Value -ieq $choice) { return $choice } }
+    return $Value
+}
+
+function Get-LauncherAdvancedSettings {
+    param([System.Collections.IDictionary]$Section,[System.Collections.IDictionary]$Overrides=@{})
+    $result=@{}
+    foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+        $value=if ($Overrides.ContainsKey($name)) { [string]$Overrides[$name] }
+            elseif ($Section.Contains($name)) { Remove-LauncherValueQuotes ([string]$Section[$name]) $name }
+            else { Get-LauncherAdvancedDefault $name }
+        $result[$name]=Resolve-LauncherAdvancedValue $name $value
+    }
+    return $result
+}
+
+function Initialize-PortableAdvanced {
+    param($Profile)
+    foreach ($name in @('SuperResolutionMode','DlssgPreset','Optimized','Level')) {
+        if ($null -eq $Profile.PSObject.Properties[$name]) {
+            $value=Get-LauncherAdvancedDefault $name
+            $Profile | Add-Member NoteProperty $name $value
+        }
+        $Profile.$name=Resolve-LauncherAdvancedValue $name ([string]$Profile.$name)
+    }
+}
+
+function Set-LauncherDiagnosticOptions {
+    param([string]$Template,[string]$SuperResolutionMode,[string]$DlssgPreset,[string]$Optimized='2',[string]$Level='2')
+    $mode=Resolve-LauncherAdvancedValue SuperResolutionMode $SuperResolutionMode
+    $preset=Resolve-LauncherAdvancedValue DlssgPreset $DlssgPreset
+    $optimization=Resolve-LauncherAdvancedValue Optimized $Optimized
+    $logging=Resolve-LauncherAdvancedValue Level $Level
+    # Literal replacement avoids regex replacement expansion for unknown values.
+    return $Template.Replace('Optimized=2',('Optimized='+$optimization)).Replace('Level=2',('Level='+$logging)).Replace('Preset=A',('Preset='+$preset)).Replace("[SuperResolution]`nMode=Off",("[SuperResolution]`nMode="+$mode)).Replace("[SuperResolution]`r`nMode=Off",("[SuperResolution]`r`nMode="+$mode))
+}
+
+function Get-LauncherAdvancedChoices {
+    param([string]$Name)
+    switch ($Name) {
+        'SuperResolutionMode' { return @('Off','M-INT8','L-INT8','M-FP16','L-FP16') }
+        'DlssgPreset' { return @('A','B','C') }
+        'Optimized' { return @('0','1','2','3') }
+        'Level' { return @('0','1','2','3') }
+        default { throw "未知高级设置：$Name" }
+    }
+}
+
+function Get-LauncherAdvancedDefault {
+    param([string]$Name)
+    switch ($Name) {
+        'SuperResolutionMode' { return 'Off' }
+        'DlssgPreset' { return 'A' }
+        'Optimized' { return '2' }
+        'Level' { return '2' }
+        default { throw "未知高级设置：$Name" }
+    }
+}
+
+function Test-LauncherDiagnosticOptionsText {
+    param([string]$Contents,[string]$Template)
+    # Extract only supported values, then compare the ENTIRE regenerated text.
+    # Extra sections, duplicate keys, changed comments or unrelated keys fail.
+    $values=@{}
+    $patterns=@{SuperResolutionMode='Mode=(Off|M-INT8|L-INT8|M-FP16|L-FP16)';DlssgPreset='Preset=([ABC])';Optimized='Optimized=([0-3])';Level='Level=([0-3])'}
+    foreach ($name in $patterns.Keys) {
+        $matches=[regex]::Matches($Contents,('(?m)^'+$patterns[$name]+'\r?$'))
+        if ($matches.Count -ne 1) { return $false }
+        $values[$name]=$matches[0].Groups[1].Value
+    }
+    return $Contents -ceq (Set-LauncherDiagnosticOptions -Template $Template @values)
 }

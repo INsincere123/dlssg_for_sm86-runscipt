@@ -1,5 +1,9 @@
 ﻿[CmdletBinding()]
 param(
+    [string]$SuperResolutionMode,
+    [string]$DlssgPreset,
+    [string]$Optimized,
+    [string]$Level,
     [switch]$DryRun,
     [switch]$KeepLinks,
     [switch]$VerboseLog,
@@ -45,7 +49,7 @@ $projectDir = Split-Path -Parent $launcherRoot
 $projectProxy = Join-Path $projectDir 'alternatives\winmm.dll'
 $projectIni = Join-Path $projectDir 'dlssg_sm86.ini'
 $diagnosticIniPath = Join-Path $env:TEMP ("dlssg_sm86-nte-{0}.ini" -f $PID)
-$diagnosticIni = @'
+$diagnosticIni040 = @'
 ; 异环 0.4.0 临时诊断配置。
 ; 由 Run-NevernessToEverness-DLSSG.ps1 生成。
 
@@ -70,8 +74,39 @@ Mode=Bundled
 [SuperResolution]
 Mode=On
 '@
+# Keep the exact 0.4.0 text for safe recognition of deployments without journals.
+$diagnosticIni = @'
+; 异环 0.4.1 临时诊断配置。
+; 由 Run-NevernessToEverness-DLSSG.ps1 生成。
+
+[General]
+Enabled=1
+
+[FrameGeneration]
+Engine=DLSS
+MaxGeneratedFrames=5
+
+[DLSSG]
+Optimized=2
+Preset=A
+
+[Logging]
+Level=2
+Directory=dlssg_sm86\logs
+
+[Runtime]
+Mode=Bundled
+
+[SuperResolution]
+Mode=Off
+'@
+
+$diagnosticTemplate=$diagnosticIni
+$diagnosticIni=Set-LauncherDiagnosticOptions $diagnosticTemplate $settings.SuperResolutionMode $settings.DlssgPreset $settings.Optimized $settings.Level
+Write-Host ("高级设置：DLSSG.Preset={0}；SuperResolution.Mode={1}；Optimized={2}；Level={3}" -f $settings.DlssgPreset,$settings.SuperResolutionMode,$settings.Optimized,$settings.Level)
 $storageDll = Join-Path $renderDir '_storage_\winmm.dll'
 $logDir = Join-Path $renderDir 'dlssg_sm86\logs'
+$componentLogCursor = New-DlssgLogCursor -LogDirectory $logDir -Executable $gameExe
 $launcherProcessName = @(Get-LauncherProcessNames -GameId Nte -LauncherPath $launcherExe)
 $gameProcessName = [System.IO.Path]::GetFileNameWithoutExtension($gameExe)
 
@@ -232,7 +267,7 @@ function Test-StaleDiagnosticIniTarget {
     if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) { return $false }
 
     $contents = [System.IO.File]::ReadAllText($Target)
-    return ($contents -ceq $diagnosticIni)
+    return ((Test-LauncherDiagnosticOptionsText $contents $diagnosticTemplate) -or $contents -ceq $diagnosticIni040)
 }
 
 function Assert-LinkOrAbsent {
@@ -334,19 +369,7 @@ function Remove-GeneratedStorageDll {
 }
 
 function Show-PostRunStatus {
-    $logs = @()
-    if (Test-Path -LiteralPath $logDir) {
-        $logs = @(Get-ChildItem -LiteralPath $logDir -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
-    }
-
-    if ($logs.Count -gt 0) {
-        Write-Log ("找到 {0} 个 DLSSG 日志文件" -f $logs.Count)
-        Write-Log ("最新日志：{0}" -f $logs[0].FullName)
-        Write-Log '发现日志仅表示有日志文件，帧生成是否生效需检查加载和内核记录。'
-    }
-    else {
-        Write-Warning "目录下未找到 DLSSG 日志：$logDir"
-    }
+    Show-DlssgSessionLogStatus -Cursor $componentLogCursor
 }
 
 if (-not $DryRun -and -not $RestoreEngineConfig -and -not $RestoreDeployment) { $consoleState = Initialize-LauncherConsole -ScriptPath $PSCommandPath -Parameters $PSBoundParameters }
@@ -389,7 +412,7 @@ try {
 
     if ($DryRun) {
         Install-DlssgResources -Deployment $deployment -DryRun
-        Write-Log '演练模式：环境检查通过；临时配置启用 INT8 超分（Mode=On），仅 L/M 预设会使用 INT8。'
+        Write-Log ("演练模式：环境检查通过；临时配置使用 Preset={0}，超分 Mode={1}，Optimized={2}，Level={3}。" -f $settings.DlssgPreset,$settings.SuperResolutionMode,$settings.Optimized,$settings.Level)
         Ensure-Link -Path $linkSpecs[0].Path -Target $linkSpecs[0].Target
         Ensure-Link -Path $linkSpecs[1].Path -Target $linkSpecs[1].Target
         Prepare-EngineConfig
