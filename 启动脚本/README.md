@@ -59,7 +59,7 @@ main 已整合上游0.4.2，资源布局沿用0.4.0。各入口新诊断INI默�
 
 - 图形界面仅在成功创建独立提权工作进程后隐藏并退出，释放句柄不能终止工作进程；取消提权保留界面。检查与恢复保留界面等待结果。
 - Steam通过 `steam.exe -applaunch`；Direct以启动EXE所在目录为工作目录运行EXE，无自定义参数。二者按真实渲染EXE完整路径监控，等待启动上限120秒，全部目标进程退出后恢复。鸣潮保留默认10秒热重启窗口，异环首次退出后清理，不统一策略。
-- 六种代理按version、winmm、dbghelp、dinput8、dxgi、d3d12映射1–6，默认1。一次部署一个，记录实际代理及storage哈希；未知文件、其他代理或变化的链接保留并报冲突。资源为runtime、backend、kernels、xefg、sr。
+- 六种代理按version、winmm、dbghelp、dinput8、dxgi、d3d12映射1–6，默认1。一次部署一个，记录实际代理及storage哈希；本启动器遗留的其他代理链接或目标变化的链接保留并报冲突，第三方代理文件（如 mod 注入器）记录后共存加载、不修改对方文件；代理名需在游戏 EXE 静态导入表中才会被加载，部分 UE 游戏不含 dinput8。资源为runtime、backend、kernels、xefg、sr。
 - Engine.ini从明文源生成带标记的只读临时副本，以链接部署；原件按字节备份/恢复，不解析、合并或加解密。当前默认源不使用历史test目录。加密实现仅保留于历史分支 `0.4.0带加密`。
 - 记录原子写入，操作前intent、成功后done；写入失败停止部署。恢复顺序为 `engineLink → backup → runtime → storage → link → diagnostic → directory`，依赖未恢复时保留必要文件。被游戏替换的普通Engine.ini经备份校验后归档到recovered，不覆盖冲突。
 - `-RestoreDeployment` 完整恢复，`-RestoreEngineConfig` 仅恢复画面配置并更新记录；`-KeepLinks` 保留部署。DryRun不启动或部署，但写日志；遇未完成部署只展示恢复计划并停止。只有恢复与残留校验均成功才删除记录。

@@ -19,7 +19,7 @@
 - 直接EXE配置与启动适配位于 `scripts/common/DirectLauncher.ps1`，旧偏好缺少LaunchMode时按Steam兼容。直接游戏不查Steam清单/注册表，不使用AppID；以稳定的 `direct-<GUID>` 作为恢复标识，启动EXE与渲染EXE可不同，仍用完整渲染进程路径监控、共用部署互斥及恢复。不可修改标识或删除记录绕过旧部署。
 - Steam 入口使用 `steam.exe -applaunch <AppID>`，允许 Steam 已运行；按真实渲染 EXE 完整路径识别目标，无法核实时保留现场。等待启动最多 120 秒，超时正常恢复；目标路径下全部游戏进程退出后恢复，不加鸣潮的热重启窗口。Steam 手动恢复也无需关闭 Steam，显式 AppID 恢复不依赖 Steam 仍已安装。
 - 图形界面仅在成功创建独立提权工作进程后隐藏并退出，以释放界面进程内存；释放 Process 句柄不能终止工作进程。取消提权时保留界面。工作脚本继续负责控制台关闭保护、等待游戏及恢复；启动后的错误由工作脚本提示。“检查环境”和手动“恢复原状”保留界面直到结果返回，不因退出界面而删除运行请求或恢复依赖文件。
-- 代理编号严格为 `1=version.dll`、`2=winmm.dll`、`3=dbghelp.dll`、`4=dinput8.dll`、`5=dxgi.dll`、`6=d3d12.dll`，默认 1；只有 version.dll 位于资源根目录，其余来自 alternatives。只部署一个代理，日志说明实际编号和来源，不自动轮换；遇到其他代理或未知普通文件停止并保留。
+- 代理编号严格为 `1=version.dll`、`2=winmm.dll`、`3=dbghelp.dll`、`4=dinput8.dll`、`5=dxgi.dll`、`6=d3d12.dll`，默认 1；只有 version.dll 位于资源根目录，其余来自 alternatives。只部署一个代理，日志说明实际编号和来源，不自动轮换；遇到本启动器遗留的其他代理链接停止并保留，遇到第三方代理文件（如 UE4SS 或其他 mod 注入器）记录后共存加载、不修改对方文件。
 - Steam 部署记录保存实际代理名称。恢复旧会话先使用旧记录的代理、storage 路径及哈希，再允许新配置选择生效；本机偏好变化不能重定向原配置恢复位置。
 - 便携导出工具为 `scripts/tools/Export-PortableLauncher.ps1`，按白名单包含完整资源和预设，排除本机偏好、个人 INI、日志、备份、`.state` 和 Git 元数据。启动器入口移动时同步导出清单与说明。仅在用户要求时生成或重建包；旧 dist/ZIP 不代表当前代码。
 

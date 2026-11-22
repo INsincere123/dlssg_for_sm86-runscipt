@@ -177,6 +177,32 @@ foreach ($name in $names) {
 }
 Write-Host 'PASS: all six proxy sources, actual journal reload after selection change, preview, storage conflicts and repeated recovery.'
 
+# A mod's own proxy file (for example UE4SS or a third-party version.dll) is not ours: another proxy name may coexist,
+# and the foreign file must stay untouched. Our own leftover deployment link still has to be restored first.
+foreach ($relative in @('dlssg_sm86.ini','dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll',
+    'dlssg_sm86\kernels\fg_kernels.dll','dlssg_sm86\xefg\xefg_kernels.dll','dlssg_sm86\sr\sr_kernels.dll','dlssg_sm86\sr\nvngx_dlss.dll')) {
+    $resourcePath = Join-Path $projectDir $relative
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $resourcePath))
+    [IO.File]::WriteAllText($resourcePath, 'resource')
+}
+Select-DlssgProxy $projectDir $renderDir 'winmm.dll'
+$foreignProxy = Join-Path $renderDir 'version.dll'
+[IO.File]::WriteAllText($foreignProxy, 'foreign-mod-proxy')
+$foreignFailure = ''
+try { Assert-DlssgDeployment $deployment } catch { $foreignFailure = $_.Exception.Message }
+Assert-Test ([string]::IsNullOrEmpty($foreignFailure)) "Foreign proxy still blocked deployment: $foreignFailure"
+Assert-Test ([IO.File]::ReadAllText($foreignProxy) -eq 'foreign-mod-proxy') 'Foreign proxy file was modified.'
+Remove-Item -LiteralPath $foreignProxy
+
+$staleLinkCreated = $false
+try { New-Item -ItemType SymbolicLink -Path $foreignProxy -Target (Join-Path $projectDir 'version.dll') -ErrorAction Stop | Out-Null; $staleLinkCreated = $true } catch { }
+if ($staleLinkCreated) {
+    Expect-Failure { Assert-DlssgDeployment $deployment }
+    Assert-Test ((Get-Item -LiteralPath $foreignProxy -Force).LinkType -eq 'SymbolicLink') 'Leftover deployment link was removed.'
+    [IO.Directory]::Delete($foreignProxy)
+} else { Write-Host 'SKIP: leftover-link check needs symbolic link privilege.' }
+Write-Host 'PASS: foreign mod proxies coexist while leftover deployment links still block.'
+
 # Parse every changed executable source with the current Windows PowerShell parser.
 foreach ($relative in @('scripts\games\Run-SteamUE5-DLSSG.ps1','scripts\common\SteamLauncher.ps1','scripts\common\DeploymentJournal.ps1','scripts\common\LauncherResources.ps1','scripts\common\LauncherConfig.ps1')) {
     $tokens=$null; $errors=$null

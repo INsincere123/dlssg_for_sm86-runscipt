@@ -90,11 +90,24 @@ function Assert-DlssgDeployment {
         $path = Join-Path $Deployment.Project $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing DLSSG resource: $path" }
     }
-    $conflicts = @(foreach ($name in @('version.dll', 'winmm.dll', 'dbghelp.dll', 'dinput8.dll', 'dxgi.dll', 'd3d12.dll')) {
+    # 其他代理名只有在属于本启动器的旧部署时才必须恢复；第三方文件（mod 注入器等）不归本工具处理，共存加载并提示。
+    $foreign = [Collections.Generic.List[string]]::new()
+    $projectRoot = [IO.Path]::GetFullPath($Deployment.Project).TrimEnd('\')
+    foreach ($name in @('version.dll', 'winmm.dll', 'dbghelp.dll', 'dinput8.dll', 'dxgi.dll', 'd3d12.dll')) {
+        if ($name -eq $Deployment.Proxy) { continue }
         $path = Join-Path $Deployment.Render $name
-        if ($name -ne $Deployment.Proxy -and $null -ne (Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue)) { $path }
-    })
-    if ($conflicts.Count) { throw "Conflicting proxy files (preserved): $($conflicts -join '; ')" }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) { continue }
+        $target = [string]($item.Target -join '')
+        if ($item.LinkType -eq 'SymbolicLink' -and $target -and
+            [IO.Path]::GetFullPath($target).TrimEnd('\').StartsWith($projectRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Stale deployment link must be restored first: $path -> $target"
+        }
+        $foreign.Add($path)
+    }
+    if ($foreign.Count) {
+        Write-Host ("发现其他代理名文件（非本启动器部署，将共存加载）：{0}" -f ($foreign -join '; '))
+    }
     $rootItem = Get-Item -LiteralPath $Deployment.Root -Force -ErrorAction SilentlyContinue
     if ($null -ne $rootItem -and (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
         throw "Resource root must be an ordinary directory: $($Deployment.Root)"
