@@ -1,4 +1,4 @@
-﻿﻿# DLSSG for SM86（代理版）- 0.4.2 版本
+﻿# DLSSG for SM86（代理版）- 0.4.2 版本
 
 **中文** · [English](README.en.md)
 
