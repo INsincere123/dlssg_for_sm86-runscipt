@@ -54,7 +54,7 @@ function Show-DlssgSessionLogStatus {
             if ($info.Records) { Write-Host ("本次 {0} 的日志记录：{1}；PID：{2}" -f $Cursor.Executable,$info.Records,($info.Pids -join ', ')) }
             else { Write-Warning '统一日志中未找到本次游戏的新记录，不能据此确认组件加载或生效。' }
         } else {
-            Write-Warning ("未找到0.4.1统一日志：{0}" -f $info.Path)
+            Write-Warning ("未找到0.4.2统一日志：{0}" -f $info.Path)
             foreach ($path in $info.LegacyPaths) { Write-Host ("历史格式日志（未认定属于本次）：{0}" -f $path) }
         }
         Write-Host '日志定位不代表帧生成成功；需检查本次配置、加载、错误与执行记录。超分Mode=Off时不要求INT8执行。'

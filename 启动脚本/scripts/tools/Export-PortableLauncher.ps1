@@ -111,7 +111,7 @@ if (Test-Path -LiteralPath $destinationPath) { throw '导出位置已存在，�
 $extension=if ($b) { '.7z' } else { '.zip' }
 $archive=$destinationPath+$extension
 if ($Zip -and (Test-Path -LiteralPath $archive)) { throw '目标压缩包已存在，请换一个新名字。' }
-$files=@('version.dll','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt',
+$files=@('version.dll','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt','dlssg_sm86ini_Configurator.html',
     'alternatives\winmm.dll',
     'alternatives\README.md',
     'dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll','dlssg_sm86\kernels\fg_kernels.dll',
@@ -170,7 +170,8 @@ DLSSG 便携启动器 · 开始使用（小白版）
 
 这是一份完整的操作说明，照着做就行，不用懂技术。
 
-组件基线：0.4.1；适用环境：Windows 10/11 64 位，NVIDIA RTX 20/30 系列显卡，驱动R580或更新。
+组件基线：0.4.2；适用环境：Windows 10/11 64 位，NVIDIA RTX 20/30 系列显卡，驱动R580或更新。
+包内 dlssg_sm86ini_Configurator.html 是单文件 INI 配置器，可离线查看和生成配置；不改它也不影响启动。
 启动脚本默认Preset=A、超分Mode=Off；通用与虚幻启动器可在高级设置按游戏选择超分模式、A/B/C预设、Optimized和Level（均默认2），并在本机记住上次选择的游戏；Off只关闭本项目超分接管，游戏自己的DLSS超分仍在游戏内设置，无需调整英伟达控制面板。
 运行后组件日志优先看游戏渲染目录下 dlssg_sm86\logs\dlssg_sm86.log，结合脚本日志和本次游戏PID排查。
 包内 package-manifest.json 列出相对路径、字节数和SHA256，便于核对文件；哈希一致不等于组件已经验证兼容。

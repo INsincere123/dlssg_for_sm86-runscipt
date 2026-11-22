@@ -42,7 +42,7 @@ Steam 使用“Steam启动”；Epic、GOG 和手动添加使用“EXE启动”�
 
 ## 配置与状态接口
 
-main 已整合上游0.4.1，资源布局沿用0.4.0。各入口新诊断INI默认使用 `Optimized=2`、`Preset=A`、超分 `Mode=Off`；不改变各入口的生成帧数及退出策略。Off仅关闭本项目超分接管，游戏内DLSS超分照常。旧0.4.0诊断文本（Auto/On、鸣潮更早版本）继续精确识别，不通过放宽匹配认领未知配置；已有部署仍优先按记录哈希恢复。两个SR大文件仍由本地提供，不纳入Git。0.4.1要求R580+，真实游戏兼容性另行验证。
+main 已整合上游0.4.2，资源布局沿用0.4.0。各入口新诊断INI默认使用 `Optimized=2`、`Preset=A`、超分 `Mode=Off`；不改变各入口的生成帧数及退出策略。Off仅关闭本项目超分接管，游戏内DLSS超分照常。旧0.4.0诊断文本（Auto/On、鸣潮更早版本）继续精确识别，不通过放宽匹配认领未知配置；已有部署仍优先按记录哈希恢复。两个SR大文件仍由本地提供，不纳入Git。0.4.2要求R580+，真实游戏兼容性另行验证。
 
 共用日志定位在 `LauncherResources.ps1`：运行前记录 `dlssg_sm86/logs/dlssg_sm86.log` 文件偏移和时间，运行后只统计新追加且时间、EXE名匹配的行并列出PID；日志截断或重建时从头读取但仍按时间筛选。热重启可匹配同一EXE多个PID。日志缺失、无本次记录或读取失败不影响恢复结果；旧loader/backend日志仅作为历史线索展示。定位不代表功能成功，不把帧数统计当FPS。隔离验证见 `tests/Diagnostic041.Tests.ps1`。
 
@@ -84,7 +84,7 @@ powershell.exe -NoProfile -File 启动脚本/scripts/ui/Show-SteamLauncher.ps1 -
 
 所有类型均生成 `package-manifest.json`：`FormatVersion=1`、`PackageType`、`Files` 数组；每项记录包内相对路径 `Path`、字节数 `Length` 和 `SHA256`，包含生成的说明/配置，不包含清单自身。不记录本机绝对路径，清单用于核对包内容，不证明资源版本或运行兼容性。SR两个文件仍按完整资源布局打包，缺失时提示从匹配的完整发行包或本地备份补齐，Git不提供它们。
 
-内置ZIP写入临时文件后，逐条解压读取并与导出目录比对路径、数量、大小及SHA256，拒绝缺失、重复、额外或内容不符的条目；只有校验成功才发布正式ZIP并删除临时目录。失败不发布，保留导出目录，清理失败的临时压缩文件。Bandizip保持原有压缩及 `t` 校验。导出说明同步0.4.1/R580+、Preset=A和超分Off、扫描选择流程及按需使用显卡名称工具。测试见 `tests/PortableExport.Tests.ps1`，均使用微型隔离资源。
+内置ZIP写入临时文件后，逐条解压读取并与导出目录比对路径、数量、大小及SHA256，拒绝缺失、重复、额外或内容不符的条目；只有校验成功才发布正式ZIP并删除临时目录。失败不发布，保留导出目录，清理失败的临时压缩文件。Bandizip保持原有压缩及 `t` 校验。导出说明同步0.4.2/R580+、Preset=A和超分Off、扫描选择流程及按需使用显卡名称工具。测试见 `tests/PortableExport.Tests.ps1`，均使用微型隔离资源。
 
 可选Bandizip模式：运行 `打包给朋友.bat -b`，或给导出PS1传 `-b`。调用 `C:\Bandizip\bz.exe` 输出7z，使用本机7.32版默认LZMA2及最高等级 `-l:9`；压缩及完整性检查成功后只保留7z，失败保留导出目录。四种类型均可使用；不加 `-b` 仍用内置ZIP。打包脚本和Bandizip本身不包含在分享包内。参数依据[Bandizip官方说明](https://www.bandisoft.com/bandizip/help/parameter/)。
 

@@ -18,7 +18,7 @@ foreach ($entry in @('通用启动器.bat','虚幻启动器.bat','启动鸣潮.b
     Copy-Item -LiteralPath (Join-Path $root $entry) -Destination $fixture
 }
 $resources=@('version.dll','alternatives\winmm.dll','alternatives\dbghelp.dll','alternatives\dinput8.dll','alternatives\dxgi.dll','alternatives\d3d12.dll',
-    'alternatives\README.md','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt','dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll',
+    'alternatives\README.md','dlssg_sm86.ini','THIRD_PARTY_NOTICES.txt','dlssg_sm86ini_Configurator.html','dlssg_sm86\runtime\nvngx_dlssg.dll','dlssg_sm86\backend\sm86_backend.dll',
     'dlssg_sm86\kernels\fg_kernels.dll','dlssg_sm86\xefg\xefg_kernels.dll','dlssg_sm86\sr\sr_kernels.dll','dlssg_sm86\sr\nvngx_dlss.dll')
 foreach ($file in $resources) { Write-Fixture (Join-Path $project $file) }
 foreach ($file in @('配置\SteamUE5\Engine.ini','配置\鸣潮\Engine.ini','配置\异环\Engine.ini')) { Write-Fixture (Join-Path $fixture $file) }
@@ -48,6 +48,7 @@ foreach ($type in @('1','2','3','4')) {
     }
     Assert-Test ([IO.File]::Exists((Join-Path $package '启动脚本\启动SteamUE5.bat')) -eq ($type -eq '1')) 'Full CLI entry missing/leaked.'
     Assert-Test ([IO.File]::Exists((Join-Path $package 'alternatives\d3d12.dll')) -eq ($general -or $unreal)) 'Proxy selection mismatch.'
+    Assert-Test ([IO.File]::Exists((Join-Path $package 'dlssg_sm86ini_Configurator.html'))) "Missing INI configurator: $type"
     foreach ($relative in @('runtime\nvngx_dlssg.dll','backend\sm86_backend.dll','kernels\fg_kernels.dll','xefg\xefg_kernels.dll','sr\sr_kernels.dll','sr\nvngx_dlss.dll')) {
         Assert-Test ([IO.File]::Exists((Join-Path $package "dlssg_sm86\$relative"))) "Missing full resource: $type/$relative"
     }
@@ -55,7 +56,7 @@ foreach ($type in @('1','2','3','4')) {
         Assert-Test (-not (Test-Path -LiteralPath (Join-Path $package $relative))) "Private/tool content exported: $relative"
     }
     $guide=[IO.File]::ReadAllText((Join-Path $package '先看这里.txt'))
-    Assert-Test ($guide.Contains('0.4.1') -and $guide.Contains('R580') -and $guide.Contains('Preset=A') -and $guide.Contains('Mode=Off')) "Missing current configuration guide: $type"
+    Assert-Test ($guide.Contains('0.4.2') -and $guide.Contains('R580') -and $guide.Contains('Preset=A') -and $guide.Contains('Mode=Off')) "Missing current configuration guide: $type"
     Assert-Test (-not $guide.Contains('这一步必须做') -and -not $guide.Contains('不确定就用默认候选')) "Misleading compatibility instructions: $type"
     if ($unreal) { Assert-Test ($guide.Contains('有歧义') -and $guide.Contains('扫描详情')) 'Unreal discovery instructions missing.' }
     if ($games) { Assert-Test ($guide.Contains('已有选项时无需使用')) 'Conditional device-name instructions missing.' }
