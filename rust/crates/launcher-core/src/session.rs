@@ -63,7 +63,7 @@ pub struct StartupTuning {
 impl Default for StartupTuning {
     fn default() -> Self {
         Self {
-            startup_timeout: Duration::from_secs(120),
+            startup_timeout: Duration::ZERO,
             closed_grace: Duration::from_secs(3),
         }
     }
@@ -205,16 +205,15 @@ impl SessionMachine {
                     launcher_observed = true;
                     closed_since = None;
                 } else if launcher_observed {
-                    // 启动器关掉之后才开始计时；之前没出现不算"关闭"。
-                    let since = *closed_since.get_or_insert(now);
-                    if now.duration_since(since).unwrap_or_default()
-                        >= self.spec.tuning.closed_grace
-                    {
-                        return Some(SessionOutcome::LauncherClosedBeforeGame);
-                    }
+                    // 启动器先关、游戏还没出现：**不结束会话**，继续等游戏。
+                    // 二游的官方启动器把游戏拉起后自己退出是常见行为，
+                    // 只有"启动器关了且游戏也退出"才算会话结束。
+                    let _ = closed_since.get_or_insert(now);
                 }
-                if now.duration_since(self.started_at).unwrap_or_default()
-                    >= self.spec.tuning.startup_timeout
+                // 无期限等待：常驻程序不会因为"游戏暂时没出现"就放弃会话。
+                if !self.spec.tuning.startup_timeout.is_zero()
+                    && now.duration_since(self.started_at).unwrap_or_default()
+                        >= self.spec.tuning.startup_timeout
                 {
                     return Some(SessionOutcome::StartupTimedOut);
                 }
@@ -365,7 +364,8 @@ mod tests {
     #[test]
     fn default_tuning_matches_the_existing_implementation() {
         let tuning = StartupTuning::default();
-        assert_eq!(tuning.startup_timeout, Duration::from_secs(120));
+        // 默认无期限等待：GUI 常驻时不会因为"游戏暂时没出现"结束会话。
+        assert_eq!(tuning.startup_timeout, Duration::ZERO);
         assert_eq!(tuning.closed_grace, Duration::from_secs(3));
         assert_eq!(SessionPolicy::wuthering().label(), "HotRestart");
         assert_eq!(SessionPolicy::neverness().label(), "FirstExit");
@@ -410,27 +410,32 @@ mod tests {
     }
 
     #[test]
-    fn launcher_closed_before_game_abandons_startup() {
+    fn launcher_closed_before_game_keeps_waiting() {
+        // 启动器把游戏拉起后自己退出是常见行为：不能因此结束会话。
         let mut machine =
             SessionMachine::new(SessionSpec::new(SessionPolicy::WaitAllTargets), at(0));
-        // 启动器出现过
         assert!(machine.update(running(0, true), at(1)).is_none());
-        // 启动器和游戏都没了 → 开始 3 秒宽限
         assert!(machine.update(running(0, false), at(2)).is_none());
         assert!(machine.update(running(0, false), at(4)).is_none());
-        assert_eq!(
-            machine.update(running(0, false), at(5)),
-            Some(SessionOutcome::LauncherClosedBeforeGame)
-        );
+        assert!(machine.update(running(0, false), at(5)).is_none());
+        // 游戏之后出现并退出，才算结束
+        assert!(machine.update(running(1, false), at(6)).is_none());
+        assert!(machine.update(running(0, false), at(8)).is_some());
     }
 
     #[test]
-    fn startup_timeout_applies_without_any_launcher() {
-        // 从未见过启动器：宽限不启动，但总超时仍然有效
-        let mut machine = SessionMachine::new(SessionSpec::new(SessionPolicy::FirstExit), at(0));
-        assert!(machine.update(running(0, false), at(60)).is_none());
+    fn startup_timeout_only_applies_when_configured() {
+        // 默认无期限：从未见过游戏也一直等（常驻程序语义）
+        let mut forever = SessionMachine::new(SessionSpec::new(SessionPolicy::FirstExit), at(0));
+        assert!(forever.update(running(0, false), at(600)).is_none());
+
+        // 显式配置超时后仍然生效
+        let mut spec = SessionSpec::new(SessionPolicy::FirstExit);
+        spec.tuning.startup_timeout = Duration::from_secs(30);
+        let mut machine = SessionMachine::new(spec, at(0));
+        assert!(machine.update(running(0, false), at(10)).is_none());
         assert_eq!(
-            machine.update(running(0, false), at(120)),
+            machine.update(running(0, false), at(40)),
             Some(SessionOutcome::StartupTimedOut)
         );
     }

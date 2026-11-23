@@ -112,9 +112,17 @@ impl AddGameState {
             .unwrap_or_else(|| directory.display().to_string());
         // 手动添加一律走 Direct：渲染程序已由扫描确定，不需要 Steam 清单。
         let id = launcher_core::direct::new_direct_id(&candidate.path.to_string_lossy());
+        // 选中的渲染程序必须写进偏好，否则引擎无法定位（曾漏掉导致计划阶段失败）。
+        let relative = candidate
+            .path
+            .strip_prefix(&directory)
+            .map(|value| value.to_string_lossy().replace('/', "\\"))
+            .ok()
+            .unwrap_or_else(|| candidate.relative.clone());
         let mut profile = GameProfile::new(&id, &name, directory);
         profile.launch_mode = "Direct".to_owned();
         profile.engine_host = self.host.as_text().to_owned();
+        profile.render_executable = Some(relative);
         Some(profile)
     }
 }

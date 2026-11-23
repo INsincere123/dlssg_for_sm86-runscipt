@@ -1,4 +1,4 @@
-//! 直接 EXE 启动与统一启动方式（M3-02）。
+//! EXE 启动方式（原"直接 EXE"）与统一启动方式（M3-02）。
 //!
 //! 对齐 `启动脚本/scripts/common/DirectLauncher.ps1`：
 //!

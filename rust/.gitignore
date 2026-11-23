@@ -27,6 +27,11 @@ Desktop.ini
 #   plan/plan.md          ← tools/gen-plan.ps1（源：plan/plan.json）
 #   docs/parity-functions.md ← tools/gen-parity-inventory.ps1（源：启动脚本/scripts）
 #   spike/Cargo.lock      ← spike 不参与 workspace，锁文件无复用价值
+# 真机验证运行根与引擎产物（不进 Git）
+/dist-test/
+/.state/
+/logs/
+
 /plan/plan.md
 /docs/parity-functions.md
 /spike/Cargo.lock

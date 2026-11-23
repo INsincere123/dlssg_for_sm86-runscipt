@@ -301,7 +301,7 @@ pub fn trusted_renderer(candidates: &[RendererCandidate]) -> Option<&RendererCan
 
 /// 扫描时要跳过的目录名。
 pub fn skip_directory(name: &str) -> bool {
-    const EXACT: [&str; 17] = [
+    const EXACT: &[&str] = &[
         "windows",
         "$recycle.bin",
         "system volume information",
@@ -319,6 +319,15 @@ pub fn skip_directory(name: &str) -> bool {
         "dlssg_sm86",
         "tool",
         "tools",
+        // 启动器/补丁缓存与资源包：只在里面翻到 .pak/.utoc，没有可执行文件
+        "userdata",
+        "patcher",
+        "patch",
+        "tmp",
+        "cache",
+        "paks",
+        "movies",
+        "content",
     ];
     let lower = name.to_lowercase();
     EXACT.contains(&lower.as_str())
@@ -337,7 +346,7 @@ pub fn is_auxiliary_executable(name: &str) -> bool {
     let role = strip_suffix_ci(&role, "-x64");
     let role = strip_suffix_ci(&role, "-x86");
 
-    const EXACT: [&str; 12] = [
+    const EXACT: &[&str] = &[
         "install",
         "uninstall",
         "vulkaninfo",
@@ -468,7 +477,18 @@ mod tests {
 
     #[test]
     fn skip_list_and_auxiliary_rules_match_ps() {
-        for name in ["Windows", "tools", "tool", "Redist", "dlssg_sm86", ".git"] {
+        for name in [
+            "Windows",
+            "tools",
+            "tool",
+            "Redist",
+            "dlssg_sm86",
+            ".git",
+            "UserData",
+            "Patcher",
+            "tmp",
+            "Content",
+        ] {
             assert!(skip_directory(name), "应跳过 {name}");
         }
         for name in ["Binaries", "Game", "Engine"] {

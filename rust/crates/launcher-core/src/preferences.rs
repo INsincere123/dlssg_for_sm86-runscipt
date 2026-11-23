@@ -37,6 +37,33 @@ pub struct GameProfile {
     /// 代理编号 1..6。
     #[serde(default = "default_proxy")]
     pub proxy_index: u8,
+    /// Steam AppID（`launch_mode=Steam` 时用）。
+    #[serde(default)]
+    pub app_id: Option<String>,
+    /// 启动参数（Steam 用 `-applaunch <AppID>`；Direct 通常为空）。
+    #[serde(default)]
+    pub launch_arguments: Option<Vec<String>>,
+    /// 官方启动器 EXE（相对游戏目录或绝对路径）；为空时直接启动渲染 EXE。
+    #[serde(default)]
+    pub launch_executable: Option<String>,
+    /// 官方启动器的进程名（默认取 `launch_executable` 的文件名）。
+    #[serde(default)]
+    pub launcher_process_name: Option<String>,
+    /// 明文配置源（相对启动器根或绝对路径）；为空时用 `<根>\配置\<id>\Engine.ini`。
+    #[serde(default)]
+    pub config_source: Option<String>,
+    /// 游戏侧配置目录（绝对路径，最后一级是平台目录）；为空表示不做 Engine.ini 部署。
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    /// 是否部署 `Engine.ini`（默认开；有些游戏不需要改配置）。
+    #[serde(default = "default_true")]
+    pub deploy_engine_ini: bool,
+    /// 会话策略：`first-exit` / `wait-all` / `hot-restart:<秒>`；为空时按 id 推断。
+    #[serde(default)]
+    pub session_policy: Option<String>,
+    /// 渲染 EXE 相对游戏目录的路径（`Binaries\Win64\Game-Win64-Shipping.exe`）。
+    #[serde(default)]
+    pub render_executable: Option<String>,
     /// 该游戏的 12 键设置；`None` 表示还没在界面里配置过，用组件默认值。
     #[serde(default)]
     pub settings: Option<crate::settings::Settings>,
@@ -58,6 +85,10 @@ fn default_proxy() -> u8 {
     1
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl GameProfile {
     /// 新建一个游戏；缺省值与本机现有偏好一致（Steam / Tier2 / 代理 1）。
     pub fn new(id: &str, name: &str, directory: PathBuf) -> Self {
@@ -69,6 +100,15 @@ impl GameProfile {
             engine_host: default_engine_host(),
             quality_tier: default_tier(),
             proxy_index: default_proxy(),
+            app_id: None,
+            launch_arguments: None,
+            config_source: None,
+            launch_executable: None,
+            launcher_process_name: None,
+            config_dir: None,
+            deploy_engine_ini: true,
+            session_policy: None,
+            render_executable: None,
             settings: None,
         }
     }
@@ -77,6 +117,9 @@ impl GameProfile {
 /// 偏好文件内容。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
+    /// 运行根（资源与日志所在目录）；为空表示用 exe 所在目录。
+    #[serde(default)]
+    pub launcher_root: Option<String>,
     #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default)]
@@ -91,6 +134,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             version: SCHEMA_VERSION,
+            launcher_root: None,
             games: Vec::new(),
         }
     }
@@ -215,6 +259,29 @@ mod tests {
         assert_eq!(game.engine_host, "none");
         assert_eq!(game.quality_tier, "Tier2");
         assert_eq!(game.proxy_index, 1);
+        assert!(game.app_id.is_none(), "缺 app_id 用 None");
+        assert!(
+            game.render_executable.is_none(),
+            "缺 render_executable 用 None"
+        );
+    }
+
+    #[test]
+    fn engine_fields_round_trip() {
+        let path = scratch("engine-fields");
+        let mut preferences = Preferences::default();
+        let mut game = GameProfile::new("wuthering", "鸣潮", PathBuf::from(r"D:\Games\WuWa"));
+        game.app_id = Some("4356430".to_owned());
+        game.render_executable =
+            Some(r"Client\Binaries\Win64\Client-Win64-Shipping.exe".to_owned());
+        preferences.upsert(game);
+        save(&path, &preferences).expect("保存");
+        let loaded = load(&path).expect("读取");
+        assert_eq!(loaded.games[0].app_id.as_deref(), Some("4356430"));
+        assert_eq!(
+            loaded.games[0].render_executable.as_deref(),
+            Some(r"Client\Binaries\Win64\Client-Win64-Shipping.exe")
+        );
     }
 
     #[test]

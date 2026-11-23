@@ -23,10 +23,10 @@ pub enum GameStatus {
 impl GameStatus {
     pub fn text(self) -> &'static str {
         match self {
-            Self::Ready => "可启动",
-            Self::NeedsRestore => "需恢复",
-            Self::SessionActive => "会话中",
-            Self::Missing => "需定位",
+            Self::Ready => "未部署（可启动）",
+            Self::NeedsRestore => "已部署（可恢复）",
+            Self::SessionActive => "运行中",
+            Self::Missing => "目录缺失",
         }
     }
 
@@ -213,9 +213,9 @@ mod tests {
 
     #[test]
     fn status_texts_and_summaries_are_stable() {
-        assert_eq!(GameStatus::Ready.text(), "可启动");
-        assert_eq!(GameStatus::NeedsRestore.text(), "需恢复");
-        assert_eq!(GameStatus::SessionActive.text(), "会话中");
+        assert_eq!(GameStatus::Ready.text(), "未部署（可启动）");
+        assert_eq!(GameStatus::NeedsRestore.text(), "已部署（可恢复）");
+        assert_eq!(GameStatus::SessionActive.text(), "运行中");
         assert!(GameStatus::Ready.can_launch());
         assert!(!GameStatus::SessionActive.can_launch());
         assert!(GameStatus::NeedsRestore.can_restore());
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(derive_status(true, true, true), GameStatus::NeedsRestore);
         assert_eq!(derive_status(true, false, true), GameStatus::SessionActive);
         assert_eq!(derive_status(true, false, false), GameStatus::Ready);
-        assert_eq!(GameStatus::Missing.text(), "需定位");
+        assert_eq!(GameStatus::Missing.text(), "目录缺失");
         assert!(!GameStatus::Missing.can_launch());
         assert!(!GameStatus::Missing.can_restore());
     }

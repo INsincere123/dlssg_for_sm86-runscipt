@@ -136,6 +136,19 @@ unsafe extern "system" {
     ) -> i32;
     fn GetCurrentProcessId() -> u32;
     fn GetConsoleWindow() -> Handle;
+    fn CreateProcessW(
+        application: *const u16,
+        command_line: *mut u16,
+        process_attributes: *const c_void,
+        thread_attributes: *const c_void,
+        inherit: i32,
+        flags: u32,
+        environment: *mut c_void,
+        directory: *const u16,
+        startup: *mut StartupInfo,
+        process: *mut ProcessInformation,
+    ) -> i32;
+    fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
     fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> Handle;
 }
 
@@ -162,6 +175,75 @@ fn file_time_to_system_time(time: FileTime) -> SystemTime {
     UNIX_EPOCH + Duration::new(seconds - EPOCH_DIFFERENCE, nanos as u32)
 }
 
+// ---------------------------------------------------------------- 启动子进程
+
+#[repr(C)]
+struct StartupInfo {
+    size: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    x: u32,
+    y: u32,
+    x_size: u32,
+    y_size: u32,
+    x_chars: u32,
+    y_chars: u32,
+    fill: u32,
+    flags: u32,
+    show: u16,
+    reserved2: u16,
+    reserved3: *mut u8,
+    stdin: Handle,
+    stdout: Handle,
+    stderr: Handle,
+}
+
+#[repr(C)]
+struct ProcessInformation {
+    process: Handle,
+    thread: Handle,
+    process_id: u32,
+    thread_id: u32,
+}
+
+/// 启动子进程的结果。
+#[derive(Debug)]
+pub struct Spawned {
+    pub pid: u32,
+    handle: Handle,
+}
+
+impl Spawned {
+    /// 等它结束并取退出码（`None` 表示超时）。
+    pub fn wait(&self, timeout: std::time::Duration) -> Option<u32> {
+        const WAIT_OBJECT_0: u32 = 0;
+        let milliseconds = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let waited = unsafe { WaitForSingleObject(self.handle, milliseconds) };
+        if waited != WAIT_OBJECT_0 {
+            return None;
+        }
+        let mut code: u32 = 0;
+        if unsafe { GetExitCodeProcess(self.handle, &mut code) } == 0 {
+            return None;
+        }
+        Some(code)
+    }
+
+    /// 放弃等待（不终止子进程）；句柄由 `Drop` 关闭。
+    pub fn forget(mut self) {
+        self.handle = 0;
+    }
+}
+
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        if self.handle != 0 && self.handle != INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(self.handle) };
+            self.handle = 0;
+        }
+    }
+}
 // ---------------------------------------------------------------- 链接
 
 /// 真实文件系统链接操作。
@@ -241,15 +323,28 @@ impl SymlinkOps for WinSymlinkOps {
             Error::invalid(format!("不是链接，拒绝按链接删除：{}", path.display()))
         })?;
         let wide = path_wide(path);
-        let ok = unsafe {
+        let first = unsafe {
             if info.target_is_dir {
                 RemoveDirectoryW(wide.as_ptr())
             } else {
                 DeleteFileW(wide.as_ptr())
             }
         };
-        if ok == 0 {
-            return Err(Error::io(path, std::io::Error::last_os_error()));
+        if first != 0 {
+            return Ok(());
+        }
+        // 悬空的目录符号链接在部分 Windows 版本上 RemoveDirectory 会返回"拒绝访问"，
+        // 换 DeleteFile 再试一次（实测 2026-11-23 于异环资源链接上）。
+        let error = std::io::Error::last_os_error();
+        let second = unsafe {
+            if info.target_is_dir {
+                DeleteFileW(wide.as_ptr())
+            } else {
+                RemoveDirectoryW(wide.as_ptr())
+            }
+        };
+        if second == 0 {
+            return Err(Error::io(path, error));
         }
         Ok(())
     }
@@ -455,6 +550,59 @@ fn started_at(pid: u32) -> Result<SystemTime> {
     Ok(file_time_to_system_time(creation))
 }
 
+/// 启动一个子进程（不经过 shell）。`hidden` 为真时不显示窗口。
+///
+/// `arguments` 按 Windows 命令行规则直接拼在可执行文件后面；路径由调用方保证已加引号。
+pub fn spawn_process(
+    executable: &Path,
+    arguments: &[String],
+    working_directory: Option<&Path>,
+    hidden: bool,
+) -> Result<Spawned> {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let application = path_wide(executable);
+    let mut command_line: Vec<u16> = Vec::new();
+    for unit in std::ffi::OsStr::new(&format!("\"{}\"", executable.display())).encode_wide() {
+        command_line.push(unit);
+    }
+    for argument in arguments {
+        command_line.push(b' ' as u16);
+        for unit in std::ffi::OsStr::new(argument).encode_wide() {
+            command_line.push(unit);
+        }
+    }
+    command_line.push(0);
+    let directory = working_directory.map(path_wide);
+
+    let mut startup: StartupInfo = unsafe { std::mem::zeroed() };
+    startup.size = std::mem::size_of::<StartupInfo>() as u32;
+    let mut process: ProcessInformation = unsafe { std::mem::zeroed() };
+    let flags = if hidden { CREATE_NO_WINDOW } else { 0 };
+    let started = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            std::ptr::null_mut(),
+            directory
+                .as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr()),
+            &mut startup,
+            &mut process,
+        )
+    };
+    if started == 0 {
+        return Err(Error::io(executable, std::io::Error::last_os_error()));
+    }
+    unsafe { CloseHandle(process.thread) };
+    Ok(Spawned {
+        pid: process.process_id,
+        handle: process.process,
+    })
+}
 // ---------------------------------------------------------------- 时钟
 
 /// 真实系统时钟。

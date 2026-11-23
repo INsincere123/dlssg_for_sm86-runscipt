@@ -53,7 +53,9 @@
     { "id": "F", "status": "pass", "scope": "M2 引擎壳：launcher-win 真实现 + CLI + 提权 + IPC + 单会话 + 复用启动器", "evidence": "208 测试通过（M2 新增 14 个）；check.ps1 全绿；未验证：从非提权父进程触发 UAC 弹窗（本会话已是高完整性，弹窗路径测得的是 classify_shell_error(1223) 单测）" },
     { "id": "G", "status": "pass", "scope": "M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位", "evidence": "251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本" },
     { "id": "H", "status": "pass", "scope": "M4 界面：主窗/设置页/自定义 INI/添加游戏/日志与关于/性能与 DPI", "evidence": "274 测试通过；docs/M4-REPORT.md 记录实测（生产 WS 84.3 MB、自检 87.0 MB、首帧 128–161 ms、ppp=1.5、单实例 64 ms 退出）；未验证：手工交互、多显示器与 100%/200% 缩放" },
-    { "id": "I", "status": "pass", "scope": "M5 工具：显卡名（模型+真实只读枚举）、便携包清单、导出自检", "evidence": "293 + 13 测试通过；本机枚举到 2 台 NVIDIA 设备且 DeviceDesc 可解析；清单格式 FormatVersion=1 与 PS 字段兼容；自检能识别缺失/大小/篡改/多余。未验证：真实写入 DeviceDesc（需授权并重启）、真实打包成 ZIP" }
+    { "id": "I", "status": "pass", "scope": "M5 工具：显卡名（模型+真实只读枚举）、便携包清单、导出自检", "evidence": "293 + 13 测试通过；本机枚举到 2 台 NVIDIA 设备且 DeviceDesc 可解析；清单格式 FormatVersion=1 与 PS 字段兼容；自检能识别缺失/大小/篡改/多余。未验证：真实写入 DeviceDesc（需授权并重启）、真实打包成 ZIP" },
+    { "id": "J", "status": "pass", "scope": "M6 代码与差分：双根读取、retained 阶段、PS↔Rust 差分核对、文档同步", "evidence": "差分 21 项差异 0（docs/M6-DIFF.md）；真实记录 steam-4356430 读取成功并暴露 retained 缺陷已修；该记录已于 2026-11-23 由用户恢复，state 与 version.dll 均已清除" },
+    { "id": "K", "status": "todo", "scope": "M7 真机验收：鸣潮热重启、异环首次退出恢复、Steam/Direct 全目标与 120s 超时", "evidence": "需要在实际游戏中启动并退出后核对日志与目录状态；前置条件是引擎接线（--engine run 全链路）完成" }
   ],
   "tasks": [
     { "id": "M1-01", "milestone": "M1", "title": "workspace + 错误类型 + 4 个能力 trait + 样本读取器", "status": "done", "deps": [], "acceptance": ["cargo test -p launcher-core 通过", "clippy 无告警"], "artifacts": ["rust/Cargo.toml", "src/ops.rs", "src/error.rs", "src/fixtures.rs"] },
@@ -99,9 +101,10 @@
 
     { "id": "M6-01", "milestone": "M6", "title": ".state 双根读取（新根优先，旧 启动脚本\\.state 只读兜底）", "status": "done", "deps": ["M5-03"], "acceptance": ["读取现有 steam-4356430 记录并恢复成功"], "artifacts": ["core::journal_store"] },
     { "id": "M6-02", "milestone": "M6", "title": "差分测试：PS 现算 vs 入库样本（诊断 INI/识别边界）＋不可比项清单", "status": "done", "deps": ["M6-01"], "acceptance": ["差异为 0 或全部有 D-n 解释"], "artifacts": ["rust/tools/"] },
-    { "id": "M6-03", "milestone": "M6", "title": "真机：鸣潮（含 10s 热重启）", "status": "todo", "deps": ["M6-02"], "acceptance": ["启动→退出→恢复完整；无残留"], "artifacts": ["logs/"] },
-    { "id": "M6-04", "milestone": "M6", "title": "真机：异环（首次退出即恢复）", "status": "todo", "deps": ["M6-03"], "acceptance": ["同上，且策略未被统一"], "artifacts": ["logs/"] },
-    { "id": "M6-05", "milestone": "M6", "title": "真机：Steam 与直接 EXE（等全部目标 + 120s 超时）", "status": "todo", "deps": ["M6-04"], "acceptance": ["超时后正常恢复"], "artifacts": ["logs/"] },
+    { "id": "M8-01", "milestone": "M8", "title": "引擎接线：--engine run 全链路（规划/部署/启动/等待/恢复/日志）", "status": "done", "deps": ["M7-03"], "acceptance": ["--dry-run 在临时假根上走完全流程且不落盘", "真实路径在真机上完成一次部署→启动→恢复"], "artifacts": ["launcher/src/engine.rs", "launcher-win::spawn_process"] },
+    { "id": "M7-01", "milestone": "M7", "title": "真机：鸣潮（含 10s 热重启）", "status": "todo", "deps": ["M8-01"], "acceptance": ["经官方启动器拉起，启动器关闭且游戏退出后恢复完整；无残留"], "artifacts": ["logs/"] },
+    { "id": "M7-02", "milestone": "M7", "title": "真机：异环（首次退出即恢复）", "status": "todo", "deps": ["M7-01"], "acceptance": ["同上；启动器先退出时继续等游戏，策略未被统一"], "artifacts": ["logs/"] },
+    { "id": "M7-03", "milestone": "M7", "title": "真机：Steam 与 EXE 启动（等全部目标进程退出）", "status": "todo", "deps": ["M7-02"], "acceptance": ["等全部目标进程退出后恢复；不设启动超时，程序常驻等待"], "artifacts": ["logs/"] },
     { "id": "M6-06", "milestone": "M6", "title": "文档同步：PARITY（D-9/D-10、retained）、等价报告 C14、README 与 M6-DIFF", "status": "done", "deps": ["M6-05"], "acceptance": ["四份文档与实际行为一致"], "artifacts": ["docs/"] }
   ]
 }

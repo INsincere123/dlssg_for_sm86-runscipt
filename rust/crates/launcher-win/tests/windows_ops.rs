@@ -166,3 +166,37 @@ fn clock_is_close_to_the_system_clock() {
     assert!(elapsed.as_secs() > 1_700_000_000, "系统时间明显不对");
     let _ = Path::new("x");
 }
+
+#[test]
+fn spawn_process_runs_a_hidden_child_and_reports_its_exit_code() {
+    use launcher_win::spawn_process;
+
+    // cmd.exe /c exit 7：不需要管理员，不写文件，退出码可预测。
+    let child = spawn_process(
+        &PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+        &["/c".to_owned(), "exit".to_owned(), "7".to_owned()],
+        Some(&std::env::temp_dir()),
+        true,
+    )
+    .expect("启动子进程");
+    assert!(child.pid > 0, "应拿到 pid");
+    let code = child.wait(Duration::from_secs(20)).expect("应正常退出");
+    assert_eq!(code, 7, "退出码必须原样传回");
+}
+
+#[test]
+fn spawn_process_rejects_a_missing_executable() {
+    use launcher_win::spawn_process;
+
+    let error = spawn_process(
+        &PathBuf::from(r"D:\definitely-not-here-dlssg.exe"),
+        &[],
+        None,
+        true,
+    )
+    .expect_err("应报错");
+    assert!(
+        error.to_string().contains("文件操作失败") || error.to_string().contains("错误"),
+        "{error}"
+    );
+}

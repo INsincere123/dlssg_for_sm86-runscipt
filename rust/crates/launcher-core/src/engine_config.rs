@@ -112,6 +112,13 @@ pub fn prepare_engine_config(
     let source_text = read_source_text(&spec.source_path)?;
     let mut outcome = PrepareOutcome::default();
 
+    // 真实游戏可能还没跑过一次，`Saved\Config\Windows` 不存在；先补目录再建链接。
+    if let Some(parent) = spec.engine_path.parent() {
+        if !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+        }
+    }
+
     // 1) 只读运行时副本
     let runtime_index =
         session.start_operation(OperationKind::Runtime, path_text(&spec.runtime_path)?)?;

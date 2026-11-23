@@ -35,7 +35,7 @@ pub const CORE_REQUIRED: [&str; 5] = [
     "dlssg_sm86\\runtime\\nvngx_dlssg.dll",
     "dlssg_sm86\\backend\\sm86_backend.dll",
     "dlssg_sm86\\kernels\\fg_kernels.dll",
-    "dlssg_sm86\\xefg\\efg_kernels.dll",
+    "dlssg_sm86\\xefg\\xefg_kernels.dll",
 ];
 
 /// 只有超分未关闭时才要求的资源。

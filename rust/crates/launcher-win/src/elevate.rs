@@ -119,6 +119,39 @@ pub fn run_elevated(exe: &Path, arguments: &str, wait: Duration) -> Result<Eleva
     Ok(ElevationOutcome::Finished { code })
 }
 
+/// 提权启动后**不等待**：界面把工作交给它就可以退出。
+///
+/// 与 `run_elevated` 的区别是不读退出码、不阻塞；句柄立刻关闭不会影响子进程。
+pub fn spawn_elevated(exe: &Path, arguments: &str) -> Result<()> {
+    unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+
+    let verb = wide(std::ffi::OsStr::new("runas"));
+    let file = wide(exe.as_os_str());
+    let parameters = wide(std::ffi::OsStr::new(arguments));
+    let mut info: ShellExecuteInfoW = unsafe { std::mem::zeroed() };
+    info.cb_size = SHELL_EXECUTE_INFO_SIZE;
+    info.f_mask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    info.lp_verb = verb.as_ptr();
+    info.lp_file = file.as_ptr();
+    info.lp_parameters = parameters.as_ptr();
+    info.n_show = SW_HIDE;
+
+    let started = unsafe { ShellExecuteExW(&mut info) };
+    if started == 0 {
+        let error = io::Error::last_os_error();
+        if let Some(outcome) = classify_shell_error(&error) {
+            return Err(Error::unavailable(match outcome {
+                ElevationOutcome::Cancelled => "用户取消了提权".to_owned(),
+                _ => "提权启动失败".to_owned(),
+            }));
+        }
+        return Err(Error::io(exe, error));
+    }
+    if info.h_process != 0 {
+        unsafe { CloseHandle(info.h_process) };
+    }
+    Ok(())
+}
 fn last_error(path: &Path) -> Error {
     Error::io(path, io::Error::last_os_error())
 }

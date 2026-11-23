@@ -251,8 +251,7 @@ fn restore_engine_link(
             }
             std::fs::create_dir_all(&recovered_directory)
                 .map_err(|error| Error::io(&recovered_directory, error))?;
-            std::fs::rename(&operation.path, &saved)
-                .map_err(|error| Error::io(&operation.path, error))?;
+            move_file(Path::new(&operation.path), &saved)?;
             return Ok(Action::Archived(saved));
         }
     }
@@ -300,7 +299,7 @@ fn restore_backup(operation: &Operation) -> Result<Action> {
                 )))
             };
         }
-        std::fs::rename(backup, original).map_err(|error| Error::io(backup, error))?;
+        move_file(backup, original)?;
         return Ok(Action::Restored);
     }
     if is_ordinary_file_with_hash(original, &operation.hash)? {
@@ -434,6 +433,20 @@ fn same_path(left: &Path, right: &Path) -> Result<bool> {
     let context = crate::path::PathContext::current()?;
     Ok(context.normalize(&left.to_string_lossy())?
         == context.normalize(&right.to_string_lossy())?)
+}
+
+/// 跨盘移动：`rename` 在不同卷上会返回 ERROR_NOT_SAME_DEVICE(17)，
+/// 这里退化成"复制 + 删除源"，保证 `.state` 与游戏配置不在同一盘时也能恢复。
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(17) => {
+            std::fs::copy(from, to).map_err(|error| Error::io(from, error))?;
+            std::fs::remove_file(from).map_err(|error| Error::io(from, error))?;
+            Ok(())
+        }
+        Err(error) => Err(Error::io(from, error)),
+    }
 }
 
 #[cfg(test)]

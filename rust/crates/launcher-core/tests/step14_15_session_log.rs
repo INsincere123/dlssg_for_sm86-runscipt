@@ -149,7 +149,9 @@ fn first_exit_session_finishes_without_grace() {
 
 #[test]
 fn startup_timeout_is_reported_by_the_runner() {
-    let spec = SessionSpec::new(SessionPolicy::WaitAllTargets).with_game("game");
+    // 默认已改为无期限等待；这里显式配置超时来验证 runner 会把它报出来。
+    let mut spec = SessionSpec::new(SessionPolicy::WaitAllTargets).with_game("game");
+    spec.tuning.startup_timeout = Duration::from_secs(30);
     let probe = ScriptedProbe::new(vec![Vec::new()]);
     let clock = StepClock {
         current: RefCell::new(UNIX_EPOCH),
