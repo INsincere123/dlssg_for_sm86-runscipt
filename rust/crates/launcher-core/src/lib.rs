@@ -15,6 +15,7 @@
 //! - 步 14：`session`
 //! - 步 15：`log`
 
+pub mod builtin;
 pub mod config;
 pub mod diagnostic;
 pub mod direct;
@@ -27,9 +28,11 @@ pub mod gpu;
 pub mod journal;
 pub mod journal_store;
 pub mod log;
+pub mod log_retention;
 pub mod ops;
 pub mod path;
 pub mod pe;
+pub mod platform;
 pub mod preferences;
 pub mod prefs;
 pub mod quality;
@@ -40,6 +43,7 @@ pub mod settings;
 pub mod steam;
 #[doc(hidden)]
 pub mod testing;
+pub mod unreal;
 
 pub use error::{Error, Result};
 pub use ops::{

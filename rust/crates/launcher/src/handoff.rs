@@ -5,11 +5,12 @@
 
 use std::path::Path;
 
-/// 交接命令：`run` 启动游戏，`restore` 恢复原状。
+/// 交接命令：`run` 启动游戏，`restore` 恢复原状，`stop` 结束进程后恢复。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Run,
     Restore,
+    Stop,
 }
 
 impl Command {
@@ -17,6 +18,16 @@ impl Command {
         match self {
             Command::Run => "run",
             Command::Restore => "restore",
+            Command::Stop => "stop",
+        }
+    }
+
+    /// 报告文件名（界面按它轮询结果）。
+    pub fn report_name(self) -> &'static str {
+        match self {
+            Command::Run => "ui-run.json",
+            Command::Restore => "ui-restore.json",
+            Command::Stop => "ui-stop.json",
         }
     }
 }

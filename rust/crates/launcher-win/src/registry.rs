@@ -221,6 +221,182 @@ pub fn epic_manifest_path() -> Option<PathBuf> {
     )
 }
 
+/// Steam 安装目录（`Steam.exe` 所在目录）。
+pub fn steam_install_directory() -> Option<PathBuf> {
+    let steam = read_string(HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath")
+        .or_else(|| {
+            read_string(
+                HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\WOW6432Node\Valve\Steam",
+                "InstallPath",
+            )
+        })
+        .or_else(|| read_string(HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"))?;
+    Some(PathBuf::from(steam))
+}
+
+/// 全部 Steam 库的 `steamapps` 目录（主库 + `libraryfolders.vdf` 登记的库）。
+pub fn steam_library_steamapps() -> Vec<PathBuf> {
+    let Some(steam) = steam_install_directory() else {
+        return Vec::new();
+    };
+    let executable = steam.join("Steam.exe");
+    match launcher_core::steam::library_directories(&executable) {
+        Ok(directories) => directories
+            .into_iter()
+            .filter(|path| path.is_dir())
+            .collect(),
+        Err(_) => {
+            let fallback = steam.join("steamapps");
+            if fallback.is_dir() {
+                vec![fallback]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// GOG 的 `(显示名, 安装目录)`：每个子键的 `gameName` + `path`。
+pub fn gog_games() -> Vec<(String, PathBuf)> {
+    let mut games: Vec<(String, PathBuf)> = Vec::new();
+    for base in [
+        r"SOFTWARE\WOW6432Node\GOG.com\Games",
+        r"SOFTWARE\GOG.com\Games",
+    ] {
+        for key in sub_keys(HKEY_LOCAL_MACHINE, base) {
+            let path = format!("{base}\\{key}");
+            let Some(directory) = read_string(HKEY_LOCAL_MACHINE, &path, "path") else {
+                continue;
+            };
+            let name =
+                read_string(HKEY_LOCAL_MACHINE, &path, "gameName").unwrap_or_else(|| key.clone());
+            games.push((name, PathBuf::from(directory)));
+        }
+    }
+    games
+}
+
+/// Epic：`(AppName, 显示名, 安装目录)`。显示名从 `Manifests\<AppName>.item` 里读，
+/// 读不到就是 `None`（调用方退回 AppName）。
+pub fn epic_games() -> Vec<(String, Option<String>, PathBuf)> {
+    let Some(manifest) = epic_manifest_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let mut games: Vec<(String, Option<String>, PathBuf)> = Vec::new();
+    for (app_name, install) in epic_pairs(&text) {
+        let display = epic_display_name(&app_name);
+        games.push((app_name, display, PathBuf::from(install)));
+    }
+    games
+}
+
+/// 从 `LauncherInstalled.dat` 里抽 `(AppName, InstallLocation)` 配对。
+///
+/// 两个键在同一个对象里，顺序固定（`AppName` 先于 `InstallLocation` 或反之都可能），
+/// 因此按对象顺序扫描：遇到 `AppName` 记住，遇到 `InstallLocation` 配对。
+pub fn epic_pairs(text: &str) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut pending: Option<String> = None;
+    let mut index = 0usize;
+    while index < text.len() {
+        let rest = &text[index..];
+        let Some(quote) = rest.find('"') else {
+            break;
+        };
+        let after = &rest[quote + 1..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        let key = &after[..end];
+        index += quote + 1 + end + 1;
+        if key != "AppName" && key != "InstallLocation" {
+            continue;
+        }
+        let rest = &text[index..];
+        let Some(colon) = rest.find(':') else {
+            break;
+        };
+        let rest = &rest[colon + 1..];
+        let Some(start) = rest.find('"') else {
+            break;
+        };
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        let value = after[..end].replace("\\\\", "\\");
+        index += colon + 1 + start + 1 + end + 1;
+        if key == "AppName" {
+            pending = Some(value);
+        } else if let Some(app) = pending.take() {
+            pairs.push((app, value));
+        }
+    }
+    pairs
+}
+
+/// Epic 清单目录里的 `.item` 文件，读 `DisplayName`。
+fn epic_display_name(app_name: &str) -> Option<String> {
+    let program_data = std::env::var_os("ProgramData")?;
+    let path = Path::new(&program_data)
+        .join("Epic")
+        .join("EpicGamesLauncher")
+        .join("Data")
+        .join("Manifests")
+        .join(format!("{app_name}.item"));
+    let text = std::fs::read_to_string(path).ok()?;
+    let needle = "\"DisplayName\"";
+    let start = text.find(needle)? + needle.len();
+    let rest = &text[start..];
+    let colon = rest.find(':')?;
+    let rest = &rest[colon + 1..];
+    let quote = rest.find('"')?;
+    let after = &rest[quote + 1..];
+    let end = after.find('"')?;
+    let value = after[..end].replace("\\\\", "\\");
+    (!value.trim().is_empty()).then_some(value)
+}
+
+/// 注册表卸载项（只取定位内置游戏要用的字段）。
+pub fn uninstall_entries() -> Vec<launcher_core::builtin::UninstallEntry> {
+    use launcher_core::builtin::UninstallEntry;
+
+    const BASES: [(&str, Handle); 3] = [
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            HKEY_LOCAL_MACHINE,
+        ),
+        (
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            HKEY_LOCAL_MACHINE,
+        ),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            HKEY_CURRENT_USER,
+        ),
+    ];
+    let mut entries: Vec<UninstallEntry> = Vec::new();
+    for (base, root) in BASES {
+        for key in sub_keys(root, base) {
+            let path = format!("{base}\\{key}");
+            let Some(display_name) = read_string(root, &path, "DisplayName") else {
+                continue;
+            };
+            entries.push(UninstallEntry {
+                display_name,
+                install_location: read_string(root, &path, "InstallLocation"),
+                install_path: read_string(root, &path, "InstallPath"),
+                display_icon: read_string(root, &path, "DisplayIcon"),
+            });
+        }
+    }
+    entries
+}
+
 /// 汇总所有来源（去重后按 Steam → Epic → GOG 顺序）。
 pub fn installed_game_roots() -> Vec<DiscoveryRoot> {
     let mut roots: Vec<DiscoveryRoot> = Vec::new();

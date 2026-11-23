@@ -1,7 +1,7 @@
 {
   "plan": "dlssg-launcher-rust",
   "version": "2.0",
-  "updated": "2026-11-22",
+  "updated": "2026-11-23",
   "audience": "ai-agent",
   "note": "plan.json 是唯一事实来源；plan.md 由 rust/tools/gen-plan.ps1 生成，不要手改 md。",
   "entrypoints": {
@@ -55,7 +55,8 @@
     { "id": "H", "status": "pass", "scope": "M4 界面：主窗/设置页/自定义 INI/添加游戏/日志与关于/性能与 DPI", "evidence": "274 测试通过；docs/M4-REPORT.md 记录实测（生产 WS 84.3 MB、自检 87.0 MB、首帧 128–161 ms、ppp=1.5、单实例 64 ms 退出）；未验证：手工交互、多显示器与 100%/200% 缩放" },
     { "id": "I", "status": "pass", "scope": "M5 工具：显卡名（模型+真实只读枚举）、便携包清单、导出自检", "evidence": "293 + 13 测试通过；本机枚举到 2 台 NVIDIA 设备且 DeviceDesc 可解析；清单格式 FormatVersion=1 与 PS 字段兼容；自检能识别缺失/大小/篡改/多余。未验证：真实写入 DeviceDesc（需授权并重启）、真实打包成 ZIP" },
     { "id": "J", "status": "pass", "scope": "M6 代码与差分：双根读取、retained 阶段、PS↔Rust 差分核对、文档同步", "evidence": "差分 21 项差异 0（docs/M6-DIFF.md）；真实记录 steam-4356430 读取成功并暴露 retained 缺陷已修；该记录已于 2026-11-23 由用户恢复，state 与 version.dll 均已清除" },
-    { "id": "K", "status": "todo", "scope": "M7 真机验收：鸣潮热重启、异环首次退出恢复、Steam/Direct 全目标与 120s 超时", "evidence": "需要在实际游戏中启动并退出后核对日志与目录状态；前置条件是引擎接线（--engine run 全链路）完成" }
+    { "id": "K", "status": "todo", "scope": "M7 真机验收：鸣潮热重启、异环首次退出恢复、Steam/Direct 全目标与 120s 超时", "evidence": "需要在实际游戏中启动并退出后核对日志与目录状态；前置条件是引擎接线（--engine run 全链路）完成" },
+    { "id": "L", "status": "pass", "scope": "M9 界面收尾：恢复弹窗、帧生成/画质分视图与代理、12 键提示、日志保留、平台扫描与内置定位、UE 识别", "evidence": "check.ps1 全绿；真机核对：扫描 19.5s 定位异环、识别鸣潮 UE4/异环 UE5、notepad 不误报；界面截图逐张核对（主窗/两个视图/两种弹窗/扫描结果）。未验证：新构建在真实游戏里的完整部署→启动→恢复（M7-01..03 仍为 todo）" }
   ],
   "tasks": [
     { "id": "M1-01", "milestone": "M1", "title": "workspace + 错误类型 + 4 个能力 trait + 样本读取器", "status": "done", "deps": [], "acceptance": ["cargo test -p launcher-core 通过", "clippy 无告警"], "artifacts": ["rust/Cargo.toml", "src/ops.rs", "src/error.rs", "src/fixtures.rs"] },
@@ -105,6 +106,19 @@
     { "id": "M7-01", "milestone": "M7", "title": "真机：鸣潮（含 10s 热重启）", "status": "todo", "deps": ["M8-01"], "acceptance": ["经官方启动器拉起，启动器关闭且游戏退出后恢复完整；无残留"], "artifacts": ["logs/"] },
     { "id": "M7-02", "milestone": "M7", "title": "真机：异环（首次退出即恢复）", "status": "todo", "deps": ["M7-01"], "acceptance": ["同上；启动器先退出时继续等游戏，策略未被统一"], "artifacts": ["logs/"] },
     { "id": "M7-03", "milestone": "M7", "title": "真机：Steam 与 EXE 启动（等全部目标进程退出）", "status": "todo", "deps": ["M7-02"], "acceptance": ["等全部目标进程退出后恢复；不设启动超时，程序常驻等待"], "artifacts": ["logs/"] },
-    { "id": "M6-06", "milestone": "M6", "title": "文档同步：PARITY（D-9/D-10、retained）、等价报告 C14、README 与 M6-DIFF", "status": "done", "deps": ["M6-05"], "acceptance": ["四份文档与实际行为一致"], "artifacts": ["docs/"] }
+    { "id": "M6-06", "milestone": "M6", "title": "文档同步：PARITY（D-9/D-10、retained）、等价报告 C14、README 与 M6-DIFF", "status": "done", "deps": ["M6-05"], "acceptance": ["四份文档与实际行为一致"], "artifacts": ["docs/"] },
+    { "id": "M9-01", "milestone": "M9", "title": "恢复结果弹窗（不画进度条）", "status": "done", "deps": ["M8-01"], "acceptance": ["恢复交给引擎后窗口保持可见；成功/失败各弹一次居中卡片，点「确定」才消失；120 秒没结果按失败弹窗"], "artifacts": ["launcher/src/restore_result.rs", "launcher/src/ui.rs"] },
+    { "id": "M9-02", "milestone": "M9", "title": "帧生成 / 画质拆成两个视图 + 代理文件选择", "status": "done", "deps": ["M9-01"], "acceptance": ["两个视图各自独立；帧生成含 6 个代理选项与「当前」；异环建议 winmm.dll、有遗留部署时灰掉；画质只在画质视图保存时改配置源"], "artifacts": ["launcher/src/settings_form.rs", "launcher/src/ui.rs"] },
+    { "id": "M9-03", "milestone": "M9", "title": "12 键悬停说明（口径 B：文档+代码核对）", "status": "done", "deps": ["M9-02"], "acceptance": ["12 个键都有非空说明，且顺序与 all_keys() 一致；数值与仓库 dlssg_sm86.ini 注释一致"], "artifacts": ["launcher/src/settings_form.rs", "launcher/src/ui.rs"] },
+    { "id": "M9-04", "milestone": "M9", "title": "日志保留 7 天（只清 logs\\*.log）", "status": "done", "deps": ["M9-01"], "acceptance": ["只删普通 .log 文件；不递归；ui-run.json / ui-restore.json 与其它文件不动；时钟回拨时保留"], "artifacts": ["launcher-core/src/log_retention.rs", "launcher/src/main.rs"] },
+    { "id": "M9-05", "milestone": "M9", "title": "顶栏「扫描游戏」+ 平台扫描 + 鸣潮/异环自动定位", "status": "done", "deps": ["M9-02"], "acceptance": ["只扫 Steam/GOG/Epic 记录与注册表，不翻全盘；有证据的自动加，其余进「扫描结果」等确认；异环在本机定位成功（winmm、HTGame.exe）"], "artifacts": ["launcher-core/src/platform.rs", "launcher-core/src/builtin.rs", "launcher-win/src/registry.rs", "launcher/src/scan.rs"] },
+    { "id": "M9-06", "milestone": "M9", "title": "UE4/UE5 识别 + 画质档位接线", "status": "done", "deps": ["M9-02"], "acceptance": ["三条证据（Build.version、EXE 标记、版本信息）冲突或缺失时不猜；鸣潮识别 UE4、异环识别 UE5、notepad 不误报；画质视图可重新识别与手动校准"], "artifacts": ["launcher-core/src/unreal.rs", "launcher/src/ui.rs"] },
+    { "id": "M10-01", "milestone": "M10", "title": "启动失败要看得见（启动只等 6 秒看报告）", "status": "done", "deps": ["M9-05"], "acceptance": ["交接后先等报告：引擎写 error 就弹窗并保留窗口；接管成功才隐藏"], "artifacts": ["launcher/src/ui.rs"] },
+    { "id": "M10-02", "milestone": "M10", "title": "行状态周期刷新 + 检测到游戏进程改「结束并恢复」", "status": "done", "deps": ["M10-01"], "acceptance": ["每 0.9 秒重算部署记录/会话锁/游戏进程；游戏在跑时按钮变「结束并恢复」，状态同步变已部署"], "artifacts": ["launcher/src/ui.rs", "launcher/src/view_model.rs"] },
+    { "id": "M10-03", "milestone": "M10", "title": "引擎新命令 --engine stop（强行结束进程并恢复）", "status": "done", "deps": ["M10-02"], "acceptance": ["引擎在跑→等它自己恢复；引擎卡死→按记录里的 ScriptPid 结束再自己恢复；无引擎→直接恢复；Steam 入口绝不结束 steam.exe"], "artifacts": ["launcher/src/engine.rs", "launcher-win/src/lib.rs"] },
+    { "id": "M10-04", "milestone": "M10", "title": "没有配置目录的游戏不再强制要求明文配置源", "status": "done", "deps": ["M10-03"], "acceptance": ["config_dir 为空时跳过 Engine.ini 部署且不需要配置源；内置模板只在文件存在时写 config_source；默认配置源再按游戏名找一次"], "artifacts": ["launcher/src/engine.rs", "launcher/src/scan.rs"] },
+    { "id": "M10-05", "milestone": "M10", "title": "残留记录不再跳过部署，Steam 先部署后 applaunch", "status": "done", "deps": ["M10-04"], "acceptance": ["发现上一轮记录先恢复再全新部署；Steam 游戏先部署再 steam -applaunch；二游启动器最多等 10 秒且按进程名/目录双判"], "artifacts": ["launcher/src/engine.rs"] },
+    { "id": "M10-06", "milestone": "M10", "title": "恢复的残留检查用记录里的代理名", "status": "done", "deps": ["M10-03"], "acceptance": ["用 winmm 部署的游戏恢复后不再被 version.dll 残留误报；第三方代理文件如实保留"], "artifacts": ["launcher/src/engine.rs"] },
+    { "id": "M10-07", "milestone": "M10", "title": "每一行的状态只看本行（不再被别的游戏带着变）", "status": "done", "deps": ["M10-02"], "acceptance": ["状态由本行目录/本行部署记录/本行游戏进程推导；本行在跑优先于已部署；全局会话只用来禁用别的行的启动；在跑的行不显示恢复原状"], "artifacts": ["launcher/src/view_model.rs", "launcher/src/ui.rs", "launcher/src/main.rs"] }
   ]
 }

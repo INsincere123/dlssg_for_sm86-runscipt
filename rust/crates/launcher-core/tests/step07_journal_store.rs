@@ -159,7 +159,7 @@ fn second_session_for_the_same_game_is_refused() {
     let error = journal_store::DeploymentSession::open(&ops, &directory, render, journal)
         .expect_err("第二个会话应被拒绝");
     assert!(
-        error.to_string().contains("Another deployment/recovery"),
+        error.to_string().contains("部署/恢复正在进行"),
         "实际：{error}"
     );
     first.finish().expect("收尾");

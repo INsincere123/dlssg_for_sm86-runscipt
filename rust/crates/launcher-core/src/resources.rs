@@ -371,8 +371,11 @@ pub fn install_proxy_link(
     }
     if std::fs::symlink_metadata(&spec.path).is_ok() {
         return Err(Error::invalid(format!(
-            "代理位置已有普通文件（第三方代理），不做覆盖：{}",
-            spec.path.display()
+            "代理位置已有普通文件（第三方代理），不做覆盖：{}\n\
+             这个文件属于别的注入器/模组加载器，本程序既不改也不删它。\n\
+             可以到「帧生成」里换一个没被占用的代理再启动：{}",
+            spec.path.display(),
+            free_proxy_hint(spec.path.parent())
         )));
     }
     if dry_run {
@@ -390,6 +393,26 @@ pub fn install_proxy_link(
 pub enum LinkOutcome {
     Created,
     Reused,
+}
+
+/// 群里还有哪些代理位置是空的（给"被占用"的报错用一句话）。
+///
+/// 只看文件是否存在：存在就是被占（可能是别人的普通文件，也可能是别的代理名被占），
+/// 不动它们，也不做自动轮换——换哪个由用户在「帧生成」里选。
+fn free_proxy_hint(directory: Option<&Path>) -> String {
+    let Some(directory) = directory else {
+        return "（无法确定渲染目录）".to_owned();
+    };
+    let free: Vec<&str> = PROXY_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !directory.join(name).exists())
+        .collect();
+    if free.is_empty() {
+        "这个目录里 6 个代理名都被占了，需要先手动清理其中一个。".to_owned()
+    } else {
+        free.join("、")
+    }
 }
 
 /// 拆除资源链接：只删链接本身，资源根只在空时删除。

@@ -11,6 +11,8 @@ mod about;
 mod add_game;
 mod engine;
 mod handoff;
+mod restore_result;
+mod scan;
 mod settings_form;
 mod tray;
 mod ui;
@@ -38,10 +40,7 @@ fn main() -> ExitCode {
             };
             eprintln!("{message}");
             if let Some(path) = report_path_from_env() {
-                write_report(
-                    Some(&path),
-                    &format!("{{\n  \"error\": \"{}\"\n}}\n", message.replace('"', "'")),
-                );
+                write_report(Some(&path), &error_report(message));
             }
             ExitCode::from(code)
         }
@@ -52,6 +51,117 @@ enum Failure {
     Usage(String),
     #[allow(dead_code)]
     NotImplemented(String),
+}
+
+/// 调试用的界面预览（`--ui-preview`）：不连引擎，直接把某个界面摆出来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preview {
+    /// 恢复成功的弹窗。
+    RestoreOk,
+    /// 恢复失败的弹窗。
+    RestoreFail,
+    /// 帧生成设置页。
+    FrameGen,
+    /// 画质设置页。
+    Quality,
+    /// 扫描结果窗口（示例数据）。
+    Scan,
+}
+
+impl Preview {
+    fn parse(value: &str) -> Result<Self, Failure> {
+        match value {
+            "restore-ok" => Ok(Self::RestoreOk),
+            "restore-fail" => Ok(Self::RestoreFail),
+            "framegen" => Ok(Self::FrameGen),
+            "quality" => Ok(Self::Quality),
+            "scan" => Ok(Self::Scan),
+            other => Err(Failure::Usage(format!(
+                "--ui-preview 只接受 restore-ok / restore-fail / framegen / quality / scan，收到：{other}"
+            ))),
+        }
+    }
+
+    /// 恢复结果窗的内容（示例文本，只用于核对排版）。
+    pub fn restore_outcome(self) -> Option<restore_result::RestoreOutcome> {
+        match self {
+            Self::RestoreOk => Some(restore_result::RestoreOutcome::Restored {
+                message: "已恢复 5 项：engineLink、backup、runtime、storage、link（示例）"
+                    .to_owned(),
+            }),
+            Self::RestoreFail => Some(restore_result::RestoreOutcome::Failed {
+                error:
+                    "恢复失败：备份校验失败（示例）。\n原始文件保留在 .state 下，未删除任何内容。"
+                        .to_owned(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// 要打开哪个设置视图；`None` 表示不开设置页。
+    pub fn settings_view(self) -> Option<settings_form::SettingsView> {
+        match self {
+            Self::FrameGen => Some(settings_form::SettingsView::FrameGen),
+            Self::Quality => Some(settings_form::SettingsView::Quality),
+            _ => None,
+        }
+    }
+
+    /// 扫描结果窗口的示例数据（只用于核对排版）。
+    pub fn scan_sample(self) -> Option<scan::ScanResult> {
+        if self != Self::Scan {
+            return None;
+        }
+        let mut nte = launcher_core::preferences::GameProfile::new(
+            "nte",
+            "异环",
+            std::path::PathBuf::from(r"C:\Games\Neverness To Everness"),
+        );
+        nte.render_executable =
+            Some(r"Client\WindowsNoEditor\HT\Binaries\Win64\HTGame.exe".to_owned());
+        nte.proxy_index = 2;
+        let mut wukong = launcher_core::preferences::GameProfile::new(
+            "steam-2358720",
+            "黑神话：悟空",
+            std::path::PathBuf::from(r"D:\SteamLibrary\steamapps\common\BlackMythWukong"),
+        );
+        wukong.launch_mode = "Steam".to_owned();
+        wukong.render_executable = Some(r"b1\Binaries\Win64\b1-Win64-Shipping.exe".to_owned());
+        Some(scan::ScanResult {
+            ready: vec![
+                scan::ReadyGame {
+                    profile: nte,
+                    source: "注册表卸载项「异环」".to_owned(),
+                },
+                scan::ReadyGame {
+                    profile: wukong,
+                    source: "Steam 库 D:\\SteamLibrary".to_owned(),
+                },
+            ],
+            ambiguous: vec![
+                scan::AmbiguousGame {
+                    name: "NBA 2K27".to_owned(),
+                    directory: std::path::PathBuf::from(
+                        r"D:\SteamLibrary\steamapps\common\NBA 2K27",
+                    ),
+                    source: "Steam 库 D:\\SteamLibrary".to_owned(),
+                    reason: "有 2 个候选但没有唯一可信项（最高 0 分）".to_owned(),
+                },
+                scan::AmbiguousGame {
+                    name: "Risk of Rain 2".to_owned(),
+                    directory: std::path::PathBuf::from(
+                        r"D:\SteamLibrary\steamapps\common\Risk of Rain 2",
+                    ),
+                    source: "Steam 库 D:\\SteamLibrary".to_owned(),
+                    reason: "没看到虚幻打包结构或自带 DLSS-G 组件".to_owned(),
+                },
+            ],
+            notes: vec![
+                "没在注册表里认出「鸣潮」的安装目录，需要的话手动「添加游戏」".to_owned(),
+                "没有 GOG 记录".to_owned(),
+            ],
+        })
+    }
 }
 
 struct Arguments {
@@ -200,6 +310,7 @@ fn run() -> Result<u8, Failure> {
             Ok(EXIT_OK)
         }
         "run" => engine_run(&parsed),
+        "stop" => engine_stop(&parsed),
         "restore" => {
             let game = parsed
                 .game
@@ -224,6 +335,45 @@ fn run() -> Result<u8, Failure> {
         }
         other => Err(Failure::Usage(format!("未知子命令：--engine {other}"))),
     }
+}
+
+/// `--engine stop`：强行结束该游戏的进程，然后（必要时）恢复原状。
+///
+/// 界面点「结束并恢复」时以管理员身份调用它：游戏本身可能也是提权的，
+/// 非提权进程既杀不掉也读不到它的路径。
+fn engine_stop(parsed: &Arguments) -> Result<u8, Failure> {
+    let game = parsed
+        .game
+        .clone()
+        .ok_or_else(|| Failure::Usage("--engine stop 需要 --game".to_owned()))?;
+    let root = parsed.root.clone().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+            .unwrap_or_default()
+    });
+    // 偏好跟着"启动器安装位置"走，不跟 `--root`（与 engine_run 一致）。
+    let install_base = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| root.clone());
+    let preferences_file = parsed
+        .preferences
+        .clone()
+        .or_else(|| launcher_core::prefs::preferences_path(&install_base).ok());
+    let preferences = preferences_file
+        .as_deref()
+        .and_then(|path| launcher_core::preferences::load(path).ok())
+        .unwrap_or_default();
+    let profile = preferences
+        .find(&game)
+        .cloned()
+        .ok_or_else(|| Failure::Usage(format!("偏好里没有这个游戏：{game}")))?;
+
+    let summary = engine::stop(&root, &profile, std::time::Duration::from_secs(8))
+        .map_err(|error| Failure::Usage(format!("结束并恢复失败：{error}")))?;
+    write_report(parsed.report.as_deref(), &summary.to_json());
+    Ok(EXIT_OK)
 }
 
 /// `--engine check --elevate`：自我提权跑一次 check，记录子进程结果。
@@ -361,6 +511,7 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
 /// 图形入口（M4）：单实例 + 主窗口；`--ui-selftest <ms> <report>` 用于验收。
 fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
     let mut self_test = ui::SelfTest::default();
+    let mut preview: Option<Preview> = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -376,6 +527,12 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
                 index += 3;
             }
             "--open-add-game" => index += 1,
+            // 调试：不连引擎，直接把某个界面摆出来（截图核对用）。
+            "--ui-preview" => {
+                let value = next_value(arguments, index, "--ui-preview")?;
+                preview = Some(Preview::parse(&value)?);
+                index += 2;
+            }
             other => return Err(Failure::Usage(format!("未知参数：{other}"))),
         }
     }
@@ -402,22 +559,22 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
                     run_root = PathBuf::from(declared.trim());
                 }
             }
-            let session_active = launcher_win::session_active();
+            // 每一行的状态只看本行事实：本行的游戏进程在跑就是"运行中"，
+            // 别的游戏在跑不能写进这一行（真机反馈过这个 bug）。
+            view.session_taken = launcher_win::session_active();
             for game in &preferences.games {
                 let pending = launcher_core::journal_store::load_for_game(&root, &game.id)
                     .ok()
                     .flatten()
                     .is_some();
+                let running = engine::is_game_running(game);
                 view.upsert(view_model::GameEntry {
                     id: game.id.clone(),
                     name: game.name.clone(),
                     directory: game.directory.clone(),
-                    status: view_model::derive_status(
-                        game.directory.is_dir(),
-                        pending,
-                        session_active,
-                    ),
+                    status: view_model::derive_status(game.directory.is_dir(), pending, running),
                     engine_host: game.engine_host.clone(),
+                    running,
                 });
             }
         }
@@ -426,9 +583,23 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
         }
     }
 
-    let app = ui::LauncherApp::new(view, (self_test.hold_ms > 0).then_some(self_test))
+    // 日志保留 7 天：只清 <运行根>\logs\*.log，报告 JSON 与其它文件不动。
+    let logs = about::logs_directory(&run_root);
+    let pruned = launcher_core::log_retention::prune(
+        &logs,
+        std::time::SystemTime::now(),
+        launcher_core::log_retention::RETENTION_DAYS,
+    );
+    if !pruned.removed.is_empty() || !pruned.errors.is_empty() {
+        view.notice = pruned.summary();
+    }
+
+    let mut app = ui::LauncherApp::new(view, (self_test.hold_ms > 0).then_some(self_test))
         .with_preferences(launcher_core::prefs::preferences_path(&root).ok())
         .with_root(run_root.clone());
+    if let Some(preview) = preview {
+        app = app.with_preview(preview);
+    }
     let result = eframe::run_native(
         "DLSSG 启动器",
         ui::native_options("DLSSG 启动器"),
@@ -454,6 +625,21 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
     result
         .map(|_| EXIT_OK)
         .map_err(|error| Failure::Usage(format!("窗口创建失败：{error}")))
+}
+
+/// 失败报告：交给 serde_json 转义。
+///
+/// 手写 `format!` 会把路径里的反斜杠当成 JSON 转义（`\p` 之类），界面显示时反斜杠全丢，
+/// 排查时看不出到底是哪个文件（2026-11-23 真机截图暴露）。
+fn error_report(message: &str) -> String {
+    #[derive(serde::Serialize)]
+    struct Report<'a> {
+        error: &'a str,
+    }
+    let mut text = serde_json::to_string_pretty(&Report { error: message })
+        .unwrap_or_else(|_| "{\"error\":\"报告序列化失败\"}".to_owned());
+    text.push('\n');
+    text
 }
 
 /// 失败路径也要能落盘：从命令行里再找一次 `--report`。

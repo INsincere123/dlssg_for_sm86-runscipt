@@ -115,8 +115,14 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
     let project_directory = project_of(&render_directory);
 
     // 明文配置源：档案里给了就用它（相对启动器根或绝对），否则退回约定路径。
-    // Engine.ini 部署是可选项：关掉就完全不动游戏配置。
-    let deploy_engine = profile.deploy_engine_ini;
+    // Engine.ini 部署是可选项：没有声明配置目录（游戏不改配置）或关掉开关时，完全不动游戏配置，
+    // 也就不需要配置源——早先在这里无条件要求配置源，导致"不加配置就没法启动"。
+    let engine_directory = profile
+        .config_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let deploy_engine = profile.deploy_engine_ini && engine_directory.is_some();
     let engine_source = match profile.config_source.as_deref() {
         Some(value) if !value.trim().is_empty() => {
             let candidate = PathBuf::from(value.trim());
@@ -126,15 +132,12 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
                 paths.launcher_root.join(candidate)
             }
         }
-        _ => paths
-            .launcher_root
-            .join("配置")
-            .join(&profile.id)
-            .join("Engine.ini"),
+        _ => default_engine_source(paths, profile),
     };
     if deploy_engine && !engine_source.is_file() {
         return Err(Error::invalid(format!(
-            "缺少明文配置源：{}",
+            "缺少明文配置源：{}\n把一份 Engine.ini 放到这个路径，或在「画质」里用 05-自定义 指定一个已有文件；\
+             如果这个游戏不需要改配置，把它的 config_dir 留空即可。",
             engine_source.display()
         )));
     }
@@ -273,6 +276,257 @@ pub fn deployment<'a>(
     Deployment::new(launcher_root, &plan.render_directory, proxy)
 }
 
+/// 「结束并恢复」的结果（写成报告给界面读）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopSummary {
+    pub game_id: String,
+    /// 已结束的进程号。
+    pub killed: Vec<u32>,
+    /// 结束失败的进程号（权限不足时会出现）。
+    pub failed: Vec<u32>,
+    /// 引擎卡住时被本命令结束。
+    pub engine_stopped: bool,
+    /// 是否完成了恢复。
+    pub restored: bool,
+    pub message: String,
+}
+
+impl StopSummary {
+    pub fn to_json(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Report<'a> {
+            code: &'a str,
+            game: &'a str,
+            killed: usize,
+            failed: usize,
+            restored: bool,
+            engine_stopped: bool,
+            message: &'a str,
+        }
+        let report = Report {
+            code: "stopped",
+            game: &self.game_id,
+            killed: self.killed.len(),
+            failed: self.failed.len(),
+            restored: self.restored,
+            engine_stopped: self.engine_stopped,
+            message: &self.message,
+        };
+        let mut text = serde_json::to_string_pretty(&report)
+            .unwrap_or_else(|_| "{\"code\":\"stopped\"}".to_owned());
+        text.push('\n');
+        text
+    }
+}
+
+/// 渲染 EXE 的绝对路径（档案里存的是相对游戏目录的路径）。
+pub fn render_path(profile: &GameProfile) -> Option<PathBuf> {
+    let relative = profile.render_executable.as_deref()?.trim();
+    if relative.is_empty() {
+        return None;
+    }
+    let candidate = PathBuf::from(relative);
+    Some(if candidate.is_absolute() {
+        candidate
+    } else {
+        profile.directory.join(candidate)
+    })
+}
+
+/// 官方启动器的绝对路径（没配置就返回 `None`）。
+pub fn launcher_path(profile: &GameProfile) -> Option<PathBuf> {
+    let declared = profile.launch_executable.as_deref()?.trim();
+    if declared.is_empty() {
+        return None;
+    }
+    let candidate = PathBuf::from(declared);
+    Some(if candidate.is_absolute() {
+        candidate
+    } else {
+        profile.directory.join(candidate)
+    })
+}
+
+/// 该游戏"相关进程"的匹配条件：渲染 EXE、官方启动器入口、官方启动器进程名、
+/// 以及渲染目录里跑的任何进程（二游的启动器会再起别的进程名）。
+///
+/// **Steam 游戏不能把 steam.exe 算进去**：那是用户自己的客户端，结束它会把整个 Steam 关掉。
+pub fn game_processes(profile: &GameProfile) -> launcher_win::ProcessFilter {
+    let steam = profile.launch_mode.eq_ignore_ascii_case("Steam");
+    let mut executables: Vec<PathBuf> = Vec::new();
+    if let Some(render) = render_path(profile) {
+        executables.push(render);
+    }
+    if !steam {
+        if let Some(launcher) = launcher_path(profile) {
+            if !executables.iter().any(|path| path == &launcher) {
+                executables.push(launcher);
+            }
+        }
+    }
+    let mut names: Vec<String> = Vec::new();
+    if !steam {
+        if let Some(name) = profile.launcher_process_name.as_deref() {
+            let index = name.to_ascii_lowercase().rfind(".exe");
+            let trimmed = index
+                .map(|index| name[..index].to_owned())
+                .unwrap_or_else(|| name.to_owned());
+            if !trimmed.trim().is_empty() {
+                names.push(trimmed);
+            }
+        }
+    }
+    // 目录条件：渲染 EXE 所在目录（部署与进程都在这里），退回游戏目录。
+    let directory = render_path(profile)
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .or_else(|| Some(profile.directory.clone()))
+        .filter(|path| path.is_dir());
+    launcher_win::ProcessFilter {
+        executables,
+        names,
+        directory,
+    }
+}
+
+/// 该游戏是否有进程在跑（界面用它决定"启动"还是"结束并恢复"）。
+pub fn is_game_running(profile: &GameProfile) -> bool {
+    !launcher_win::matching_processes(&game_processes(profile)).is_empty()
+}
+
+/// 强行结束该游戏的相关进程。
+pub fn terminate_game(profile: &GameProfile, wait: std::time::Duration) -> (Vec<u32>, Vec<u32>) {
+    launcher_win::terminate_matching(&game_processes(profile), wait)
+}
+
+/// 杀完游戏后等引擎自己恢复的宽限时间：要盖住鸣潮 10 秒的热重启窗口，但别让用户干等。
+const ENGINE_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 「结束并恢复」：先强行结束该游戏的进程，再按情况恢复。
+///
+/// 三种情况分别处理（都要先杀进程，否则恢复会撞上被占用/仍在写的文件）：
+///
+/// 1. **引擎还在跑**（它持着会话锁）：杀完进程它会自己走完会话并恢复，这里只等它把记录删掉
+/// 2. **没有引擎但记录还在**（例如引擎异常退出）：由本进程补做恢复
+/// 3. **没有记录**：杀进程就够了，不报错
+///
+/// 这个命令通常以管理员身份运行，因为游戏本身可能也是提权的。
+pub fn stop(
+    launcher_root: &Path,
+    profile: &GameProfile,
+    kill_wait: std::time::Duration,
+) -> Result<StopSummary> {
+    let mut summary = StopSummary {
+        game_id: profile.id.clone(),
+        ..StopSummary::default()
+    };
+    let targets = game_processes(profile);
+    if !targets.is_empty() {
+        let (killed, failed) = terminate_game(profile, kill_wait);
+        summary.killed = killed;
+        summary.failed = failed;
+    }
+
+    let pending =
+        launcher_core::journal_store::load_for_game(launcher_root, &profile.id)?.is_some();
+    if !pending {
+        summary.message = format!(
+            "已结束 {} 个进程；没有未完成的部署，无需恢复",
+            summary.killed.len()
+        );
+        return Ok(summary);
+    }
+
+    if launcher_win::session_active() {
+        // 引擎还活着：正常情况下杀完游戏它会自己结束会话并恢复，这里先等它把记录删掉。
+        if wait_for_journal_removed(launcher_root, &profile.id, ENGINE_GRACE) {
+            summary.restored = true;
+            summary.message = format!("已结束 {} 个进程；引擎已完成恢复", summary.killed.len());
+            return Ok(summary);
+        }
+        // 引擎自己卡住了（例如在等一个永远不会出现的启动器进程）：结束它再自己恢复。
+        if !recover_from_stuck_engine(launcher_root, &profile.id)? {
+            return Err(Error::invalid(
+                "已结束游戏进程，但引擎在预期时间内没有完成恢复，也找不到可以结束的引擎进程；请查看日志。",
+            ));
+        }
+        summary.engine_stopped = true;
+    }
+
+    let pending =
+        launcher_core::journal_store::load_for_game(launcher_root, &profile.id)?.is_some();
+    if !pending {
+        summary.restored = true;
+        summary.message = if summary.engine_stopped {
+            format!(
+                "已结束 {} 个进程，并结束了卡住的引擎；部署记录已不在，无需恢复",
+                summary.killed.len()
+            )
+        } else {
+            format!(
+                "已结束 {} 个进程；部署记录已不在，无需恢复",
+                summary.killed.len()
+            )
+        };
+        return Ok(summary);
+    }
+    let message = restore_existing(launcher_root, &profile.id, false)?;
+    summary.restored = true;
+    summary.message = if summary.engine_stopped {
+        format!(
+            "已结束 {} 个进程，并结束了卡住的引擎；{message}",
+            summary.killed.len()
+        )
+    } else {
+        format!("已结束 {} 个进程；{message}", summary.killed.len())
+    };
+    Ok(summary)
+}
+
+/// 引擎自己卡住时：按部署记录里的 `ScriptPid` 结束它，等会话锁释放。
+///
+/// 返回是否真的结束了一个引擎进程。
+fn recover_from_stuck_engine(launcher_root: &Path, game_id: &str) -> Result<bool> {
+    let Some((_, journal)) = launcher_core::journal_store::load_for_game(launcher_root, game_id)?
+    else {
+        return Ok(false);
+    };
+    let pid = journal.script_pid;
+    if pid == 0 || pid == std::process::id() {
+        return Ok(false);
+    }
+    if !launcher_win::terminate_pid(pid, std::time::Duration::from_secs(5)) {
+        return Ok(false);
+    }
+    // 等它把 Global\DlssgSession 释放掉，否则下面的恢复打不开部署会话。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while launcher_win::session_active() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Ok(true)
+}
+
+/// 等部署记录消失（= 恢复完成）；超时返回 `false`。
+fn wait_for_journal_removed(
+    launcher_root: &Path,
+    game_id: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let pending = launcher_core::journal_store::load_for_game(launcher_root, game_id)
+            .ok()
+            .flatten()
+            .is_some();
+        if !pending {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// `--engine restore`：按已有部署记录手动恢复。
 ///
 /// 要求游戏已退出（与 PowerShell 版一致）；记录不存在时直接报错而不是静默成功。
@@ -285,6 +539,18 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         return Ok(format!("恢复计划：{}", path.display()));
     }
     let render = std::path::PathBuf::from(&journal.render);
+    // 残留检查必须用**记录里的那个代理**：以前写死成 1（version.dll），
+    // 于是用 winmm 部署的游戏在恢复后会被"version.dll 残留"误报（那个文件其实是别人的）。
+    let recorded_proxy = journal
+        .proxy_name
+        .as_deref()
+        .unwrap_or("version.dll")
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or("version.dll")
+        .to_owned();
+    let proxy =
+        ProxyChoice::from_name(&recorded_proxy).unwrap_or_else(|_| ProxyChoice::default_choice());
     let mut state = journal_store::DeploymentSession::open(
         &launcher_win::WinMutexOps,
         launcher_root,
@@ -301,7 +567,7 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         &|_stopped| Ok(()),
         &[],
     )?;
-    let deployment = Deployment::new(launcher_root, &render, ProxyChoice::from_index("1")?);
+    let deployment = Deployment::new(launcher_root, &render, proxy);
     launcher_core::resources::assert_resources_removed(
         &deployment,
         None,
@@ -314,6 +580,22 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         path.display()
     ))
 }
+/// 默认明文配置源：`<根>\配置\<id>\Engine.ini`，没有就试 `<根>\配置\<游戏名>\Engine.ini`
+/// （便携包里配置目录按中文名放，与 `启动脚本\配置\异环` 同名）。都不存在时返回按 id 的路径，
+/// 让报错信息指向约定位置。
+fn default_engine_source(paths: &PlatformPaths, profile: &GameProfile) -> PathBuf {
+    let root = paths.launcher_root.join("配置");
+    let by_id = root.join(&profile.id).join("Engine.ini");
+    if by_id.is_file() {
+        return by_id;
+    }
+    let by_name = root.join(&profile.name).join("Engine.ini");
+    if by_name.is_file() {
+        return by_name;
+    }
+    by_id
+}
+
 /// `<…>\Binaries\Win64` 的上两级是项目目录；否则返回渲染目录本身。
 fn project_of(render_directory: &Path) -> PathBuf {
     let name = render_directory
@@ -530,7 +812,21 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         summary.steps.push("dry-run:stop".to_owned());
         return Ok(summary);
     }
-    let mut state = if plan.adopted {
+    // 接手上一轮的记录是危险的：上一轮引擎可能被强杀，记录里可能是"部署到一半"的状态，
+    // 而"接管"会整段跳过部署——那样游戏会在没有注入的情况下跑起来，用户只会看到"没生效"。
+    // 所以先把遗留记录恢复掉，再按全新一轮部署（部署本身很快，可预测性更重要）。
+    let mut adopted = plan.adopted;
+    if adopted {
+        restore_existing(launcher_root, &plan.game_id, false).map_err(|error| {
+            Error::invalid(format!(
+                "发现上一轮的遗留部署，先恢复它时失败：{error}\n\
+                 请先点该行的「恢复原状」处理完再来启动。"
+            ))
+        })?;
+        adopted = false;
+    }
+
+    let mut state = if adopted {
         let (_, existing) = journal_store::load_for_game(launcher_root, &plan.game_id)?
             .ok_or_else(|| Error::invalid("接管失败：找不到部署记录".to_owned()))?;
         journal_store::DeploymentSession::open(
@@ -568,7 +864,12 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     );
 
     // 二游：先拉起官方启动器，等它出现后再部署（部署完成即注入生效）。
-    if plan.launcher_process_name.is_some() && !options.dry_run && !options.skip_launch {
+    // Steam 不走这条：它的启动顺序是"先部署 → 再 steam -applaunch → 等游戏"。
+    if plan.launcher_process_name.is_some()
+        && !plan.launch_mode.eq_ignore_ascii_case("Steam")
+        && !options.dry_run
+        && !options.skip_launch
+    {
         let child = launcher_win::spawn_process(
             &plan.launch_executable,
             &plan.launch_arguments,
@@ -580,28 +881,47 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         let name = plan.launcher_process_name.clone().unwrap_or_default();
         note(&mut log, &format!("已拉起官方启动器：{name}"));
         summary.steps.push(format!("launcher:{name}"));
-        // 等启动器进程出现（不设上限：出现即部署，没出现也照常部署以免用户白等）。
-        for _ in 0..600 {
+        // 等启动器进程出现：先按名字认，再退一步按"游戏目录里有进程在跑"认
+        // （鸣潮的入口是 NTELauncher.exe，真正的启动器进程叫 NTEGame.exe）。
+        //
+        // 只等 10 秒：启动器要不要出现、什么时候出现由它自己决定（异环的启动器常常
+        // 起一下就退，更新器另起进程），而用户登录+点开始游戏至少要几十秒。等太久只会
+        // 让"点启动没反应"，反而错过注入窗口。超时照常部署，日志留一条说明。
+        let mut seen = false;
+        for _ in 0..50 {
             let spec = launcher_core::session::SessionSpec::new(
                 launcher_core::session::SessionPolicy::FirstExit,
             )
             .with_launcher(name.clone());
-            if launcher_core::session::launcher_already_running(
+            let by_name = launcher_core::session::launcher_already_running(
                 &launcher_win::WinProcessProbe,
                 &spec,
             )
-            .unwrap_or(false)
-            {
-                summary.steps.push("launcher:seen".to_owned());
+            .unwrap_or(false);
+            let by_path = !launcher_win::processes_in_directory(&plan.game_directory).is_empty();
+            if by_name || by_path {
+                summary.steps.push(if by_name {
+                    "launcher:seen".to_owned()
+                } else {
+                    "launcher:seen-in-dir".to_owned()
+                });
+                seen = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        if !seen {
+            summary.steps.push("launcher:not-seen".to_owned());
+            note(
+                &mut log,
+                "10 秒内没看到官方启动器进程，直接部署（游戏启动前注入才有效）",
+            );
         }
     }
     // 部署四步：任何一步失败都要尽力回滚，避免把游戏留在半部署状态。
     // 接管已有部署时跳过，避免重复部署覆盖现场。
     let deployed: Result<()> = (|| {
-        if plan.adopted {
+        if adopted {
             return Ok(());
         }
         // 1) 代理链接
@@ -657,20 +977,26 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             source_path: plan.engine_source.clone(),
             marker,
         };
-        // 空路径意味"不做 Engine.ini 部署"；任何写操作前先自检，避免空路径 IO。
-        if !plan.engine_path.as_os_str().is_empty()
-            && (plan.engine_path.as_os_str().is_empty()
-                || plan.engine_runtime_path.as_os_str().is_empty()
-                || plan.backup_path.as_os_str().is_empty())
-        {
-            return Err(Error::invalid(
-                "Engine.ini 部署路径不完整（engine/runtime/backup 有空值）".to_owned(),
-            ));
+        // 没有声明配置目录时不碰游戏配置（也不要求配置源存在）。
+        if plan.engine_path.as_os_str().is_empty() {
+            summary.steps.push("engine.ini:skipped".to_owned());
+        } else {
+            if plan.engine_runtime_path.as_os_str().is_empty()
+                || plan.backup_path.as_os_str().is_empty()
+            {
+                return Err(Error::invalid(
+                    "Engine.ini 部署路径不完整（runtime/backup 有空值）".to_owned(),
+                ));
+            }
+            let prepared = engine_config::prepare_engine_config(
+                &mut state,
+                &ops,
+                &engine_spec,
+                options.dry_run,
+            )?;
+            summary.engine_copy = prepared.runtime_written || options.dry_run;
+            summary.steps.push("engine.ini".to_owned());
         }
-        let prepared =
-            engine_config::prepare_engine_config(&mut state, &ops, &engine_spec, options.dry_run)?;
-        summary.engine_copy = prepared.runtime_written || options.dry_run;
-        summary.steps.push("engine.ini".to_owned());
         note(
             &mut log,
             &format!(
@@ -705,7 +1031,9 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     if options.skip_launch {
         summary.steps.push("launch:skipped".to_owned());
     } else {
-        if plan.launcher_process_name.is_none() {
+        // Steam 游戏要**先部署再让 Steam 拉起**（游戏进程一启动就加载代理 DLL，
+        // 部署晚了注入就错过窗口）；二游走的是"先起官方启动器再部署"那条路。
+        if plan.launcher_process_name.is_none() || plan.launch_mode.eq_ignore_ascii_case("Steam") {
             let child = launcher_win::spawn_process(
                 &plan.launch_executable,
                 &plan.launch_arguments,
@@ -819,6 +1147,79 @@ mod tests {
         profile.render_executable =
             Some(r"Project\Binaries\Win64\Game-Win64-Shipping.exe".to_owned());
         profile
+    }
+
+    #[test]
+    fn steam_games_never_treat_the_steam_client_as_their_process() {
+        // Steam 入口：结束进程时绝不能把用户自己的 Steam 关掉。
+        let mut steam = GameProfile::new("steam-4115450", "PBZ", PathBuf::from(r"C:\PBZ"));
+        steam.launch_mode = "Steam".to_owned();
+        steam.render_executable = Some(r"platform\steam\PBZ.exe".to_owned());
+        steam.launch_executable = Some(r"C:\Program Files (x86)\Steam\Steam.exe".to_owned());
+        steam.launcher_process_name = Some("steam.exe".to_owned());
+        let filter = game_processes(&steam);
+        assert!(
+            filter
+                .executables
+                .iter()
+                .all(|path| !path.to_string_lossy().to_lowercase().ends_with("steam.exe")),
+            "不能把 steam.exe 当作目标：{:?}",
+            filter.executables
+        );
+        assert!(
+            filter.names.is_empty(),
+            "也不能按名字 steam 匹配：{:?}",
+            filter.names
+        );
+        assert!(
+            filter
+                .executables
+                .iter()
+                .any(|path| path.to_string_lossy().ends_with(r"platform\steam\PBZ.exe")),
+            "渲染 EXE 仍要在列表里"
+        );
+
+        // 二游：官方启动器与它真正的进程名都要算进去。
+        let mut nte = GameProfile::new("nte", "异环", PathBuf::from(r"C:\Games\NTE"));
+        nte.launch_mode = "Direct".to_owned();
+        nte.render_executable =
+            Some(r"Client\WindowsNoEditor\HT\Binaries\Win64\HTGame.exe".to_owned());
+        nte.launch_executable = Some(r"C:\Games\NTE\NTELauncher.exe".to_owned());
+        nte.launcher_process_name = Some("NTEGame.exe".to_owned());
+        let filter = game_processes(&nte);
+        assert_eq!(filter.names, vec!["NTEGame".to_owned()]);
+        assert!(
+            filter
+                .executables
+                .iter()
+                .any(|path| path.to_string_lossy().ends_with("NTELauncher.exe"))
+        );
+    }
+
+    #[test]
+    fn render_and_launcher_paths_follow_the_profile() {
+        let mut profile = GameProfile::new("wuthering", "鸣潮", PathBuf::from(r"C:\Games\WuWa"));
+        profile.render_executable =
+            Some(r"Client\Binaries\Win64\Client-Win64-Shipping.exe".to_owned());
+        profile.launch_executable =
+            Some(r"C:\Program Files\Wuthering Waves\launcher.exe".to_owned());
+        assert_eq!(
+            render_path(&profile),
+            Some(PathBuf::from(
+                r"C:\Games\WuWa\Client\Binaries\Win64\Client-Win64-Shipping.exe"
+            ))
+        );
+        assert_eq!(
+            launcher_path(&profile),
+            Some(PathBuf::from(
+                r"C:\Program Files\Wuthering Waves\launcher.exe"
+            )),
+            "绝对路径的启动器要原样使用"
+        );
+
+        let mut direct = GameProfile::new("x", "X", PathBuf::from(r"C:\X"));
+        direct.render_executable = Some("Game.exe".to_owned());
+        assert!(launcher_path(&direct).is_none(), "没有启动器就是 None");
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub struct GameEntry {
     pub status: GameStatus,
     /// 引擎宿主声明：`none` / `UE4` / `UE5`。
     pub engine_host: String,
+    /// 检测到该游戏的进程正在运行（渲染 EXE 或官方启动器）。
+    ///
+    /// 与 `status` 分开：手动启动的游戏也会是 `true`，此时状态可能仍是"未部署"。
+    pub running: bool,
 }
 
 impl GameEntry {
@@ -68,18 +72,23 @@ impl GameEntry {
     }
 }
 
-/// 由事实推导状态：目录是否存在、是否有未完成部署、是否有会话在跑。
+/// 由**这一行自己**的事实推导状态：目录是否存在、是否有未完成部署、这个游戏是否在跑。
+///
+/// 注意 `running` 必须是"本行的游戏进程在跑"，不能传全局会话状态：那样一款游戏在跑
+/// 会让所有行都显示"运行中"，而真正在跑的那一行反而显示"已部署"（2026-11-23 真机反馈）。
+/// 全局"另一款游戏占着会话"只用来禁用按钮，不参与每一行的状态文字。
 pub fn derive_status(
     directory_exists: bool,
     has_pending_deployment: bool,
-    session_active: bool,
+    running: bool,
 ) -> GameStatus {
     if !directory_exists {
         GameStatus::Missing
+    } else if running {
+        // 游戏在跑时优先显示"运行中"，即使还有未清理的部署记录。
+        GameStatus::SessionActive
     } else if has_pending_deployment {
         GameStatus::NeedsRestore
-    } else if session_active {
-        GameStatus::SessionActive
     } else {
         GameStatus::Ready
     }
@@ -92,6 +101,9 @@ pub struct LauncherView {
     pub selected: Option<usize>,
     /// 底部提示（错误或进度），由引擎回调写入。
     pub notice: String,
+    /// 全局引擎会话是否被占（只有一行能跑）。只用来禁用别的行的「启动」，
+    /// **不参与**每一行的状态文字。
+    pub session_taken: bool,
 }
 
 impl LauncherView {
@@ -112,6 +124,13 @@ impl LauncherView {
         }
     }
 
+    /// 按 id 选中（行内按钮用：按钮回调里拿到的只有 id）。
+    pub fn select_by_id(&mut self, id: &str) {
+        if let Some(index) = self.games.iter().position(|entry| entry.id == id) {
+            self.selected = Some(index);
+        }
+    }
+
     pub fn select(&mut self, index: usize) {
         if index < self.games.len() {
             self.selected = Some(index);
@@ -122,25 +141,39 @@ impl LauncherView {
         self.selected.and_then(|index| self.games.get(index))
     }
 
-    /// 启动按钮是否可用：选中游戏必须"可启动"，且没有正在进行的会话。
+    /// 启动按钮是否可用（行内按钮已改用它处判断，这里保留给测试）。
+    #[allow(dead_code)]
     pub fn can_launch(&self) -> bool {
         let Some(entry) = self.selected_game() else {
             return false;
         };
-        entry.status.can_launch() && !self.session_running()
+        entry.status.can_launch() && !self.session_busy()
     }
 
     /// 恢复按钮是否可用。
+    #[allow(dead_code)]
     pub fn can_restore(&self) -> bool {
         self.selected_game()
             .map(|entry| entry.status.can_restore())
             .unwrap_or(false)
     }
 
-    pub fn session_running(&self) -> bool {
+    /// 这一行自己的游戏在跑（按该行的状态判断）。
+    pub fn row_running(&self, index: usize) -> bool {
         self.games
-            .iter()
-            .any(|entry| entry.status == GameStatus::SessionActive)
+            .get(index)
+            .map(|entry| entry.running || entry.status == GameStatus::SessionActive)
+            .unwrap_or(false)
+    }
+
+    /// 是否有任意一行在跑（只用于禁用别的行的「启动」）。
+    pub fn session_running(&self) -> bool {
+        self.session_taken || self.games.iter().any(|entry| entry.running)
+    }
+
+    /// 同一件事的别名，语义上强调"会话被占用"。
+    pub fn session_busy(&self) -> bool {
+        self.session_running()
     }
 
     /// 标题栏用的状态文案。
@@ -148,8 +181,11 @@ impl LauncherView {
         if self.is_empty() {
             return "还没有添加游戏".to_owned();
         }
-        if self.session_running() {
-            return "游戏运行中".to_owned();
+        if let Some(entry) = self.games.iter().find(|entry| entry.running) {
+            return format!("{} 运行中", entry.name);
+        }
+        if self.session_taken {
+            return "引擎会话进行中".to_owned();
         }
         format!("已添加 {} 个游戏", self.games.len())
     }
@@ -166,6 +202,7 @@ mod tests {
             directory: PathBuf::from(format!(r"D:\Games\{name}")),
             status,
             engine_host: "UE5".to_owned(),
+            running: false,
         }
     }
 
@@ -197,11 +234,17 @@ mod tests {
         view.select(0);
         assert!(view.can_launch());
 
-        // 另一个游戏在跑 → 全局禁用启动
+        // 另一个游戏在跑 → 全局禁用启动（但它的状态只属于它自己那一行）
         view.upsert(entry("nte", "异环", GameStatus::SessionActive));
+        view.games[1].running = true;
         assert!(view.session_running());
         assert!(!view.can_launch());
-        assert_eq!(view.headline(), "游戏运行中");
+        assert_eq!(
+            view.games[0].status,
+            GameStatus::Ready,
+            "鸣潮那行不该跟着变"
+        );
+        assert_eq!(view.headline(), "异环 运行中");
 
         // 需要恢复的游戏不能启动，但可以恢复
         let mut needs = LauncherView::new();
@@ -228,14 +271,46 @@ mod tests {
     }
 
     #[test]
-    fn derive_status_orders_missing_before_pending_and_session() {
+    fn derive_status_is_per_game_and_running_wins_over_pending() {
+        // 目录缺失优先
         assert_eq!(derive_status(false, true, true), GameStatus::Missing);
-        assert_eq!(derive_status(true, true, true), GameStatus::NeedsRestore);
+        // 本行在跑：即使有未清理部署也显示"运行中"
+        assert_eq!(derive_status(true, true, true), GameStatus::SessionActive);
         assert_eq!(derive_status(true, false, true), GameStatus::SessionActive);
+        // 有部署但本行没在跑
+        assert_eq!(derive_status(true, true, false), GameStatus::NeedsRestore);
         assert_eq!(derive_status(true, false, false), GameStatus::Ready);
         assert_eq!(GameStatus::Missing.text(), "目录缺失");
         assert!(!GameStatus::Missing.can_launch());
         assert!(!GameStatus::Missing.can_restore());
+    }
+
+    #[test]
+    fn running_a_game_does_not_change_the_other_rows() {
+        let mut view = LauncherView::new();
+        view.upsert(entry("wuwa", "鸣潮", GameStatus::Ready));
+        view.upsert(entry("nte", "异环", GameStatus::SessionActive));
+        view.games[1].running = true;
+        // 只有异环那行是"在跑"，鸣潮那行保持原样
+        assert_eq!(view.games[0].status, GameStatus::Ready);
+        assert_eq!(view.games[1].status, GameStatus::SessionActive);
+        assert!(view.row_running(1));
+        assert!(!view.row_running(0));
+        // 但全局会话被占用：别的行不能再启动
+        assert!(view.session_busy());
+        assert!(view.headline().contains("异环"), "{}", view.headline());
+
+        // 引擎占着会话但没有任何一行在跑时，标题说明这一点，行的状态仍是各自的事实
+        let mut idle = LauncherView::new();
+        idle.upsert(entry("wuwa", "鸣潮", GameStatus::Ready));
+        idle.session_taken = true;
+        assert!(idle.session_busy());
+        assert_eq!(
+            idle.games[0].status,
+            GameStatus::Ready,
+            "不能把全局会话写进行状态"
+        );
+        assert_eq!(idle.headline(), "引擎会话进行中");
     }
 
     #[test]

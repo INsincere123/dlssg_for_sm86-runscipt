@@ -184,9 +184,10 @@ impl<'a> DeploymentSession<'a> {
         let configuration_name = configuration_mutex_name(render)?;
         let deployment_lease = MutexLease::acquire(ops, &deployment_name, Duration::from_millis(0))
             .map_err(|error| match error {
-                Error::MutexTimeout { .. } => {
-                    Error::invalid("Another deployment/recovery is running for this game.")
-                }
+                Error::MutexTimeout { .. } => Error::invalid(
+                    "这个游戏的部署/恢复正在进行（引擎还在跑它）。\n\
+                     要中止请用「结束并恢复」；如果游戏已经退出，等几秒再试。",
+                ),
                 other => other,
             })?;
         let configuration_lease =

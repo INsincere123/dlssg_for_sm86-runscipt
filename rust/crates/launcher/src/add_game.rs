@@ -62,6 +62,19 @@ impl AddGameState {
         Self::default()
     }
 
+    /// 预先填好目录（扫描结果里「需要确认」那一项用）。
+    pub fn prefilled(directory: &Path) -> Self {
+        Self {
+            directory: directory.display().to_string(),
+            message: if directory.is_dir() {
+                "目录已填好，点「扫描」找渲染程序".to_owned()
+            } else {
+                "目录不存在".to_owned()
+            },
+            ..Self::default()
+        }
+    }
+
     /// 目录是否可用（非空、存在、是文件夹）。
     pub fn directory_ok(&self) -> bool {
         let path = Path::new(self.directory.trim());

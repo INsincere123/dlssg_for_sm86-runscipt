@@ -150,6 +150,7 @@ unsafe extern "system" {
     ) -> i32;
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
     fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> Handle;
+    fn TerminateProcess(process: Handle, code: u32) -> i32;
 }
 
 fn last_error() -> Error {
@@ -501,6 +502,222 @@ impl ProcessProbe for WinProcessProbe {
     fn started_at(&self, pid: u32) -> Result<SystemTime> {
         started_at(pid)
     }
+}
+
+/// 一组"要匹配的进程"条件：完整路径、进程名（不带 `.exe`）、所在目录，三者任一命中即可。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProcessFilter {
+    pub executables: Vec<PathBuf>,
+    pub names: Vec<String>,
+    pub directory: Option<PathBuf>,
+}
+
+impl ProcessFilter {
+    pub fn is_empty(&self) -> bool {
+        self.executables.is_empty() && self.names.is_empty() && self.directory.is_none()
+    }
+
+    fn matches(&self, entry: &launcher_core::ProcessEntry) -> bool {
+        let path = entry
+            .executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().replace('/', "\\").to_lowercase());
+        if let Some(path) = path.as_deref() {
+            let by_path = self.executables.iter().any(|candidate| {
+                candidate
+                    .to_string_lossy()
+                    .replace('/', "\\")
+                    .to_lowercase()
+                    == path
+            });
+            if by_path {
+                return true;
+            }
+            if let Some(directory) = self.directory.as_ref() {
+                let prefix = format!(
+                    "{}\\",
+                    directory
+                        .to_string_lossy()
+                        .replace('/', "\\")
+                        .trim_end_matches('\\')
+                        .to_lowercase()
+                );
+                if path.starts_with(&prefix) {
+                    return true;
+                }
+            }
+        }
+        // 路径读不到（提权进程）时按名字兜底。
+        self.names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&entry.name))
+    }
+}
+/// 找出与给定可执行文件匹配的进程（完整路径或进程名，大小写不敏感）。
+///
+/// 游戏常常以管理员身份运行，非提权进程的 `QueryFullProcessImageName` 会失败，
+/// 所以路径读不到时退一步用进程名匹配——这正是"检测到游戏在跑"需要的鲁棒性。
+pub fn processes_matching(executables: &[PathBuf]) -> Vec<u32> {
+    let filter = ProcessFilter {
+        executables: executables.to_vec(),
+        names: executables
+            .iter()
+            .filter_map(|path| {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .collect(),
+        directory: None,
+    };
+    matching_processes(&filter)
+}
+
+/// 命中过滤条件的进程号（不含本进程）。
+pub fn matching_processes(filter: &ProcessFilter) -> Vec<u32> {
+    if filter.is_empty() {
+        return Vec::new();
+    }
+    let entries = match WinProcessProbe.list() {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let current = unsafe { GetCurrentProcessId() };
+    entries
+        .into_iter()
+        .filter(|entry| entry.pid != current)
+        .filter(|entry| filter.matches(entry))
+        .map(|entry| entry.pid)
+        .collect()
+}
+
+/// 结束命中过滤条件的所有进程，并等它们退出（最多 `wait`）。
+///
+/// 返回 `(已结束的 PID, 失败的 PID)`；游戏以管理员运行时调用方必须提权。
+pub fn terminate_matching(
+    filter: &ProcessFilter,
+    wait: std::time::Duration,
+) -> (Vec<u32>, Vec<u32>) {
+    let mut terminated: Vec<u32> = Vec::new();
+    let mut failed: Vec<u32> = Vec::new();
+    for pid in matching_processes(filter) {
+        if terminate_pid(pid, wait) {
+            terminated.push(pid);
+        } else {
+            failed.push(pid);
+        }
+    }
+    (terminated, failed)
+}
+
+/// 找出可执行文件位于给定目录之内的进程（大小写不敏感，要求 `\` 边界）。
+///
+/// 用于"官方启动器已经起来了吗"这类判断：二游的启动器进程名常常和入口 EXE 不同
+/// （鸣潮入口 `NTELauncher.exe` 起的是 `NTELauncher\NTEGame.exe`），按目录判断更稳。
+pub fn processes_in_directory(directory: &Path) -> Vec<u32> {
+    let root = directory
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase();
+    let prefix = format!("{}\\", root.trim_end_matches('\\'));
+    let entries = match WinProcessProbe.list() {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let current = unsafe { GetCurrentProcessId() };
+    entries
+        .into_iter()
+        .filter(|entry| entry.pid != current)
+        .filter(|entry| {
+            entry
+                .executable
+                .as_ref()
+                .map(|path| {
+                    path.to_string_lossy()
+                        .replace('/', "\\")
+                        .to_lowercase()
+                        .starts_with(&prefix)
+                })
+                .unwrap_or(false)
+        })
+        .map(|entry| entry.pid)
+        .collect()
+}
+
+/// 指定 PID 的进程是否还活着（打不开也算不存在：可能已退出或权限不足）。
+pub fn process_running(pid: u32) -> bool {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    if pid == 0 {
+        return false;
+    }
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle == 0 {
+        return false;
+    }
+    let mut code: u32 = 0;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+    unsafe { CloseHandle(handle) };
+    ok != 0 && code == STILL_ACTIVE
+}
+
+/// 结束指定 PID 的进程（需要权限），并等它退出。
+pub fn terminate_pid(pid: u32, wait: std::time::Duration) -> bool {
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    if pid == 0 {
+        return false;
+    }
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if handle == 0 {
+        return false;
+    }
+    let ok = unsafe { TerminateProcess(handle, 1) };
+    unsafe { WaitForSingleObject(handle, wait.as_millis().min(30_000) as u32) };
+    unsafe { CloseHandle(handle) };
+    ok != 0
+}
+
+/// 结束与给定可执行文件匹配的所有进程，并等它们退出（最多 `wait`）。
+///
+/// 返回 `(已结束的 PID, 失败的 PID)`；需要权限（游戏以管理员运行时，调用方必须提权）。
+pub fn terminate_processes(
+    executables: &[PathBuf],
+    wait: std::time::Duration,
+) -> (Vec<u32>, Vec<u32>) {
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    let mut terminated: Vec<u32> = Vec::new();
+    let mut failed: Vec<u32> = Vec::new();
+    for pid in processes_matching(executables) {
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if handle == 0 {
+            failed.push(pid);
+            continue;
+        }
+        let ok = unsafe { TerminateProcess(handle, 1) };
+        // 等它真的退出，避免后续恢复步骤还看到残留文件被占用。
+        unsafe { WaitForSingleObject(handle, wait.as_millis().min(30_000) as u32) };
+        unsafe { CloseHandle(handle) };
+        if ok != 0 {
+            terminated.push(pid);
+        } else {
+            failed.push(pid);
+        }
+    }
+    (terminated, failed)
 }
 
 fn process_name(entry: &ProcessEntry32W) -> String {

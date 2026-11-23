@@ -16,6 +16,88 @@ pub struct SelfTest {
     pub report: Option<PathBuf>,
 }
 
+/// 行内按钮触发的动作。
+enum RowAction {
+    Launch(String),
+    Restore(String),
+    /// 检测到游戏在跑：强行结束进程并恢复。
+    Stop(String),
+    Remove(String),
+    FrameGen(String),
+    Quality(String),
+}
+
+/// 恢复类动作最多等多久：超时按失败弹窗，不把界面挂成"进行中"。
+const RESTORE_TIMEOUT_SECONDS: u64 = 180;
+/// 启动交出去后先等这么久：引擎在规划/预检阶段失败会立刻写报告，界面要能看到原因。
+const RUN_GRACE_SECONDS: u64 = 6;
+/// 行状态轮询间隔（游戏进程、部署记录、会话锁都可能被引擎或用户改动）。
+const REFRESH_INTERVAL_MS: u64 = 900;
+
+/// 正在等结果的动作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pending {
+    Run { game: String, started: Instant },
+    Restore { game: String, started: Instant },
+    Stop { game: String, started: Instant },
+}
+
+impl Pending {
+    fn game(&self) -> &str {
+        match self {
+            Self::Run { game, .. } | Self::Restore { game, .. } | Self::Stop { game, .. } => game,
+        }
+    }
+
+    fn report_name(&self) -> &'static str {
+        match self {
+            Self::Run { .. } => "ui-run.json",
+            Self::Restore { .. } => "ui-restore.json",
+            Self::Stop { .. } => "ui-stop.json",
+        }
+    }
+
+    fn success_title(&self) -> &'static str {
+        match self {
+            Self::Run { .. } => "启动失败",
+            Self::Restore { .. } => "恢复原状完成",
+            Self::Stop { .. } => "已结束并恢复",
+        }
+    }
+
+    fn failure_title(&self) -> &'static str {
+        match self {
+            Self::Run { .. } => "启动失败",
+            Self::Restore { .. } => "恢复原状失败",
+            Self::Stop { .. } => "结束并恢复失败",
+        }
+    }
+
+    fn timeout(&self) -> std::time::Duration {
+        match self {
+            // 启动只看开头几秒：引擎接管后的会话可能持续很久，不该等着弹窗。
+            Self::Run { .. } => std::time::Duration::from_secs(RUN_GRACE_SECONDS),
+            _ => std::time::Duration::from_secs(RESTORE_TIMEOUT_SECONDS),
+        }
+    }
+
+    fn started(&self) -> Instant {
+        match self {
+            Self::Run { started, .. }
+            | Self::Restore { started, .. }
+            | Self::Stop { started, .. } => *started,
+        }
+    }
+}
+
+/// 结果弹窗的内容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Popup {
+    ok: bool,
+    title: String,
+    detail: String,
+}
+
 pub struct LauncherApp {
     view: LauncherView,
     self_test: Option<SelfTest>,
@@ -35,10 +117,23 @@ pub struct LauncherApp {
     remove_pending: Option<String>,
     /// 交接后隐藏窗口（不退出进程）。
     hide_after_handoff: bool,
-    /// 恢复进行中：窗口保持可见并轮询结果。
-    restore_pending: bool,
-    /// 交给引擎恢复的时刻（用于超时提示）。
-    restore_started: Option<std::time::Instant>,
+    /// 正在等结果的动作（启动/恢复/结束并恢复）。
+    pending: Option<Pending>,
+    /// 结果弹窗（有值时显示，用户点「确定」才消失）。
+    popup: Option<Popup>,
+    /// 上次刷新行状态的时刻。
+    last_refresh: Option<Instant>,
+    /// 后台识别引擎主版本：大 EXE 要扫几秒，不能卡界面。
+    detect_job: Option<(
+        String,
+        std::thread::JoinHandle<launcher_core::unreal::Detection>,
+    )>,
+    /// 等着识别的游戏（一次只跑一个，剩下的排队）。
+    detect_queue: Vec<(String, std::path::PathBuf, std::path::PathBuf)>,
+    /// 后台平台扫描（注册表 + 平台清单，可能要几秒）。
+    scan_job: Option<std::thread::JoinHandle<crate::scan::ScanResult>>,
+    /// 扫描结果窗口（有值时显示）。
+    scan_report: Option<crate::scan::ScanResult>,
     /// 已把工作交给引擎：本帧结束后关闭界面。
     quit_after_frame: bool,
     /// 允许真正关闭（托盘"退出"或自检结束）；否则关闭按钮只隐藏到托盘。
@@ -73,6 +168,25 @@ impl LauncherApp {
         self
     }
 
+    /// 调试用：开窗后直接摆出某个界面，便于截图核对（`--ui-preview`）。
+    pub fn with_preview(mut self, preview: crate::Preview) -> Self {
+        if let Some(outcome) = preview.restore_outcome() {
+            let ok = outcome.is_ok();
+            self.popup = Some(Popup {
+                ok,
+                title: outcome.title().to_owned(),
+                detail: outcome.detail(),
+            });
+        }
+        if let Some(view) = preview.settings_view() {
+            self.open_settings(view);
+        }
+        if let Some(report) = preview.scan_sample() {
+            self.scan_report = Some(report);
+        }
+        self
+    }
+
     pub fn new(view: LauncherView, self_test: Option<SelfTest>) -> Self {
         let started = Instant::now();
         let close_at = self_test
@@ -93,8 +207,13 @@ impl LauncherApp {
             tray: None,
             remove_pending: None,
             hide_after_handoff: false,
-            restore_pending: false,
-            restore_started: None,
+            pending: None,
+            popup: None,
+            last_refresh: None,
+            detect_job: None,
+            detect_queue: Vec::new(),
+            scan_job: None,
+            scan_report: None,
             ini_path: String::new(),
             ini_preview: None,
             ini_message: String::new(),
@@ -105,66 +224,82 @@ impl LauncherApp {
         }
     }
 
-    /// 打开设置页：取该游戏已存的设置，没有就用默认值。
-    fn open_settings(&mut self) {
-        let Some(entry) = self.view.selected_game() else {
+    /// 打开某个视图（帧生成 / 画质）：按偏好里的记录填表，缺记录就用默认值。
+    fn open_settings(&mut self, view: crate::settings_form::SettingsView) {
+        let Some(entry) = self.view.selected_game().cloned() else {
             return;
         };
         let stored = self
             .preferences_path
             .as_deref()
             .and_then(|path| launcher_core::preferences::load(path).ok())
-            .and_then(|preferences| {
-                preferences
-                    .find(&entry.id)
-                    .and_then(|game| game.settings.clone())
-            });
-        self.settings = Some(crate::settings_form::SettingsForm::new(
-            stored.unwrap_or_default(),
+            .and_then(|preferences| preferences.find(&entry.id).cloned());
+        let profile = stored.unwrap_or_else(|| {
+            let mut profile = launcher_core::preferences::GameProfile::new(
+                &entry.id,
+                &entry.name,
+                entry.directory.clone(),
+            );
+            profile.engine_host = entry.engine_host.clone();
+            profile
+        });
+        // 有未清理的部署时不允许换代理：旧记录里的代理必须先按原样恢复。
+        let pending = launcher_core::journal_store::load_for_game(&self.root, &entry.id)
+            .ok()
+            .flatten()
+            .is_some();
+        self.ini_message.clear();
+        self.ini_preview = None;
+        self.settings = Some(crate::settings_form::SettingsForm::from_profile(
+            view, &profile, pending,
         ));
     }
 
-    /// 保存设置到偏好文件。
-    fn save_settings(&mut self) {
+    /// 保存设置到偏好文件；返回是否真的写成功（失败时表单保持打开）。
+    fn save_settings(&mut self) -> bool {
+        let Some(path) = self.preferences_path.clone() else {
+            self.notice = "偏好路径不可用，无法保存".to_owned();
+            return false;
+        };
+        let Some(entry) = self.view.selected_game().cloned() else {
+            return false;
+        };
         let Some(form) = self.settings.as_mut() else {
-            return;
+            return false;
         };
         let Some(settings) = form.take_for_save() else {
             self.notice = form
                 .error
                 .clone()
                 .unwrap_or_else(|| "校验未通过".to_owned());
-            return;
-        };
-        let Some(path) = self.preferences_path.clone() else {
-            self.notice = "偏好路径不可用，无法保存".to_owned();
-            return;
-        };
-        let Some(entry) = self.view.selected_game().cloned() else {
-            return;
+            return false;
         };
         let mut preferences = launcher_core::preferences::load(&path).unwrap_or_default();
-        match preferences.find(&entry.id) {
-            Some(existing) => {
-                let mut updated = existing.clone();
-                updated.settings = Some(settings);
-                preferences.upsert(updated);
+        let mut profile = preferences.find(&entry.id).cloned().unwrap_or_else(|| {
+            let mut profile = launcher_core::preferences::GameProfile::new(
+                &entry.id,
+                &entry.name,
+                entry.directory.clone(),
+            );
+            profile.engine_host = entry.engine_host.clone();
+            profile
+        });
+        profile.settings = Some(settings);
+        if let Err(message) = form.apply_to_profile(&mut profile, &self.root) {
+            self.notice = message;
+            return false;
+        }
+        preferences.upsert(profile);
+        match launcher_core::preferences::save(&path, &preferences) {
+            Ok(()) => {
+                self.notice = "设置已保存".to_owned();
+                true
             }
-            None => {
-                let mut profile = launcher_core::preferences::GameProfile::new(
-                    &entry.id,
-                    &entry.name,
-                    entry.directory.clone(),
-                );
-                profile.engine_host = entry.engine_host.clone();
-                profile.settings = Some(settings);
-                preferences.upsert(profile);
+            Err(error) => {
+                self.notice = format!("保存失败：{error}");
+                false
             }
         }
-        self.notice = match launcher_core::preferences::save(&path, &preferences) {
-            Ok(()) => "设置已保存".to_owned(),
-            Err(error) => format!("保存失败：{error}"),
-        };
     }
 
     fn write_report(&mut self, pixels_per_point: f32) {
@@ -208,45 +343,39 @@ impl LauncherApp {
 
         egui::Panel::bottom("actions").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let launch = ui.add_enabled(self.view.can_launch(), egui::Button::new("启动"));
-                let restore_text = if self.last_restore_outcome() == Some(false) {
-                    "重试恢复"
-                } else {
-                    "恢复原状"
-                };
-                let restore =
-                    ui.add_enabled(self.view.can_restore(), egui::Button::new(restore_text));
-
-                if launch.clicked() {
-                    self.hand_off(crate::handoff::Command::Run, "ui-run.json");
-                }
-                if restore.clicked() {
-                    self.hand_off(crate::handoff::Command::Restore, "ui-restore.json");
-                }
+                // 启动/恢复/移除已移到每一行；顶栏只保留全局入口。
                 if let Some(entry) = self.view.selected_game() {
-                    let mut text = format!("状态：{}", entry.status.text());
-                    if self.restore_pending {
-                        text.push_str(" · 恢复中…");
-                    }
                     match self.last_restore_outcome() {
-                        Some(true) => text.push_str(" · 上次恢复成功"),
-                        Some(false) => text.push_str(" · 上次恢复失败（可重试）"),
+                        Some(true) => {
+                            ui.label(egui::RichText::new("上次恢复成功").small().weak());
+                        }
+                        Some(false) => {
+                            ui.label(
+                                egui::RichText::new("上次恢复失败，可在该行点「恢复原状」重试")
+                                    .small()
+                                    .weak(),
+                            );
+                        }
                         None => {}
                     }
-                    ui.label(egui::RichText::new(text).small().weak());
+                    let _ = entry;
                 }
-                ui.separator();
-                let can_remove = self.view.selected_game().is_some();
+                // 扫描放第一个（用户要求）：平台记录里能认出来的直接加，少让用户点。
+                let scanning = self.scan_job.is_some();
+                let scan_label = if scanning { "扫描中…" } else { "扫描游戏" };
                 if ui
-                    .add_enabled(can_remove, egui::Button::new("移除游戏"))
+                    .add_enabled(!scanning, egui::Button::new(scan_label))
+                    .on_hover_text(
+                        "扫 Steam / GOG / Epic 的平台记录与注册表，自动定位鸣潮、异环；\n只查平台，不翻全盘",
+                    )
                     .clicked()
                 {
-                    self.remove_pending = self.view.selected_game().map(|entry| entry.id.clone());
+                    self.start_scan();
                 }
+                ui.separator();
                 if ui.button("添加游戏").clicked() {
                     self.add_game = Some(crate::add_game::AddGameState::new());
                 }
-                let mut open_settings = false;
                 if ui.button("日志").clicked() {
                     let logs = crate::about::logs_directory(&self.root);
                     let _ = std::fs::create_dir_all(&logs);
@@ -258,24 +387,11 @@ impl LauncherApp {
                 if ui.button("关于").clicked() {
                     self.show_about = true;
                 }
-                if ui
-                    .add_enabled(
-                        self.view.selected_game().is_some(),
-                        egui::Button::new("设置"),
-                    )
-                    .clicked()
-                {
-                    open_settings = true;
-                }
-                if open_settings {
-                    self.open_settings();
-                }
                 if !self.view.notice.is_empty() {
                     ui.separator();
                     ui.label(&self.view.notice);
                 }
                 // 按钮回调留给 M4-05/M4-06 接引擎；这里先保证布局与可用性正确。
-                let _ = (launch, restore);
             });
         });
 
@@ -292,10 +408,39 @@ impl LauncherApp {
                 return;
             }
             let mut select = None;
+            let mut action: Option<RowAction> = None;
+            // 引擎正跑着哪个游戏：那一行的「恢复原状」要置灰（手动恢复会和引擎抢记录）。
+            let engine_owner = self.engine_owner();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (index, entry) in self.view.games.iter().enumerate() {
                     let selected = self.view.selected == Some(index);
+                    let id = entry.id.clone();
+                    let engine_is_ue = !entry.engine_host.is_empty() && entry.engine_host != "none";
+                    let engine_busy_here = engine_owner.as_deref() == Some(id.as_str());
                     ui.horizontal(|ui| {
+                        // 行内操作：启动/结束并恢复在最前，恢复原状只在有遗留部署时出现，移除在最后。
+                        if self.view.row_running(index) {
+                            // 检测到游戏进程：按钮变成"结束并恢复"，即使游戏是手动启动的。
+                            if ui
+                                .button(egui::RichText::new("结束并恢复").strong())
+                                .on_hover_text(
+                                    "游戏正在运行：强行结束它的进程（含官方启动器），然后恢复原状",
+                                )
+                                .clicked()
+                            {
+                                action = Some(RowAction::Stop(id.clone()));
+                            }
+                        } else {
+                            let can_launch =
+                                entry.status.can_launch() && !self.view.session_running();
+                            if ui
+                                .add_enabled(can_launch, egui::Button::new("启动"))
+                                .on_hover_text("部署资源并启动（二游会先拉起官方启动器）")
+                                .clicked()
+                            {
+                                action = Some(RowAction::Launch(id.clone()));
+                            }
+                        }
                         if ui
                             .selectable_label(selected, &entry.name)
                             .on_hover_text(entry.summary())
@@ -303,10 +448,55 @@ impl LauncherApp {
                         {
                             select = Some(index);
                         }
+                        if ui
+                            .button("帧生成")
+                            .on_hover_text("帧生成参数、日志与代理文件")
+                            .clicked()
+                        {
+                            action = Some(RowAction::FrameGen(id.clone()));
+                        }
+                        if ui
+                            .add_enabled(engine_is_ue, egui::Button::new("画质"))
+                            .on_hover_text(if engine_is_ue {
+                                "画质档位与自定义 INI"
+                            } else {
+                                "未识别为虚幻引擎，画质档位不适用"
+                            })
+                            .clicked()
+                        {
+                            action = Some(RowAction::Quality(id.clone()));
+                        }
                         status_pill(ui, entry.status);
-                        if !entry.engine_host.is_empty() && entry.engine_host != "none" {
+                        if engine_is_ue {
                             ui.label(egui::RichText::new(&entry.engine_host).small().weak());
                         }
+                        // 游戏在跑时不给「恢复原状」（该走「结束并恢复」）；
+                        // 引擎正在跑这个游戏时置灰：手动恢复会和引擎抢同一份部署记录。
+                        if entry.status.can_restore() && !self.view.row_running(index) {
+                            let clicked = if engine_busy_here {
+                                ui.add_enabled(false, egui::Button::new("恢复原状"))
+                                    .on_disabled_hover_text(
+                                        "引擎正在跑这个游戏；要中止请点「结束并恢复」",
+                                    )
+                                    .clicked()
+                            } else {
+                                ui.button("恢复原状")
+                                    .on_hover_text("有未清理的部署：按记录恢复游戏目录与配置")
+                                    .clicked()
+                            };
+                            if clicked {
+                                action = Some(RowAction::Restore(id.clone()));
+                            }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button("移除")
+                                .on_hover_text("从列表移除这条记录（不动磁盘）")
+                                .clicked()
+                            {
+                                action = Some(RowAction::Remove(id.clone()));
+                            }
+                        });
                     });
                     ui.label(entry.directory.display().to_string());
                     ui.separator();
@@ -314,6 +504,9 @@ impl LauncherApp {
             });
             if let Some(index) = select {
                 self.view.select(index);
+            }
+            if let Some(pending) = action {
+                self.run_row_action(pending);
             }
         });
     }
@@ -377,6 +570,7 @@ impl LauncherApp {
             directory: profile.directory.clone(),
             status,
             engine_host: profile.engine_host.clone(),
+            running: false,
         });
         if let Some(index) = self
             .view
@@ -386,8 +580,51 @@ impl LauncherApp {
         {
             self.view.select(index);
         }
+        // 添加后立刻后台识别引擎版本：识别得出来就有画质档位，识别不出来等用户手动校准。
+        if profile.engine_host == "none" {
+            if let Some(relative) = profile.render_executable.as_deref() {
+                let relative = relative.trim();
+                if !relative.is_empty() {
+                    let executable = std::path::PathBuf::from(relative);
+                    let executable = if executable.is_absolute() {
+                        executable
+                    } else {
+                        profile.directory.join(executable)
+                    };
+                    if executable.is_file() {
+                        self.start_detection(&profile.id, profile.directory.clone(), executable);
+                    }
+                }
+            }
+        }
     }
 
+    /// 处理行内按钮：按动作分派到启动/结束并恢复/恢复/移除/配置。
+    fn run_row_action(&mut self, action: RowAction) {
+        match action {
+            RowAction::Launch(id) => {
+                self.view.select_by_id(&id);
+                self.hand_off(crate::handoff::Command::Run);
+            }
+            RowAction::Stop(id) => {
+                self.view.select_by_id(&id);
+                self.hand_off(crate::handoff::Command::Stop);
+            }
+            RowAction::Restore(id) => {
+                self.view.select_by_id(&id);
+                self.hand_off(crate::handoff::Command::Restore);
+            }
+            RowAction::Remove(id) => self.remove_pending = Some(id),
+            RowAction::FrameGen(id) => {
+                self.view.select_by_id(&id);
+                self.open_settings(crate::settings_form::SettingsView::FrameGen);
+            }
+            RowAction::Quality(id) => {
+                self.view.select_by_id(&id);
+                self.open_settings(crate::settings_form::SettingsView::Quality);
+            }
+        }
+    }
     /// 移除游戏前的确认框：只从偏好里删记录，不动磁盘。
     fn draw_remove_confirm(&mut self, root: &mut egui::Ui) {
         let Some(id) = self.remove_pending.clone() else {
@@ -433,10 +670,319 @@ impl LauncherApp {
             self.remove_pending = None;
         }
     }
+    /// 结果弹窗（启动失败 / 恢复 / 结束并恢复共用）：点「确定」才消失。
+    fn draw_popup(&mut self, root: &mut egui::Ui) {
+        let Some(popup) = self.popup.clone() else {
+            return;
+        };
+        let ok = popup.ok;
+        let mut close = false;
+        let mut open_logs = false;
+        // 用 Area + 居中卡片，而不是 Window::anchor：后者按首帧尺寸猜位置，会偏到角落。
+        egui::Area::new(egui::Id::unique("restore-result-card"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(root.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(420.0);
+                        let color = if ok {
+                            egui::Color32::from_rgb(0x3D, 0x9A, 0x5F)
+                        } else {
+                            egui::Color32::from_rgb(0xD0, 0x4A, 0x4A)
+                        };
+                        ui.label(
+                            egui::RichText::new(&popup.title)
+                                .color(color)
+                                .size(18.0)
+                                .strong(),
+                        );
+                        ui.separator();
+                        ui.label(&popup.detail);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("确定").clicked() {
+                                close = true;
+                            }
+                            if !ok && ui.button("打开日志").clicked() {
+                                open_logs = true;
+                            }
+                        });
+                    });
+            });
+        if open_logs {
+            let logs = crate::about::logs_directory(&self.root);
+            let _ = std::fs::create_dir_all(&logs);
+            let _ = launcher_win::open_path(&logs);
+        }
+        if close {
+            self.popup = None;
+        }
+    }
+    /// 起一次后台平台扫描（注册表 + 平台清单 + 每个游戏的渲染 EXE 确认）。
+    fn start_scan(&mut self) {
+        if self.scan_job.is_some() {
+            self.notice = "扫描已经在进行".to_owned();
+            return;
+        }
+        let root = self.root.clone();
+        let existing = self.existing_games();
+        self.notice = "正在扫描平台记录…".to_owned();
+        self.scan_job = Some(std::thread::spawn(move || {
+            crate::scan::scan(&root, &existing)
+        }));
+    }
+
+    /// 已经在列表里的游戏（ID + 目录），扫描时跳过。
+    fn existing_games(&self) -> Vec<(String, std::path::PathBuf)> {
+        let mut existing: Vec<(String, std::path::PathBuf)> = self
+            .view
+            .games
+            .iter()
+            .map(|entry| (entry.id.clone(), entry.directory.clone()))
+            .collect();
+        if let Some(path) = self.preferences_path.as_deref() {
+            if let Ok(preferences) = launcher_core::preferences::load(path) {
+                for profile in &preferences.games {
+                    if !existing.iter().any(|(id, _)| id == &profile.id) {
+                        existing.push((profile.id.clone(), profile.directory.clone()));
+                    }
+                }
+            }
+        }
+        existing
+    }
+
+    /// 扫描结束后：能确定的直接加，剩下的放进结果窗口等用户确认。
+    fn poll_scan(&mut self) {
+        if self
+            .scan_job
+            .as_ref()
+            .map(|handle| !handle.is_finished())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some(handle) = self.scan_job.take() else {
+            return;
+        };
+        let result = match handle.join() {
+            Ok(result) => result,
+            Err(_) => {
+                self.notice = "扫描线程异常结束".to_owned();
+                return;
+            }
+        };
+        let mut added = Vec::new();
+        for ready in &result.ready {
+            self.persist_profile(ready.profile.clone());
+            added.push(ready.profile.name.clone());
+        }
+        if !added.is_empty() {
+            self.notice = format!("扫描添加 {} 个：{}", added.len(), added.join("、"));
+        } else {
+            self.notice = result.summary();
+        }
+        if !result.ready.is_empty() || !result.ambiguous.is_empty() || !result.notes.is_empty() {
+            self.scan_report = Some(result);
+        }
+    }
+
+    /// 扫描结果窗口：可添加的直接写进列表，需要确认的给一个「选择渲染程序」入口。
+    fn draw_scan_report(&mut self, root: &mut egui::Ui) {
+        let Some(report) = self.scan_report.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut pick: Option<std::path::PathBuf> = None;
+        egui::Window::new("扫描结果")
+            .open(&mut open)
+            .default_width(620.0)
+            .resizable(true)
+            .show(root.ctx(), |ui| {
+                if report.ready.is_empty() && report.ambiguous.is_empty() {
+                    ui.label("没有可添加的新游戏。");
+                }
+                if !report.ready.is_empty() {
+                    ui.label(format!("已自动添加 {} 个：", report.ready.len()));
+                    for ready in &report.ready {
+                        // 分两行：长路径在 horizontal 里不会换行，会被窗口裁掉。
+                        ui.label(format!("· {}", ready.profile.name));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "  {}（{}）",
+                                ready.profile.directory.display(),
+                                ready.source
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    }
+                }
+                if !report.ambiguous.is_empty() {
+                    ui.separator();
+                    ui.label(format!(
+                        "需要确认 {} 个（没找到唯一可信的渲染程序）：",
+                        report.ambiguous.len()
+                    ));
+                    for item in &report.ambiguous {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button("选择渲染程序")
+                                    .on_hover_text("打开「添加游戏」，目录已填好")
+                                    .clicked()
+                                {
+                                    pick = Some(item.directory.clone());
+                                }
+                                ui.label(egui::RichText::new(&item.name).strong());
+                            });
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}（{}；{}）",
+                                    item.directory.display(),
+                                    item.source,
+                                    item.reason
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                        });
+                    }
+                }
+                if !report.notes.is_empty() {
+                    ui.separator();
+                    for note in &report.notes {
+                        ui.label(egui::RichText::new(note).small().weak());
+                    }
+                }
+            });
+        if let Some(directory) = pick {
+            self.add_game = Some(crate::add_game::AddGameState::prefilled(&directory));
+            self.scan_report = None;
+        } else if !open {
+            self.scan_report = None;
+        }
+    }
+
+    /// 渲染 EXE 的绝对路径（偏好里存的是相对游戏目录的路径）。
+    fn render_executable_of(&self, id: &str) -> Option<std::path::PathBuf> {
+        let path = self.preferences_path.as_deref()?;
+        let preferences = launcher_core::preferences::load(path).ok()?;
+        let profile = preferences.find(id)?;
+        let relative = profile.render_executable.as_deref()?;
+        if relative.trim().is_empty() {
+            return None;
+        }
+        let candidate = std::path::PathBuf::from(relative);
+        Some(if candidate.is_absolute() {
+            candidate
+        } else {
+            profile.directory.join(candidate)
+        })
+    }
+
+    /// 起一次后台引擎识别（同一时间只跑一个，避免抢磁盘）。
+    fn start_detection(
+        &mut self,
+        game_id: &str,
+        directory: std::path::PathBuf,
+        executable: std::path::PathBuf,
+    ) {
+        if self.detect_job.is_some() {
+            // 排队：扫描可能一次加好几个游戏，等前面的跑完接着来。
+            self.detect_queue
+                .push((game_id.to_owned(), directory, executable));
+            return;
+        }
+        let name = self
+            .view
+            .games
+            .iter()
+            .find(|entry| entry.id == game_id)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| game_id.to_owned());
+        let handle =
+            std::thread::spawn(move || launcher_core::unreal::detect(&directory, &executable));
+        self.notice = format!("正在识别「{name}」的引擎版本（要扫渲染 EXE，可能需要几秒）…");
+        self.detect_job = Some((game_id.to_owned(), handle));
+    }
+
+    /// 每帧看一眼后台识别是否结束。
+    fn poll_detection(&mut self) {
+        if self
+            .detect_job
+            .as_ref()
+            .map(|(_, handle)| !handle.is_finished())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some((id, handle)) = self.detect_job.take() else {
+            // 空闲时把排队的识别接上。
+            if let Some((id, directory, executable)) = self.detect_queue.first().cloned() {
+                self.detect_queue.remove(0);
+                self.start_detection(&id, directory, executable);
+            }
+            return;
+        };
+        match handle.join() {
+            Ok(detection) => self.apply_detection(&id, &detection),
+            Err(_) => self.notice = "引擎识别线程异常结束，请重试".to_owned(),
+        }
+        if let Some((id, directory, executable)) = self.detect_queue.first().cloned() {
+            self.detect_queue.remove(0);
+            self.start_detection(&id, directory, executable);
+        }
+    }
+
+    /// 识别结果写回偏好与界面；只有唯一主版本才写，冲突/未知一律保留原值。
+    fn apply_detection(&mut self, id: &str, detection: &launcher_core::unreal::Detection) {
+        let host = match detection.major {
+            Some(4) => "UE4",
+            Some(5) => "UE5",
+            _ => {
+                self.notice = format!(
+                    "引擎识别：{}（{}）；可手动校准",
+                    detection.text(),
+                    detection.source
+                );
+                return;
+            }
+        };
+        self.write_engine_host(id, host);
+        if let Some(form) = self.settings.as_mut() {
+            form.engine_host = host.to_owned();
+            form.engine_host_is_ue = true;
+            form.dirty = true;
+        }
+        self.notice = format!("引擎识别：{host}（{}）", detection.source);
+    }
+
+    /// 把引擎宿主写进偏好并刷新该行（识别与手动校准共用）。
+    fn write_engine_host(&mut self, id: &str, host: &str) {
+        if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
+            entry.engine_host = host.to_owned();
+        }
+        let Some(path) = self.preferences_path.clone() else {
+            return;
+        };
+        let Ok(mut preferences) = launcher_core::preferences::load(&path) else {
+            return;
+        };
+        let Some(profile) = preferences.find(id).cloned() else {
+            return;
+        };
+        let mut updated = profile;
+        updated.engine_host = host.to_owned();
+        preferences.upsert(updated);
+        let _ = launcher_core::preferences::save(&path, &preferences);
+    }
+
     /// 读最近一次"恢复原状"的报告：`Some(true)` 成功、`Some(false)` 失败、`None` 未跑过。
     fn last_restore_outcome(&self) -> Option<bool> {
-        let path = crate::about::logs_directory(&self.root).join("ui-restore.json");
-        let text = std::fs::read_to_string(path).ok()?;
+        let text = std::fs::read_to_string(self.report_path("ui-restore.json")).ok()?;
         if text.contains("\"code\": \"restored\"") {
             Some(true)
         } else if text.contains("\"error\"") {
@@ -445,35 +991,170 @@ impl LauncherApp {
             None
         }
     }
-    /// 把「启动 / 恢复原状」交给提权后的引擎子进程，成功后本界面退出。
-    fn hand_off(&mut self, command: crate::handoff::Command, report_name: &str) {
+
+    /// 引擎报告路径（引擎子进程写、界面读）。
+    fn report_path(&self, name: &str) -> std::path::PathBuf {
+        crate::about::logs_directory(&self.root).join(name)
+    }
+
+    /// 引擎当前占着会话、并且在跑哪个游戏（读 `logs\status.json`，并核对它的 pid 还活着）。
+    ///
+    /// 用来把「恢复原状」在"引擎正跑着这个游戏"时置灰：这时手动恢复会和引擎抢同一份
+    /// 部署记录，既容易失败，也会把游戏留在半个部署状态。该走「结束并恢复」。
+    fn engine_owner(&self) -> Option<String> {
+        if !launcher_win::session_active() {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.report_path("status.json")).ok()?;
+        let game_id = json_text(&text, "game_id")?;
+        let pid: u32 = json_text(&text, "pid")?.parse().ok()?;
+        launcher_win::process_running(pid).then_some(game_id)
+    }
+
+    /// 按当前磁盘事实重算一行状态。
+    fn refresh_status(&mut self, id: &str) {
+        let pending = launcher_core::journal_store::load_for_game(&self.root, id)
+            .ok()
+            .flatten()
+            .is_some();
+        let (exists, running) = self
+            .view
+            .games
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| (entry.directory.is_dir(), entry.running))
+            .unwrap_or((false, false));
+        let status = crate::view_model::derive_status(exists, pending, running);
+        if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
+            entry.status = status;
+        }
+    }
+
+    /// 周期性刷新所有行：状态（部署记录 + **本行**游戏进程）与全局会话占用。
+    ///
+    /// 以前把"全局会话在跑"写进每一行的状态，结果一款游戏在跑会让所有行都显示"运行中"，
+    /// 真正在跑的那一行反而显示"已部署"（2026-11-23 真机反馈）。现在状态只看本行事实，
+    /// 全局会话只用来禁用其它行的「启动」。
+    fn refresh_rows(&mut self) {
+        let due = self
+            .last_refresh
+            .map(|last| last.elapsed().as_millis() >= REFRESH_INTERVAL_MS as u128)
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.last_refresh = Some(Instant::now());
+        self.view.session_taken = launcher_win::session_active();
+        let profiles = self
+            .preferences_path
+            .as_deref()
+            .and_then(|path| launcher_core::preferences::load(path).ok())
+            .map(|preferences| preferences.games)
+            .unwrap_or_default();
+        for index in 0..self.view.games.len() {
+            let id = self.view.games[index].id.clone();
+            let directory = self.view.games[index].directory.clone();
+            let pending = launcher_core::journal_store::load_for_game(&self.root, &id)
+                .ok()
+                .flatten()
+                .is_some();
+            let running = match profiles.iter().find(|profile| profile.id == id) {
+                Some(profile) => crate::engine::is_game_running(profile),
+                None => false,
+            };
+            let entry = &mut self.view.games[index];
+            entry.status = crate::view_model::derive_status(directory.is_dir(), pending, running);
+            entry.running = running;
+        }
+    }
+
+    /// 把「启动 / 恢复原状 / 结束并恢复」交给提权后的引擎子进程。
+    fn hand_off(&mut self, command: crate::handoff::Command) {
         let Some(game) = self.view.selected_game().map(|entry| entry.id.clone()) else {
             self.notice = "先选择一个游戏".to_owned();
             return;
         };
         let logs = crate::about::logs_directory(&self.root);
         let _ = std::fs::create_dir_all(&logs);
-        let report = logs.join(report_name);
+        let report = logs.join(command.report_name());
+        // 上一轮的报告会让界面误判成本轮结果，先清掉。
+        let _ = std::fs::remove_file(&report);
         match crate::handoff::hand_off(command, &game, &self.root, &report) {
             Ok(()) => {
-                match command {
-                    // 启动：交接成功后隐藏窗口，交给托盘常驻。
-                    crate::handoff::Command::Run => self.hide_after_handoff = true,
-                    // 恢复：窗口保持可见，显示"恢复中"并轮询结果。
-                    crate::handoff::Command::Restore => {
-                        self.restore_pending = true;
-                        self.restore_started = Some(std::time::Instant::now());
-                    }
-                }
-                self.notice = format!(
-                    "已交给引擎（{}），界面将关闭；结果见 {}",
-                    command.as_str(),
-                    report.display()
-                );
+                let started = Instant::now();
+                self.pending = Some(match command {
+                    crate::handoff::Command::Run => Pending::Run {
+                        game: game.clone(),
+                        started,
+                    },
+                    crate::handoff::Command::Restore => Pending::Restore {
+                        game: game.clone(),
+                        started,
+                    },
+                    crate::handoff::Command::Stop => Pending::Stop {
+                        game: game.clone(),
+                        started,
+                    },
+                });
+                self.notice = match command {
+                    crate::handoff::Command::Run => "已交给引擎，正在等它接管…".to_owned(),
+                    crate::handoff::Command::Restore => "正在恢复原状…".to_owned(),
+                    crate::handoff::Command::Stop => "正在结束进程并恢复…".to_owned(),
+                };
             }
             Err(error) => self.notice = format!("交接失败：{error}"),
         }
     }
+
+    /// 每帧看一眼正在等的动作有没有结果。
+    fn poll_pending(&mut self) {
+        let Some(pending) = self.pending.clone() else {
+            return;
+        };
+        let report = self.report_path(pending.report_name());
+        match crate::restore_result::read(&report) {
+            Some(outcome) => {
+                self.pending = None;
+                // 启动成功的报告要等整局结束才写，这里通常只在失败时命中。
+                if pending.report_name() == "ui-run.json" && outcome.is_ok() {
+                    return;
+                }
+                self.popup = Some(Popup {
+                    ok: outcome.is_ok(),
+                    title: if outcome.is_ok() {
+                        pending.success_title().to_owned()
+                    } else {
+                        pending.failure_title().to_owned()
+                    },
+                    detail: outcome.detail(),
+                });
+                self.refresh_status(pending.game());
+            }
+            None => {
+                if pending.started().elapsed() >= pending.timeout() {
+                    self.pending = None;
+                    match pending {
+                        // 启动：引擎接管后就该把界面藏起来；失败的话上面已经弹窗了。
+                        Pending::Run { .. } => {
+                            self.hide_after_handoff = true;
+                            self.notice = "引擎已接管，界面已隐藏（托盘图标可恢复）".to_owned();
+                        }
+                        _ => {
+                            self.popup = Some(Popup {
+                                ok: false,
+                                title: pending.failure_title().to_owned(),
+                                detail: format!(
+                                    "等待 {} 秒仍没有结果。\n引擎可能还在结束游戏进程，或提权被拒绝。请查看日志后再试。",
+                                    pending.timeout().as_secs()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// 添加游戏对话框（M4-05）。
     fn draw_add_game(&mut self, root: &mut egui::Ui) {
         use crate::add_game::{AddGameState, HostChoice};
@@ -589,280 +1270,24 @@ impl LauncherApp {
         let _ = AddGameState::new;
     }
 
-    /// 设置窗口（M4-03）：常用 5 项 + 高级 7 项，联动灰化与校验都在 `settings_form`。
+    /// 设置窗口：帧生成（12 键 + 代理文件）与画质（档位 + 自定义 INI）两个视图。
     fn draw_settings(&mut self, root: &mut egui::Ui) {
-        use crate::settings_form::{ADVANCED_KEYS, COMMON_KEYS};
-        use launcher_core::settings::{
-            EngineKind, FlowResolution, RuntimeMode, SuperResolutionMode, UseHudless,
-        };
-
         let Some(mut form) = self.settings.take() else {
             return;
         };
         let mut open = true;
         let mut save = false;
-        let states = form.field_states();
-        egui::Window::new("设置")
+        egui::Window::new(form.view.title())
             .open(&mut open)
-            .default_width(520.0)
+            .default_width(560.0)
             .resizable(true)
             .show(root.ctx(), |ui| {
-                ui.label(format!("常用（{} 项）", COMMON_KEYS.len()));
-                ui.add_enabled_ui(true, |ui| {
-                    ui.checkbox(&mut form.settings.enabled, "Enabled · 启用组件");
-                });
-                ui.add_enabled_ui(form.settings.enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Engine · 超分引擎");
-                        ui.selectable_value(&mut form.settings.engine, EngineKind::Dlss, "DLSS");
-                        let xe = ui.selectable_value(
-                            &mut form.settings.engine,
-                            EngineKind::XeSs,
-                            "XeSS",
-                        );
-                        if xe.clicked() {
-                            form.set_engine(EngineKind::XeSs);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("MaxGeneratedFrames · 生成帧数");
-                        // 一律列出 1–5；引擎是 XeSS 时由内部夹紧逻辑收敛到 3。
-                        for value in 1..=5_u8 {
-                            if ui
-                                .selectable_value(
-                                    &mut form.settings.max_generated_frames,
-                                    value,
-                                    value.to_string(),
-                                )
-                                .clicked()
-                            {
-                                form.dirty = true;
-                            }
-                        }
-                        ui.label(format!("上限 {}", states.max_generated_frames));
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("SuperResolution.Mode");
-                        for (mode, text) in [
-                            (SuperResolutionMode::Off, "Off"),
-                            (SuperResolutionMode::MInt8, "M-Int8"),
-                            (SuperResolutionMode::LInt8, "L-Int8"),
-                            (SuperResolutionMode::MFp16, "M-Fp16"),
-                            (SuperResolutionMode::LFp16, "L-Fp16"),
-                        ] {
-                            if ui
-                                .selectable_value(&mut form.settings.super_resolution, mode, text)
-                                .clicked()
-                            {
-                                form.set_super_resolution(mode);
-                            }
-                        }
-                    });
-                    ui.add_enabled_ui(states.advanced_enabled, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Dlssg.Preset");
-                            for (preset, text) in [
-                                (launcher_core::settings::Preset::A, "A"),
-                                (launcher_core::settings::Preset::B, "B"),
-                                (launcher_core::settings::Preset::C, "C"),
-                            ] {
-                                if ui
-                                    .selectable_value(&mut form.settings.preset, preset, text)
-                                    .clicked()
-                                {
-                                    form.dirty = true;
-                                }
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Level");
-                            for (value, text) in [
-                                (0_u8, "0 关闭"),
-                                (1, "1 错误"),
-                                (2, "2 配置与能力"),
-                                (3, "3 详细追踪"),
-                            ] {
-                                if ui
-                                    .selectable_value(&mut form.settings.level, value, text)
-                                    .clicked()
-                                {
-                                    form.dirty = true;
-                                }
-                            }
-                        });
-                    });
-                });
-
-                ui.separator();
-                egui::CollapsingHeader::new(format!("高级（{} 项）", ADVANCED_KEYS.len()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.add_enabled_ui(states.advanced_enabled, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Optimized");
-                                for (value, text) in [
-                                    (0_u8, "0 原厂"),
-                                    (1, "1 逐位一致"),
-                                    (2, "2 快（有损）"),
-                                    (3, "3 最快（有损）"),
-                                ] {
-                                    if ui
-                                        .selectable_value(&mut form.settings.optimized, value, text)
-                                        .clicked()
-                                    {
-                                        form.dirty = true;
-                                    }
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Logging.Directory");
-                                if ui
-                                    .text_edit_singleline(&mut form.settings.directory)
-                                    .changed()
-                                {
-                                    form.dirty = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("FlowResolution");
-                                for (mode, text) in [
-                                    (FlowResolution::Coarse, "Coarse"),
-                                    (FlowResolution::Middle, "Middle"),
-                                    (FlowResolution::Fine, "Fine"),
-                                    (FlowResolution::CoarseAt4K, "Coarse@4K"),
-                                ] {
-                                    if ui
-                                        .selectable_value(
-                                            &mut form.settings.flow_resolution,
-                                            mode,
-                                            text,
-                                        )
-                                        .clicked()
-                                    {
-                                        form.dirty = true;
-                                    }
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("UseHudless");
-                                for (mode, text) in [
-                                    (UseHudless::Auto, "Auto"),
-                                    (UseHudless::Zero, "0"),
-                                    (UseHudless::One, "1"),
-                                ] {
-                                    if ui
-                                        .selectable_value(
-                                            &mut form.settings.use_hudless,
-                                            mode,
-                                            text,
-                                        )
-                                        .clicked()
-                                    {
-                                        form.dirty = true;
-                                    }
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Runtime.Mode");
-                                for (mode, text) in [
-                                    (RuntimeMode::Bundled, "Bundled"),
-                                    (RuntimeMode::External, "External"),
-                                    (RuntimeMode::Pinned, "Pinned"),
-                                ] {
-                                    if ui
-                                        .selectable_value(
-                                            &mut form.settings.runtime_mode,
-                                            mode,
-                                            text,
-                                        )
-                                        .clicked()
-                                    {
-                                        form.set_runtime_mode(mode);
-                                    }
-                                }
-                            });
-                            ui.add_enabled_ui(states.runtime_path, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("Runtime.Path");
-                                    let mut text =
-                                        form.settings.runtime_path.clone().unwrap_or_default();
-                                    if ui.text_edit_singleline(&mut text).changed() {
-                                        form.settings.runtime_path =
-                                            (!text.trim().is_empty()).then_some(text);
-                                        form.dirty = true;
-                                    }
-                                });
-                            });
-                        });
-                    });
-
-                ui.separator();
-                egui::CollapsingHeader::new("自定义 INI")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("文件");
-                            ui.text_edit_singleline(&mut self.ini_path);
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button("导入").clicked() {
-                                match std::fs::read_to_string(self.ini_path.trim()) {
-                                    Ok(text) => {
-                                        if self.ini_verbatim {
-                                            form.import_verbatim(&text);
-                                            self.ini_message = "已按自定义全文导入".to_owned();
-                                        } else {
-                                            match form.import_text(&text) {
-                                                Ok(outcome) => {
-                                                    self.ini_message = format!(
-                                                        "已应用 {} 项，未知 {} 项，提示 {} 条",
-                                                        outcome.applied.len(),
-                                                        outcome.unknown.len(),
-                                                        outcome.hints.len()
-                                                    );
-                                                }
-                                                Err(message) => self.ini_message = message,
-                                            }
-                                        }
-                                    }
-                                    Err(error) => {
-                                        self.ini_message = format!("读取失败：{error}");
-                                    }
-                                }
-                            }
-                            ui.checkbox(&mut self.ini_verbatim, "整份作为自定义 INI");
-                            if form.is_verbatim() {
-                                ui.label(egui::RichText::new("当前使用自定义全文").small().weak());
-                            }
-                            if ui.button("预览").clicked() {
-                                self.ini_preview = Some(match form.preview() {
-                                    Ok(text) => text,
-                                    Err(message) => message,
-                                });
-                            }
-                            if ui.button("恢复默认").clicked() {
-                                form.restore_defaults();
-                                self.ini_verbatim = false;
-                                self.ini_message = "已恢复默认".to_owned();
-                                self.ini_preview = None;
-                            }
-                        });
-                        if !self.ini_message.is_empty() {
-                            ui.label(&self.ini_message);
-                        }
-                        if let Some(preview) = self.ini_preview.clone() {
-                            egui::ScrollArea::vertical()
-                                .max_height(180.0)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut preview.as_str())
-                                            .desired_width(f32::INFINITY)
-                                            .interactive(false),
-                                    );
-                                });
-                        }
-                    });
-
+                match form.view {
+                    crate::settings_form::SettingsView::FrameGen => {
+                        self.draw_frame_gen(ui, &mut form)
+                    }
+                    crate::settings_form::SettingsView::Quality => self.draw_quality(ui, &mut form),
+                }
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("保存").clicked() {
@@ -879,11 +1304,471 @@ impl LauncherApp {
 
         if save {
             self.settings = Some(form);
-            self.save_settings();
-            self.settings = None;
+            if self.save_settings() {
+                self.settings = None;
+            }
         } else if open {
             self.settings = Some(form);
         }
+    }
+
+    /// 帧生成视图：常用 5 项 + 高级 7 项 + 自定义 INI + 代理文件。
+    fn draw_frame_gen(&mut self, ui: &mut egui::Ui, form: &mut crate::settings_form::SettingsForm) {
+        use crate::settings_form::{ADVANCED_KEYS, COMMON_KEYS};
+        use launcher_core::settings::{
+            EngineKind, FlowResolution, RuntimeMode, SuperResolutionMode, UseHudless,
+        };
+        let states = form.field_states();
+        ui.label(format!("常用（{} 项）", COMMON_KEYS.len()));
+        ui.add_enabled_ui(true, |ui| {
+            ui.checkbox(&mut form.settings.enabled, "Enabled · 启用组件")
+                .on_hover_text(crate::settings_form::key_hint("Enabled"));
+        });
+        ui.add_enabled_ui(form.settings.enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Engine · 超分引擎")
+                    .on_hover_text(crate::settings_form::key_hint("Engine"));
+                ui.selectable_value(&mut form.settings.engine, EngineKind::Dlss, "DLSS");
+                let xe = ui.selectable_value(&mut form.settings.engine, EngineKind::XeSs, "XeSS");
+                if xe.clicked() {
+                    form.set_engine(EngineKind::XeSs);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("MaxGeneratedFrames · 生成帧数")
+                    .on_hover_text(crate::settings_form::key_hint("MaxGeneratedFrames"));
+                // 一律列出 1–5；引擎是 XeSS 时由内部夹紧逻辑收敛到 3。
+                for value in 1..=5_u8 {
+                    if ui
+                        .selectable_value(
+                            &mut form.settings.max_generated_frames,
+                            value,
+                            value.to_string(),
+                        )
+                        .clicked()
+                    {
+                        form.dirty = true;
+                    }
+                }
+                ui.label(format!("上限 {}", states.max_generated_frames));
+            });
+            ui.horizontal(|ui| {
+                ui.label("SuperResolution.Mode")
+                    .on_hover_text(crate::settings_form::key_hint("SuperResolution.Mode"));
+                for (mode, text) in [
+                    (SuperResolutionMode::Off, "Off"),
+                    (SuperResolutionMode::MInt8, "M-Int8"),
+                    (SuperResolutionMode::LInt8, "L-Int8"),
+                    (SuperResolutionMode::MFp16, "M-Fp16"),
+                    (SuperResolutionMode::LFp16, "L-Fp16"),
+                ] {
+                    if ui
+                        .selectable_value(&mut form.settings.super_resolution, mode, text)
+                        .clicked()
+                    {
+                        form.set_super_resolution(mode);
+                    }
+                }
+            });
+            ui.add_enabled_ui(states.advanced_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Dlssg.Preset")
+                        .on_hover_text(crate::settings_form::key_hint("Dlssg.Preset"));
+                    for (preset, text) in [
+                        (launcher_core::settings::Preset::A, "A"),
+                        (launcher_core::settings::Preset::B, "B"),
+                        (launcher_core::settings::Preset::C, "C"),
+                    ] {
+                        if ui
+                            .selectable_value(&mut form.settings.preset, preset, text)
+                            .clicked()
+                        {
+                            form.dirty = true;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Level")
+                        .on_hover_text(crate::settings_form::key_hint("Level"));
+                    for (value, text) in [
+                        (0_u8, "0 关闭"),
+                        (1, "1 错误"),
+                        (2, "2 配置与能力"),
+                        (3, "3 详细追踪"),
+                    ] {
+                        if ui
+                            .selectable_value(&mut form.settings.level, value, text)
+                            .clicked()
+                        {
+                            form.dirty = true;
+                        }
+                    }
+                });
+            });
+        });
+
+        ui.separator();
+        egui::CollapsingHeader::new(format!("高级（{} 项）", ADVANCED_KEYS.len()))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_enabled_ui(states.advanced_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Optimized")
+                            .on_hover_text(crate::settings_form::key_hint("Optimized"));
+                        for (value, text) in [
+                            (0_u8, "0 原厂"),
+                            (1, "1 逐位一致"),
+                            (2, "2 快（有损）"),
+                            (3, "3 最快（有损）"),
+                        ] {
+                            if ui
+                                .selectable_value(&mut form.settings.optimized, value, text)
+                                .clicked()
+                            {
+                                form.dirty = true;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Logging.Directory")
+                            .on_hover_text(crate::settings_form::key_hint("Logging.Directory"));
+                        if ui
+                            .text_edit_singleline(&mut form.settings.directory)
+                            .changed()
+                        {
+                            form.dirty = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("FlowResolution")
+                            .on_hover_text(crate::settings_form::key_hint("FlowResolution"));
+                        for (mode, text) in [
+                            (FlowResolution::Coarse, "Coarse"),
+                            (FlowResolution::Middle, "Middle"),
+                            (FlowResolution::Fine, "Fine"),
+                            (FlowResolution::CoarseAt4K, "Coarse@4K"),
+                        ] {
+                            if ui
+                                .selectable_value(&mut form.settings.flow_resolution, mode, text)
+                                .clicked()
+                            {
+                                form.dirty = true;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("UseHudless")
+                            .on_hover_text(crate::settings_form::key_hint("UseHudless"));
+                        for (mode, text) in [
+                            (UseHudless::Auto, "Auto"),
+                            (UseHudless::Zero, "0"),
+                            (UseHudless::One, "1"),
+                        ] {
+                            if ui
+                                .selectable_value(&mut form.settings.use_hudless, mode, text)
+                                .clicked()
+                            {
+                                form.dirty = true;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Runtime.Mode")
+                            .on_hover_text(crate::settings_form::key_hint("Runtime.Mode"));
+                        for (mode, text) in [
+                            (RuntimeMode::Bundled, "Bundled"),
+                            (RuntimeMode::External, "External"),
+                            (RuntimeMode::Pinned, "Pinned"),
+                        ] {
+                            if ui
+                                .selectable_value(&mut form.settings.runtime_mode, mode, text)
+                                .clicked()
+                            {
+                                form.set_runtime_mode(mode);
+                            }
+                        }
+                    });
+                    ui.add_enabled_ui(states.runtime_path, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Runtime.Path")
+                                .on_hover_text(crate::settings_form::key_hint("Runtime.Path"));
+                            let mut text = form.settings.runtime_path.clone().unwrap_or_default();
+                            if ui.text_edit_singleline(&mut text).changed() {
+                                form.settings.runtime_path =
+                                    (!text.trim().is_empty()).then_some(text);
+                                form.dirty = true;
+                            }
+                        });
+                    });
+                });
+            });
+
+        ui.separator();
+        egui::CollapsingHeader::new("自定义 INI")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("文件");
+                    ui.text_edit_singleline(&mut self.ini_path);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("导入").clicked() {
+                        match std::fs::read_to_string(self.ini_path.trim()) {
+                            Ok(text) => {
+                                if self.ini_verbatim {
+                                    form.import_verbatim(&text);
+                                    self.ini_message = "已按自定义全文导入".to_owned();
+                                } else {
+                                    match form.import_text(&text) {
+                                        Ok(outcome) => {
+                                            self.ini_message = format!(
+                                                "已应用 {} 项，未知 {} 项，提示 {} 条",
+                                                outcome.applied.len(),
+                                                outcome.unknown.len(),
+                                                outcome.hints.len()
+                                            );
+                                        }
+                                        Err(message) => self.ini_message = message,
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                self.ini_message = format!("读取失败：{error}");
+                            }
+                        }
+                    }
+                    ui.checkbox(&mut self.ini_verbatim, "整份作为自定义 INI");
+                    if form.is_verbatim() {
+                        ui.label(egui::RichText::new("当前使用自定义全文").small().weak());
+                    }
+                    if ui.button("预览").clicked() {
+                        self.ini_preview = Some(match form.preview() {
+                            Ok(text) => text,
+                            Err(message) => message,
+                        });
+                    }
+                    if ui.button("恢复默认").clicked() {
+                        form.restore_defaults();
+                        self.ini_verbatim = false;
+                        self.ini_message = "已恢复默认".to_owned();
+                        self.ini_preview = None;
+                    }
+                });
+                if !self.ini_message.is_empty() {
+                    ui.label(&self.ini_message);
+                }
+                if let Some(preview) = self.ini_preview.clone() {
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut preview.as_str())
+                                    .desired_width(f32::INFINITY)
+                                    .interactive(false),
+                            );
+                        });
+                }
+            });
+
+        ui.separator();
+        self.draw_proxy_section(ui, form);
+    }
+
+    /// 代理文件选择：编号、名称、来源与建议；有遗留部署时整块灰掉。
+    fn draw_proxy_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        form: &mut crate::settings_form::SettingsForm,
+    ) {
+        use crate::settings_form::SettingsForm;
+        egui::CollapsingHeader::new("代理文件")
+            .default_open(true)
+            .show(ui, |ui| {
+                let states = form.field_states();
+                let game = self.view.selected_game().cloned();
+                // 渲染目录里已有的普通文件 = 别人的注入器占着这个位置，本程序不覆盖。
+                let occupied = game
+                    .as_ref()
+                    .and_then(|entry| self.render_executable_of(&entry.id))
+                    .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+                    .map(|directory| {
+                        SettingsForm::proxy_options()
+                            .into_iter()
+                            .filter_map(|option| {
+                                let path = directory.join(option.name);
+                                let metadata = std::fs::symlink_metadata(&path).ok()?;
+                                // 链接是我们自己部署的，不算被占用。
+                                (!metadata.file_type().is_symlink()).then_some(option.name)
+                            })
+                            .collect::<Vec<&'static str>>()
+                    })
+                    .unwrap_or_default();
+                ui.add_enabled_ui(states.proxy_choice, |ui| {
+                    for option in SettingsForm::proxy_options() {
+                        let selected = form.proxy_index == option.index;
+                        let blocked = occupied.contains(&option.name);
+                        let text = format!(
+                            "{}  {}（{}）{}",
+                            option.index,
+                            option.name,
+                            option.location,
+                            if blocked { "  已被占用" } else { "" }
+                        );
+                        let hover = if blocked {
+                            "该位置已有别的注入器/模组加载器的文件，本程序不会覆盖它；换一个代理"
+                        } else {
+                            option.note
+                        };
+                        let label = if blocked {
+                            egui::RichText::new(text)
+                                .color(egui::Color32::from_rgb(0xD0, 0x8A, 0x2E))
+                        } else {
+                            egui::RichText::new(text)
+                        };
+                        if ui
+                            .selectable_label(selected, label)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            form.set_proxy(option.index);
+                        }
+                    }
+                });
+                if !occupied.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
+                        format!("已被占用：{}（属于别的工具，不动它）", occupied.join("、")),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(format!("当前：{}", form.proxy_name()))
+                        .small()
+                        .weak(),
+                );
+                if !states.proxy_choice {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
+                        "该游戏还有未清理的部署：先点该行的「恢复原状」，才能换代理。",
+                    );
+                }
+                if let Some(game) = game {
+                    if let Some(hint) = form.proxy_hint(&game.id, &game.directory) {
+                        ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x2E), hint);
+                    }
+                }
+                ui.label(
+                    egui::RichText::new("只部署一个代理；换代理要重新部署，旧的会按记录先清掉。")
+                        .small()
+                        .weak(),
+                );
+            });
+    }
+
+    /// 画质视图：引擎版本 + 4 档画质 + `05-自定义` + 配置源结论。
+    fn draw_quality(&mut self, ui: &mut egui::Ui, form: &mut crate::settings_form::SettingsForm) {
+        use crate::settings_form::SettingsForm;
+
+        ui.horizontal(|ui| {
+            ui.label("引擎版本");
+            ui.label(
+                egui::RichText::new(if form.engine_host_is_ue {
+                    form.engine_host.clone()
+                } else {
+                    "尚未确定".to_owned()
+                })
+                .strong(),
+            );
+            let busy = self.detect_job.is_some();
+            let label = if busy { "识别中…" } else { "重新识别" };
+            if ui
+                .add_enabled(!busy, egui::Button::new(label))
+                .on_hover_text("读 Engine\\Build\\Build.version、渲染 EXE 的标记与版本信息；冲突或缺失不猜")
+                .clicked()
+            {
+                let game = self.view.selected_game().cloned();
+                if let Some(game) = game {
+                    match self.render_executable_of(&game.id) {
+                        Some(executable) if executable.is_file() => {
+                            self.start_detection(&game.id, game.directory.clone(), executable);
+                        }
+                        _ => {
+                            self.notice =
+                                "这条记录没有可用的渲染程序，识别不了；先在「添加游戏」里扫描确认目录"
+                                    .to_owned();
+                        }
+                    }
+                }
+            }
+            ui.label(egui::RichText::new("手动校准：").small().weak());
+            for host in ["UE4", "UE5"] {
+                let selected = form.engine_host == host;
+                if ui.selectable_label(selected, host).clicked() {
+                    form.engine_host = host.to_owned();
+                    form.engine_host_is_ue = true;
+                    form.dirty = true;
+                    if let Some(game) = self.view.selected_game().cloned() {
+                        // 手动校准立即生效，不用等保存按钮（与 PS 的"手动校准"一致）。
+                        self.write_engine_host(&game.id, host);
+                    }
+                }
+            }
+        });
+        if !form.engine_host_is_ue {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
+                "未识别为虚幻引擎，画质档位不适用；确认识别结果后再来选档位。",
+            );
+        }
+
+        ui.separator();
+        ui.label("画质档位");
+        ui.add_enabled_ui(form.engine_host_is_ue, |ui| {
+            for tier in SettingsForm::quality_options() {
+                let selected = form.quality_tier == tier;
+                if ui
+                    .selectable_label(selected, tier.folder())
+                    .on_hover_text(match tier {
+                        launcher_core::quality::QualityTier::Tier5 => {
+                            "用你自己填的 Engine.ini；不做合并，原样部署"
+                        }
+                        _ => "仓库里的通用分类档位（源文件保持可编辑）",
+                    })
+                    .clicked()
+                {
+                    form.set_quality(tier);
+                }
+            }
+        });
+
+        if form.quality_tier == launcher_core::quality::QualityTier::Tier5 {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("自定义 INI");
+                ui.add_enabled_ui(form.engine_host_is_ue, |ui| {
+                    ui.text_edit_singleline(&mut form.custom_ini_path);
+                });
+                if ui.button("浏览…").clicked() {
+                    if let Some(file) = rfd::FileDialog::new()
+                        .add_filter("Engine.ini", &["ini"])
+                        .pick_file()
+                    {
+                        form.custom_ini_path = file.to_string_lossy().into_owned();
+                        form.dirty = true;
+                    }
+                }
+            });
+        }
+
+        ui.separator();
+        let summary = form.quality_summary(&self.root);
+        ui.label(summary);
+        ui.label(
+            egui::RichText::new(
+                "部署的是带标记的临时副本（只读），原件按字节备份后恢复；源文件不会被改动。",
+            )
+            .small()
+            .weak(),
+        );
     }
 }
 
@@ -919,28 +1804,26 @@ impl eframe::App for LauncherApp {
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.hide_after_handoff = true;
         }
-        // 恢复进行中：保持窗口可见，显示进度并在结果出来后更新提示。
-        if self.restore_pending {
-            match self.last_restore_outcome() {
-                Some(true) => {
-                    self.restore_pending = false;
-                    self.notice = "恢复完成".to_owned();
-                }
-                Some(false) => {
-                    self.restore_pending = false;
-                    self.notice = "恢复失败，可点「重试恢复」".to_owned();
-                }
-                None => {
-                    let elapsed = self
-                        .restore_started
-                        .map(|start| start.elapsed().as_secs())
-                        .unwrap_or(0);
-                    if elapsed >= 60 {
-                        self.restore_pending = false;
-                        self.notice = "恢复仍未完成，请查看日志".to_owned();
-                    }
-                }
-            }
+        // 后台平台扫描：跑着就持续重绘，结束后把能确定的直接加进来。
+        self.poll_scan();
+        if self.scan_job.is_some() {
+            root.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        self.draw_scan_report(root);
+        // 后台识别引擎主版本：跑着就持续要重绘，结束后写回偏好。
+        self.poll_detection();
+        if self.detect_job.is_some() {
+            root.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        // 行状态与"游戏是否在跑"定期重算：引擎部署、游戏启动/退出都不需要重开界面。
+        self.refresh_rows();
+        root.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(REFRESH_INTERVAL_MS));
+        // 正在等结果的动作（启动/恢复/结束并恢复）。
+        self.poll_pending();
+        if self.pending.is_some() {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(300));
         }
@@ -964,6 +1847,7 @@ impl eframe::App for LauncherApp {
                 .request_repaint_after(std::time::Duration::from_millis(500));
         }
         self.draw_remove_confirm(root);
+        self.draw_popup(root);
         if self.quit_after_frame {
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -1019,6 +1903,23 @@ pub fn status_color(status: GameStatus) -> egui::Color32 {
     }
 }
 
+/// 从一段紧凑 JSON 里取一个字符串/数字字段的原文（`{"game_id":"x","pid":1}`）。
+fn json_text(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle)? + needle.len();
+    let rest = &text[start..];
+    let colon = rest.find(':')?;
+    let rest = rest[colon + 1..].trim_start();
+    if let Some(after) = rest.strip_prefix('"') {
+        let end = after.find('"')?;
+        return Some(after[..end].to_owned());
+    }
+    let end = rest
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_owned())
+}
+
 /// 状态胶囊：圆角底色 + 白字，用于列表行。
 pub fn status_pill(ui: &mut egui::Ui, status: GameStatus) {
     let color = status_color(status);
@@ -1033,4 +1934,23 @@ pub fn status_pill(ui: &mut egui::Ui, status: GameStatus) {
                     .small(),
             );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_status_json_is_parsed() {
+        // 与 `ipc::StatusSnapshot::to_json` 的真实形状一致
+        let text = r#"{"game_id":"direct-790c6651f94e333f0469a56d9c5faab5","phase":"starting","pid":14672,"updated_at":1795414816,"message":"引擎已接管"}"#;
+        assert_eq!(
+            json_text(text, "game_id").as_deref(),
+            Some("direct-790c6651f94e333f0469a56d9c5faab5")
+        );
+        assert_eq!(json_text(text, "pid").as_deref(), Some("14672"));
+        assert_eq!(json_text(text, "message").as_deref(), Some("引擎已接管"));
+        assert!(json_text(text, "nope").is_none());
+        assert!(json_text("not json", "game_id").is_none());
+    }
 }

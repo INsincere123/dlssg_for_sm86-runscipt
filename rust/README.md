@@ -1,6 +1,7 @@
-﻿# rust/ — Rust 单 EXE 启动器（M1 已完成）
+# rust/ — Rust 单 EXE 启动器（M1–M6、M8–M9 已完成；M7 真机验收待做）
 
-M1（`launcher-core`，15 步）已完成并通过 184 + 2 个测试；下一步 M2 见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。
+界面 + 引擎都在一个 `DlssgLauncher.exe` 里：不带参数是单窗口界面，带 `--engine` 是引擎。
+计划与任务清单见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。
 
 | 路径 | 内容 |
 |---|---|
@@ -22,7 +23,47 @@ M1（`launcher-core`，15 步）已完成并通过 184 + 2 个测试；下一步
 | `tools/gen-plan.ps1` | 由 `plan/plan.json` 生成 `plan/plan.md` |
 | `tools/diff-parity.ps1` | 差分核对：PS 现算 vs 入库样本（诊断 INI 12 份 + 识别 9 条） |
 | `tools/measure-ui.ps1` | 界面验收：3 次启动采样内存/首帧并截图 |
+| `tools/shot-ui.ps1` | 开发期截图：按标题抓窗口（Per-Monitor V2 DPI、整屏裁切、可悬停触发提示） |
 | `spike/` | egui + glow 的最小工程，只用于测指标，不进产品 |
+
+## 界面
+
+主窗口一行一个游戏：`[启动] 名称 [帧生成] [画质] 状态 引擎 … [恢复原状] [移除]`，
+底栏是 `[扫描游戏] 添加游戏 日志 关于`。
+
+- **扫描游戏**：只扫 Steam / GOG / Epic 的平台记录与注册表（不翻全盘）。有证据的
+  （UE 打包本体或同目录自带 DLSS-G 组件、或鸣潮/异环的内置模板）直接加进列表，
+  其余进「扫描结果」等确认；每行一个「选择渲染程序」入口。
+- **帧生成**：12 个组件键（常用 5 + 高级 7）+ 自定义 INI + 代理文件（6 选一，
+  异环建议 `winmm.dll`，有遗留部署时代理整块灰掉）。
+- **画质**：引擎版本（可重新识别 / 手动校准）+ 4 档画质 + `05-自定义`；
+  只在画质视图保存时才改配置源，配置源不存在会直接拒绝保存。
+- 启动/恢复都交给提权后的引擎子进程；恢复**不显示进度**，结束后弹结果卡片。
+
+## 调试与验收入口
+
+```powershell
+# 引擎：只检查 / 真跑 / 恢复
+DlssgLauncher.exe --engine check --report out.json
+DlssgLauncher.exe --engine run --game <id> --root <运行根> --report out.json
+DlssgLauncher.exe --engine restore --game <id> --root <运行根> --report out.json
+
+# 界面自检（开窗 hold 毫秒后自动关闭，写报告）
+DlssgLauncher.exe --ui-selftest 2200 out.json
+
+# 界面预览（不连引擎，只摆出某个界面，配合 tools/shot-ui.ps1 截图）
+DlssgLauncher.exe --ui-preview restore-ok|restore-fail|framegen|quality|scan
+```
+
+真机探针（`--ignored`，默认不跑）：
+
+```powershell
+cd rust
+# 引擎识别：需要 DLSSG_UE_PROBE=<游戏目录>、DLSSG_UE_PROBE_EXE=<渲染 EXE>
+cargo test -p launcher-core --lib unreal -- --ignored --nocapture probe_real_game
+# 平台扫描：读本机 Steam/GOG/Epic 记录与注册表，打印可添加/待确认清单
+cargo test -p launcher --bin DlssgLauncher scan -- --ignored --nocapture probe_real_scan
+```
 
 ## 与现有实现的关系
 
