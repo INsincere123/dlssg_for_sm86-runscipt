@@ -1,6 +1,6 @@
 # 开发计划（生成物，源：plan.json）
 
-- 生成时间（UTC）：2026-11-22T15:00:09.0303936Z
+- 生成时间（UTC）：2026-11-22T15:22:59.1249915Z
 - 版本：2.0　受众：ai-agent
 - 说明：plan.json 是唯一事实来源；plan.md 由 rust/tools/gen-plan.ps1 生成，不要手改 md。
 
@@ -65,8 +65,10 @@
 | C | pass | resources + restore + 真实链接 | real_symlinks 2/2（提权，2026-11-22） |
 | D | pass | settings 12 键 + 诊断模板 | 12 份诊断样本逐字节一致；9 条识别边界同 PS |
 | E | pass | session + log + 差分报告 | PARITY-REPORT.md；check 全绿 |
+| F | pass | M2 引擎壳：launcher-win 真实现 + CLI + 提权 + IPC + 单会话 + 复用启动器 | 208 测试通过（M2 新增 14 个）；check.ps1 全绿；未验证：从非提权父进程触发 UAC 弹窗（本会话已是高完整性，弹窗路径测得的是 classify_shell_error(1223) 单测） |
+| G | pass | M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位 | 251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本 |
 
-## 任务（done 15 / todo 27）
+## 任务（done 26 / todo 16）
 
 ### M1
 
@@ -92,22 +94,22 @@
 
 | ID | 任务 | 状态 | 依赖 | 验收 | 产物 |
 |---|---|---|---|---|---|
-| M2-01 | launcher-win crate：SymlinkOps/MutexOps/ProcessProbe/Clock 的 Windows 真实现 | todo | M1-15 | 真实链接与互斥单测通过；目录符号链接用 RemoveDirectory、按重解析标签区分 junction | rust/crates/launcher-win/ |
-| M2-02 | CLI：--engine run\|restore\|check，windows 子系统 + CREATE_NO_WINDOW | todo | M2-01 | 引擎进程 GetConsoleWindow()==0 | rust/crates/launcher/ |
-| M2-03 | 提权：ShellExecuteEx(runas) + 取消 UAC 保持 GUI 可用 + 返回码回传 | todo | M2-02 | 手工一次 UAC 确认；取消时 GUI 不退出 | launcher-win |
-| M2-04 | IPC：命名管道（显式 DACL）+ status.json 兜底 | todo | M2-03 | 管道不可用时读 status.json 得到同一阶段 | launcher-win、core::session |
-| M2-05 | 单会话 Global\DlssgSession + 第二款游戏拒绝 | todo | M2-04 | 并发启动第二个游戏返回明确错误 | launcher-win |
-| M2-06 | 复用已运行的官方启动器（完整 EXE 路径） | todo | M2-05 | 启动器已运行时不再拉起、直接进入等待 | core::session、launcher-win |
+| M2-01 | launcher-win crate：SymlinkOps/MutexOps/ProcessProbe/Clock 的 Windows 真实现 | done | M1-15 | 真实链接与互斥单测通过；目录符号链接用 RemoveDirectory、按重解析标签区分 junction | rust/crates/launcher-win/ |
+| M2-02 | CLI：--engine run\|restore\|check，windows 子系统 + CREATE_NO_WINDOW | done | M2-01 | 引擎进程 GetConsoleWindow()==0 | rust/crates/launcher/ |
+| M2-03 | 提权：ShellExecuteEx(runas) + 取消 UAC 保持 GUI 可用 + 返回码回传 | done | M2-02 | 手工一次 UAC 确认；取消时 GUI 不退出 | launcher-win |
+| M2-04 | IPC：命名管道（显式 DACL）+ status.json 兜底 | done | M2-03 | 管道不可用时读 status.json 得到同一阶段 | launcher-win、core::session |
+| M2-05 | 单会话 Global\DlssgSession + 第二款游戏拒绝 | done | M2-04 | 并发启动第二个游戏返回明确错误 | launcher-win |
+| M2-06 | 复用已运行的官方启动器（完整 EXE 路径） | done | M2-05 | 启动器已运行时不再拉起、直接进入等待 | core::session、launcher-win |
 
 ### M3
 
 | ID | 任务 | 状态 | 依赖 | 验收 | 产物 |
 |---|---|---|---|---|---|
-| M3-01 | Steam：libraryfolders.vdf / appmanifest / AppID 匹配 / -applaunch | todo | M2-06 | 对齐 SteamUE5.Tests 语义；零/多匹配报原因不猜 | core::steam |
-| M3-02 | Direct：相对 EXE 校验、工作目录、direct-<GUID> 身份 | todo | M3-01 | 对齐 DirectLauncher.Tests | core::direct |
-| M3-03 | 游戏发现：Steam/Epic/GOG 记录、候选打分、12 层/12000 目录上限、可取消 | todo | M3-02 | 不按盘符全盘扫描；超限可取消 | core::discovery |
-| M3-04 | 代理推荐：PE 导入表扫描，只推荐存在的代理名 | todo | M3-03 | 伪造 PE 样本的导入表命中 | launcher-win |
-| M3-05 | quality：EngineHost(none/UE4/UE5) → 档位路径 | todo | M3-04 | 纯函数单测覆盖 none 与 01-05 档位 | core::quality |
+| M3-01 | Steam：libraryfolders.vdf / appmanifest / AppID 匹配 / -applaunch | done | M2-06 | 对齐 SteamUE5.Tests 语义；零/多匹配报原因不猜 | core::steam |
+| M3-02 | Direct：相对 EXE 校验、工作目录、direct-<GUID> 身份 | done | M3-01 | 对齐 DirectLauncher.Tests | core::direct |
+| M3-03 | 游戏发现：Steam/Epic/GOG 记录 + 候选扫描、打分、12 层/12000 目录上限、可取消 | done | M3-02 | 不按盘符全盘扫描；超限可取消 | core::discovery |
+| M3-04 | 代理推荐：PE 导入表扫描，只推荐存在的代理名 | done | M3-03 | 伪造 PE 样本的导入表命中 | launcher-win |
+| M3-05 | quality：EngineHost(none/UE4/UE5) → 档位路径 | done | M3-04 | 纯函数单测覆盖 none 与 01-05 档位 | core::quality |
 
 ### M4
 

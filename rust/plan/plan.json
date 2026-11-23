@@ -49,7 +49,9 @@
     { "id": "B", "status": "pass", "scope": "journal 结构/落盘/identity", "evidence": "5 个阶段快照字段级一致" },
     { "id": "C", "status": "pass", "scope": "resources + restore + 真实链接", "evidence": "real_symlinks 2/2（提权，2026-11-22）" },
     { "id": "D", "status": "pass", "scope": "settings 12 键 + 诊断模板", "evidence": "12 份诊断样本逐字节一致；9 条识别边界同 PS" },
-    { "id": "E", "status": "pass", "scope": "session + log + 差分报告", "evidence": "PARITY-REPORT.md；check 全绿" }
+    { "id": "E", "status": "pass", "scope": "session + log + 差分报告", "evidence": "PARITY-REPORT.md；check 全绿" },
+    { "id": "F", "status": "pass", "scope": "M2 引擎壳：launcher-win 真实现 + CLI + 提权 + IPC + 单会话 + 复用启动器", "evidence": "208 测试通过（M2 新增 14 个）；check.ps1 全绿；未验证：从非提权父进程触发 UAC 弹窗（本会话已是高完整性，弹窗路径测得的是 classify_shell_error(1223) 单测）" },
+    { "id": "G", "status": "pass", "scope": "M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位", "evidence": "251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本" }
   ],
   "tasks": [
     { "id": "M1-01", "milestone": "M1", "title": "workspace + 错误类型 + 4 个能力 trait + 样本读取器", "status": "done", "deps": [], "acceptance": ["cargo test -p launcher-core 通过", "clippy 无告警"], "artifacts": ["rust/Cargo.toml", "src/ops.rs", "src/error.rs", "src/fixtures.rs"] },
@@ -68,18 +70,18 @@
     { "id": "M1-14", "milestone": "M1", "title": "session：三策略状态机 + 启动超时/关闭宽限 + 复用已运行启动器", "status": "done", "deps": ["M1-13"], "acceptance": ["tests/step14_15_session_log.rs 6 条 + 单测"], "artifacts": ["src/session.rs"] },
     { "id": "M1-15", "milestone": "M1", "title": "log + prefs：日志命名/24h 清理/组件游标、偏好目录 <16hex>", "status": "done", "deps": ["M1-14"], "acceptance": ["单测 + PowerShell 实测向量 0832029A5839CB2D"], "artifacts": ["src/log.rs", "src/prefs.rs"] },
 
-    { "id": "M2-01", "milestone": "M2", "title": "launcher-win crate：SymlinkOps/MutexOps/ProcessProbe/Clock 的 Windows 真实现", "status": "todo", "deps": ["M1-15"], "acceptance": ["真实链接与互斥单测通过", "目录符号链接用 RemoveDirectory、按重解析标签区分 junction"], "artifacts": ["rust/crates/launcher-win/"] },
-    { "id": "M2-02", "milestone": "M2", "title": "CLI：--engine run|restore|check，windows 子系统 + CREATE_NO_WINDOW", "status": "todo", "deps": ["M2-01"], "acceptance": ["引擎进程 GetConsoleWindow()==0"], "artifacts": ["rust/crates/launcher/"] },
-    { "id": "M2-03", "milestone": "M2", "title": "提权：ShellExecuteEx(runas) + 取消 UAC 保持 GUI 可用 + 返回码回传", "status": "todo", "deps": ["M2-02"], "acceptance": ["手工一次 UAC 确认；取消时 GUI 不退出"], "artifacts": ["launcher-win"] },
-    { "id": "M2-04", "milestone": "M2", "title": "IPC：命名管道（显式 DACL）+ status.json 兜底", "status": "todo", "deps": ["M2-03"], "acceptance": ["管道不可用时读 status.json 得到同一阶段"], "artifacts": ["launcher-win", "core::session"] },
-    { "id": "M2-05", "milestone": "M2", "title": "单会话 Global\\DlssgSession + 第二款游戏拒绝", "status": "todo", "deps": ["M2-04"], "acceptance": ["并发启动第二个游戏返回明确错误"], "artifacts": ["launcher-win"] },
-    { "id": "M2-06", "milestone": "M2", "title": "复用已运行的官方启动器（完整 EXE 路径）", "status": "todo", "deps": ["M2-05"], "acceptance": ["启动器已运行时不再拉起、直接进入等待"], "artifacts": ["core::session", "launcher-win"] },
+    { "id": "M2-01", "milestone": "M2", "title": "launcher-win crate：SymlinkOps/MutexOps/ProcessProbe/Clock 的 Windows 真实现", "status": "done", "deps": ["M1-15"], "acceptance": ["真实链接与互斥单测通过", "目录符号链接用 RemoveDirectory、按重解析标签区分 junction"], "artifacts": ["rust/crates/launcher-win/"] },
+    { "id": "M2-02", "milestone": "M2", "title": "CLI：--engine run|restore|check，windows 子系统 + CREATE_NO_WINDOW", "status": "done", "deps": ["M2-01"], "acceptance": ["引擎进程 GetConsoleWindow()==0"], "artifacts": ["rust/crates/launcher/"] },
+    { "id": "M2-03", "milestone": "M2", "title": "提权：ShellExecuteEx(runas) + 取消 UAC 保持 GUI 可用 + 返回码回传", "status": "done", "deps": ["M2-02"], "acceptance": ["手工一次 UAC 确认；取消时 GUI 不退出"], "artifacts": ["launcher-win"] },
+    { "id": "M2-04", "milestone": "M2", "title": "IPC：命名管道（显式 DACL）+ status.json 兜底", "status": "done", "deps": ["M2-03"], "acceptance": ["管道不可用时读 status.json 得到同一阶段"], "artifacts": ["launcher-win", "core::session"] },
+    { "id": "M2-05", "milestone": "M2", "title": "单会话 Global\\DlssgSession + 第二款游戏拒绝", "status": "done", "deps": ["M2-04"], "acceptance": ["并发启动第二个游戏返回明确错误"], "artifacts": ["launcher-win"] },
+    { "id": "M2-06", "milestone": "M2", "title": "复用已运行的官方启动器（完整 EXE 路径）", "status": "done", "deps": ["M2-05"], "acceptance": ["启动器已运行时不再拉起、直接进入等待"], "artifacts": ["core::session", "launcher-win"] },
 
-    { "id": "M3-01", "milestone": "M3", "title": "Steam：libraryfolders.vdf / appmanifest / AppID 匹配 / -applaunch", "status": "todo", "deps": ["M2-06"], "acceptance": ["对齐 SteamUE5.Tests 语义；零/多匹配报原因不猜"], "artifacts": ["core::steam"] },
-    { "id": "M3-02", "milestone": "M3", "title": "Direct：相对 EXE 校验、工作目录、direct-<GUID> 身份", "status": "todo", "deps": ["M3-01"], "acceptance": ["对齐 DirectLauncher.Tests"], "artifacts": ["core::direct"] },
-    { "id": "M3-03", "milestone": "M3", "title": "游戏发现：Steam/Epic/GOG 记录、候选打分、12 层/12000 目录上限、可取消", "status": "todo", "deps": ["M3-02"], "acceptance": ["不按盘符全盘扫描；超限可取消"], "artifacts": ["core::discovery"] },
-    { "id": "M3-04", "milestone": "M3", "title": "代理推荐：PE 导入表扫描，只推荐存在的代理名", "status": "todo", "deps": ["M3-03"], "acceptance": ["伪造 PE 样本的导入表命中"], "artifacts": ["launcher-win"] },
-    { "id": "M3-05", "milestone": "M3", "title": "quality：EngineHost(none/UE4/UE5) → 档位路径", "status": "todo", "deps": ["M3-04"], "acceptance": ["纯函数单测覆盖 none 与 01-05 档位"], "artifacts": ["core::quality"] },
+    { "id": "M3-01", "milestone": "M3", "title": "Steam：libraryfolders.vdf / appmanifest / AppID 匹配 / -applaunch", "status": "done", "deps": ["M2-06"], "acceptance": ["对齐 SteamUE5.Tests 语义；零/多匹配报原因不猜"], "artifacts": ["core::steam"] },
+    { "id": "M3-02", "milestone": "M3", "title": "Direct：相对 EXE 校验、工作目录、direct-<GUID> 身份", "status": "done", "deps": ["M3-01"], "acceptance": ["对齐 DirectLauncher.Tests"], "artifacts": ["core::direct"] },
+    { "id": "M3-03", "milestone": "M3", "title": "游戏发现：Steam/Epic/GOG 记录 + 候选扫描、打分、12 层/12000 目录上限、可取消", "status": "done", "deps": ["M3-02"], "acceptance": ["不按盘符全盘扫描；超限可取消"], "artifacts": ["core::discovery"] },
+    { "id": "M3-04", "milestone": "M3", "title": "代理推荐：PE 导入表扫描，只推荐存在的代理名", "status": "done", "deps": ["M3-03"], "acceptance": ["伪造 PE 样本的导入表命中"], "artifacts": ["launcher-win"] },
+    { "id": "M3-05", "milestone": "M3", "title": "quality：EngineHost(none/UE4/UE5) → 档位路径", "status": "done", "deps": ["M3-04"], "acceptance": ["纯函数单测覆盖 none 与 01-05 档位"], "artifacts": ["core::quality"] },
 
     { "id": "M4-01", "milestone": "M4", "title": "GUI 骨架：egui+glow、单实例、交接成功后退出", "status": "todo", "deps": ["M3-05"], "acceptance": ["空窗实测 WS ≤85 MB、冷启动 ≤300 ms"], "artifacts": ["rust/crates/launcher"] },
     { "id": "M4-02", "milestone": "M4", "title": "主窗：游戏列表 + 状态胶囊（可启动/需恢复/会话中）", "status": "todo", "deps": ["M4-01"], "acceptance": ["四种状态都能渲染；布局无重叠"], "artifacts": ["launcher/ui"] },

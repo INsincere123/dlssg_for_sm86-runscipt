@@ -17,6 +17,8 @@
 
 pub mod config;
 pub mod diagnostic;
+pub mod direct;
+pub mod discovery;
 pub mod engine_config;
 pub mod error;
 pub mod fixtures;
@@ -25,11 +27,14 @@ pub mod journal_store;
 pub mod log;
 pub mod ops;
 pub mod path;
+pub mod pe;
 pub mod prefs;
+pub mod quality;
 pub mod resources;
 pub mod restore;
 pub mod session;
 pub mod settings;
+pub mod steam;
 #[doc(hidden)]
 pub mod testing;
 

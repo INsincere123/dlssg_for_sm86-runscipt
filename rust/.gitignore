@@ -1,3 +1,29 @@
-# 构建产物
+# 构建产物（cargo 默认 target，spike 是独立 crate 有自己的一份）
 /target/
 /spike/target/
+
+# 本地编辑器与工具缓存
+/.vs/
+/.idea/
+/.vscode/
+*.rs.bk
+
+# OS 与编辑器临时文件（仓库根另有同名规则，这里覆盖在 rust/ 下生成的情况）
+*.tmp
+*.tmp.previous
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 测试与调试的临时落盘点；正式产物在 %TEMP% 下，不进这里
+/tests-scratch/
+/ipc-scratch/
+
+# 注意：以下内容必须继续被跟踪，不要加进忽略
+# - fixtures/**（黄金样本，换行由 .gitattributes 的 -text 保护）
+# - plan/plan.json 与 plan/plan.md（计划事实来源与生成视图）
+# - docs/*.png（M0 实测截图）
+# - Cargo.lock（工作区依赖锁定）

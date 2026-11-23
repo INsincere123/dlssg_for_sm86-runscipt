@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/launcher-core"]
+members = ["crates/launcher-core", "crates/launcher-win", "crates/launcher"]
 # spike 是 M0 的一次性测量工程，不参与产品构建
 exclude = ["spike"]
 
