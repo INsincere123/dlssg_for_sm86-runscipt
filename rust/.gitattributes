@@ -1,0 +1,14 @@
+# rust/ 下的换行策略
+#
+# 黄金样本必须保持原始字节：样本里既有纯 CRLF，也有故意做成纯 LF 的用例
+# （fixtures/diagnostic/recognition/crlf-to-lf.ini）。任何换行归一化都会让
+# "逐字节等价"这条判据失效，所以整棵 fixtures 目录标记为 -text。
+
+fixtures/** -text
+
+*.rs text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
+*.toml text eol=lf
+*.ps1 text eol=crlf
+*.md text eol=crlf

@@ -1,0 +1,16 @@
+[package]
+name = "launcher-core"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 与 PS `Get-FileHash -Algorithm SHA256` 对齐
+sha2 = "0.10"
+# GBK/CP936 回退解码（现有实现读非 UTF-8 配置的行为）
+encoding_rs = "0.8"
+# 部署记录与设置文件的序列化（字段级等价，见 PARITY D-1）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

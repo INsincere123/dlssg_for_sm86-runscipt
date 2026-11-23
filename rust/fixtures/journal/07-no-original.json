@@ -1,0 +1,21 @@
+{
+    "Version":  1,
+    "GameId":  "fixture",
+    "Session":  "<SESSION>",
+    "ScriptPid":  0,
+    "ScriptStarted":  "<STARTED>",
+    "Render":  "<TEMPROOT>\\07\\render",
+    "Engine":  "<TEMPROOT>\\07\\Engine.ini",
+    "Runtime":  "<TEMPROOT>\\07\\Engine.runtime.ini",
+    "Backup":  "<TEMPROOT>\\07\\Engine.backup.ini",
+    "OriginalExisted":  false,
+    "OriginalHash":  null,
+    "StorageExisted":  false,
+    "Phase":  "deploying",
+    "Operations":  [
+
+                   ],
+    "Reused":  [
+
+               ]
+}

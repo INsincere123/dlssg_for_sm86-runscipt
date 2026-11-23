@@ -1,0 +1,285 @@
+{
+    "FormatVersion":  1,
+    "GeneratedAt":  "2026-11-22T14:34:41.8825151Z",
+    "Generator":  "rust/tools/gen-fixtures.ps1",
+    "PowerShellVersion":  "5.1.26100.9711",
+    "GitHead":  "a44f8e825b09b0874e0fbbdfbfdfdb39d5abf55d",
+    "GitBranch":  "0.4.2开发",
+    "Sources":  [
+                    {
+                        "Path":  "启动脚本/scripts/common/LauncherConfig.ps1",
+                        "Sha256":  "C274452A6589AF3DEBD9675BC6DD95A8AB1A32AC533D8BEEEE39F2AFFBF7D3F2"
+                    },
+                    {
+                        "Path":  "启动脚本/scripts/common/DeploymentJournal.ps1",
+                        "Sha256":  "970D59F0597C13863F11BE02C1CFC91DFB01B2928F5D3EB8A78748339DFB3D87"
+                    },
+                    {
+                        "Path":  "启动脚本/scripts/common/LauncherResources.ps1",
+                        "Sha256":  "A882B915BB76F2C8559EA84007DF9ADB2D7D6DBD5DFD9627B455E458E1DF6B34"
+                    },
+                    {
+                        "Path":  "启动脚本/scripts/games/Run-WutheringWaves-DLSSG.ps1",
+                        "Sha256":  "12800CD36D07897F18B8484F85A8E1C546AF36484A01535EE870A1A26A825138"
+                    },
+                    {
+                        "Path":  "启动脚本/scripts/games/Run-NevernessToEverness-DLSSG.ps1",
+                        "Sha256":  "2BF51A704E5DBB5A59E7447852C425A050F966603FDD96BBE0AAA05C2B8414D9"
+                    },
+                    {
+                        "Path":  "启动脚本/scripts/games/Run-SteamUE5-DLSSG.ps1",
+                        "Sha256":  "4ADED40980064E4695D6263CEDD5A91D02C760CDD763D73B92F06C680ED9A706"
+                    },
+                    {
+                        "Path":  "dlssg_sm86.ini",
+                        "Sha256":  "135AA53447E332028D344D3968E6A430D92AD133ABA1416013547DBB729A2794"
+                    }
+                ],
+    "Fixtures":  [
+                     {
+                         "Path":  "config/encodings/index.json",
+                         "Bytes":  963,
+                         "Sha256":  "900BF11F85CCD32BBBEC36AD50487A8D770300386167474815ABA7FF51CEDCE0"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-gbk.ini",
+                         "Bytes":  232,
+                         "Sha256":  "F1D2BB4B6EF07EFD19D37F323A464836F58C8E5FBC6A5EFD92890A9CE0C0D7D7"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf16-be.ini",
+                         "Bytes":  336,
+                         "Sha256":  "3B7D07A5AAF4491CFCD216D30151351FD779FF179118CC55D8DB9B781C5AC62D"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf16-le.ini",
+                         "Bytes":  336,
+                         "Sha256":  "DAF8F8EF1C4C2052C4FBF8208DFFCDDACB908A0C3A816BF5ADE203D365D220AC"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf32-be.ini",
+                         "Bytes":  672,
+                         "Sha256":  "6C695E6D0A4280E12181D343F14AE8A1D27FF42D4456C0630B5EA8D180266375"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf32-le.ini",
+                         "Bytes":  672,
+                         "Sha256":  "30316FAE50D51D72EBC40AD90EE12BED86F2D0CA7A14FD682058CF3F84ED7E5D"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf8.ini",
+                         "Bytes":  297,
+                         "Sha256":  "AD0D03933D6A555EAD779D9E1B7AEA5F082B6504C02B3D1F92894F4E3CFAAC36"
+                     },
+                     {
+                         "Path":  "config/encodings/启动配置-utf8-bom.ini",
+                         "Bytes":  300,
+                         "Sha256":  "6DB7822D525C63310485079D86AD9C672BB086CE69269FF6AC6302EE06C9B7AD"
+                     },
+                     {
+                         "Path":  "diagnostic/neverness/default.ini",
+                         "Bytes":  308,
+                         "Sha256":  "39A5E9F3FEEBA040CE4A3D5AB6AB78406A742ADEF38C11BC8D5FFCD1C27EC96C"
+                     },
+                     {
+                         "Path":  "diagnostic/neverness/fair.ini",
+                         "Bytes":  308,
+                         "Sha256":  "C714B7B13C44B6FB6BA6F9A3C599811B17200C3E264474FFD87098F5C8C3C471"
+                     },
+                     {
+                         "Path":  "diagnostic/neverness/sr-l-fp16.ini",
+                         "Bytes":  311,
+                         "Sha256":  "D3D38990265110045E6AC45792BB31C83176E5FBEDD7D4D2434D33B94560E1A8"
+                     },
+                     {
+                         "Path":  "diagnostic/neverness/sr-m-int8.ini",
+                         "Bytes":  311,
+                         "Sha256":  "CDE1F4F55B8E9A175B2FE16DDF7A440588F6409983635FDA62595425C2AA95E3"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition.json",
+                         "Bytes":  1413,
+                         "Sha256":  "22E55DEA0DBF9DDFE07E64F0B28E5A15BC211909BD5ABC09A61A86003A135727"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/comment-changed.ini",
+                         "Bytes":  284,
+                         "Sha256":  "E4F8360A49063CF3457AA55D510EE141804373EFF883BC50A76B57DD7FADDED8"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/crlf-to-lf.ini",
+                         "Bytes":  281,
+                         "Sha256":  "28EBD5CFC772E50970EDA7F6594F70A960E961A731F7A6440FF607273B3E83FC"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/duplicate-key.ini",
+                         "Bytes":  311,
+                         "Sha256":  "856BE31BFC3404C70076DA7E08BA422458432225A3E7D6FE78698E03A8CFF7B1"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/duplicate-key-same-value.ini",
+                         "Bytes":  315,
+                         "Sha256":  "A9A52D1E8DC4067BBF2BE42F0981CD658F4DA4CC38E40A442FFDE94182CCBA8D"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/exact.ini",
+                         "Bytes":  303,
+                         "Sha256":  "BC95BE2BADD16B368AC91DBC8D39A1702DFF659AE90E9A490C3BA1CBC859F272"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/extra-section.ini",
+                         "Bytes":  321,
+                         "Sha256":  "3C515500A6CAF74432C3DFFE8D532503FC5E8CC5759523B8BE4E98C18249D84F"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/trailing-space.ini",
+                         "Bytes":  304,
+                         "Sha256":  "F27FA16472790365E1628458255A29EB2CADF4172954F2B8A7B39B4E5B2A4AE2"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/unsupported-value.ini",
+                         "Bytes":  303,
+                         "Sha256":  "88EEE6F2EBFB22CF6A4FA4FC57E707CA34E60A17C82E0A8F0641C5B80E631DC0"
+                     },
+                     {
+                         "Path":  "diagnostic/recognition/value-changed.ini",
+                         "Bytes":  303,
+                         "Sha256":  "F844546CCED69A455DB75572002F65031D882C940C8EF7A620FED0C233CA2DFC"
+                     },
+                     {
+                         "Path":  "diagnostic/steam-ue5/default.ini",
+                         "Bytes":  300,
+                         "Sha256":  "ACC639040EDFE4FE6DF10FCFFEE7846E9453E6E27F5B129177C18316716ABEC7"
+                     },
+                     {
+                         "Path":  "diagnostic/steam-ue5/fair.ini",
+                         "Bytes":  300,
+                         "Sha256":  "2EC37F3415815584111AF6AC06A39ED2B317A6F480C1E39FC36864962C45C329"
+                     },
+                     {
+                         "Path":  "diagnostic/steam-ue5/sr-l-fp16.ini",
+                         "Bytes":  303,
+                         "Sha256":  "BC0A38566361CA7E5ACC4A07F918913AC31207E9308DE33EA3C1940D6F56398B"
+                     },
+                     {
+                         "Path":  "diagnostic/steam-ue5/sr-m-int8.ini",
+                         "Bytes":  303,
+                         "Sha256":  "7932527822F49CFB5FBC16DC07E90D87B49155F8EC04E4176BE74A1D42AA61E4"
+                     },
+                     {
+                         "Path":  "diagnostic/wuthering/default.ini",
+                         "Bytes":  303,
+                         "Sha256":  "BC95BE2BADD16B368AC91DBC8D39A1702DFF659AE90E9A490C3BA1CBC859F272"
+                     },
+                     {
+                         "Path":  "diagnostic/wuthering/fair.ini",
+                         "Bytes":  303,
+                         "Sha256":  "813BD97163B15F31638ACD29F880B046496AE4CAE876B6204B0949B9DD2BBB61"
+                     },
+                     {
+                         "Path":  "diagnostic/wuthering/sr-l-fp16.ini",
+                         "Bytes":  306,
+                         "Sha256":  "74F4F1B5CDA4B2DFEAA0437E3AE7D91423226969D3D94C900EB9914AD3BB8D46"
+                     },
+                     {
+                         "Path":  "diagnostic/wuthering/sr-m-int8.ini",
+                         "Bytes":  306,
+                         "Sha256":  "7B487B722A2DC0BE9616E76965A942DF9D0C9DC2F32848C2CC2BBAAB6C2C14E8"
+                     },
+                     {
+                         "Path":  "journal/01-new.json",
+                         "Bytes":  600,
+                         "Sha256":  "D6002FBDB45FDF0C58CDC97DF876C749634A4B0366F387A617FB1D389EECE945"
+                     },
+                     {
+                         "Path":  "journal/02-runtime-done.json",
+                         "Bytes":  902,
+                         "Sha256":  "2F362256654433523D455E40ADAEBA4FE4FFB1309CED39ECAEF0BD2FE94FB904"
+                     },
+                     {
+                         "Path":  "journal/03-engine-link-intent.json",
+                         "Bytes":  1631,
+                         "Sha256":  "A66756B2B8B7DC96A0792BC1777922391D9F72EB75654644F11FE60417659337"
+                     },
+                     {
+                         "Path":  "journal/04-partial-failure.json",
+                         "Bytes":  2003,
+                         "Sha256":  "ECC52F7E9E4EDD84DAEAF571116E6785928AFD05258C3E9371AA0DE26CDEA74A"
+                     },
+                     {
+                         "Path":  "journal/05-recovered.txt",
+                         "Bytes":  236,
+                         "Sha256":  "79E5D6399B85EC825E83BD980C13783DE026E078B8F610F688647F3F2E8CA6E8"
+                     },
+                     {
+                         "Path":  "journal/06-recovered-archive.json",
+                         "Bytes":  285,
+                         "Sha256":  "800CCCE5585ECD218769FC39B8F0C308E4C0D4B86B8222E5F5A8601611A83D0D"
+                     },
+                     {
+                         "Path":  "journal/06-recovered-archive.name.txt",
+                         "Bytes":  104,
+                         "Sha256":  "806410565B6A1995C6C787D4B28C97D34F78367977CE5786BC07C01863FB5DFB"
+                     },
+                     {
+                         "Path":  "journal/07-no-original.json",
+                         "Bytes":  539,
+                         "Sha256":  "D3BCD29D34FF16D2461953CA49210C38B6B7476F655C0763B67C9B32077395D4"
+                     },
+                     {
+                         "Path":  "paths/normalized-path.json",
+                         "Bytes":  2479,
+                         "Sha256":  "8263D170127DCFC87F9E268E311ADC6268A150402EC6C93191F5C07C641BE021"
+                     },
+                     {
+                         "Path":  "templates/derived-index.json",
+                         "Bytes":  370,
+                         "Sha256":  "17DFCC013D493BFA43A15C478519A017BA4AB166BEE5D85F9F7F709C917D9C1B"
+                     },
+                     {
+                         "Path":  "templates/index.json",
+                         "Bytes":  1745,
+                         "Sha256":  "FC338E7682429BDC0916812D13EACA5924809E330ECCDDD8A60CB28464DF506E"
+                     },
+                     {
+                         "Path":  "templates/neverness/0.4.0.ini",
+                         "Bytes":  310,
+                         "Sha256":  "5E3336B58AE9EEC040DAFACA5D12794E9CA7E8875E69ACB79436A46CE0C3C690"
+                     },
+                     {
+                         "Path":  "templates/neverness/0.4.2.ini",
+                         "Bytes":  308,
+                         "Sha256":  "39A5E9F3FEEBA040CE4A3D5AB6AB78406A742ADEF38C11BC8D5FFCD1C27EC96C"
+                     },
+                     {
+                         "Path":  "templates/steam-ue5/0.4.0.ini",
+                         "Bytes":  302,
+                         "Sha256":  "5B6EA2E54E6BC490C3F78BD474C70F8F2444C1DB00A19840BDAC63D2F3065164"
+                     },
+                     {
+                         "Path":  "templates/steam-ue5/0.4.2.ini",
+                         "Bytes":  300,
+                         "Sha256":  "ACC639040EDFE4FE6DF10FCFFEE7846E9453E6E27F5B129177C18316716ABEC7"
+                     },
+                     {
+                         "Path":  "templates/wuthering/0.3.2.ini",
+                         "Bytes":  287,
+                         "Sha256":  "594D8276F08CD115E591FADF6F12004BB304FC654304D00D5C7EA03CFF3AB906"
+                     },
+                     {
+                         "Path":  "templates/wuthering/0.4.0.ini",
+                         "Bytes":  305,
+                         "Sha256":  "477C7FC10AC13CF5352C0B1B40F6AC8D1FAA92BADF277FBA805AA98C71B2AFF7"
+                     },
+                     {
+                         "Path":  "templates/wuthering/0.4.0-mode-off.ini",
+                         "Bytes":  306,
+                         "Sha256":  "8681F70F744C3051E30C955FCBC34581A9B3F71284B399269E49E825FC9F8C62"
+                     },
+                     {
+                         "Path":  "templates/wuthering/0.4.2.ini",
+                         "Bytes":  303,
+                         "Sha256":  "BC95BE2BADD16B368AC91DBC8D39A1702DFF659AE90E9A490C3BA1CBC859F272"
+                     }
+                 ]
+}

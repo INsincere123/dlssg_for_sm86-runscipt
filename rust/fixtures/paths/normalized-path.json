@@ -1,0 +1,60 @@
+{
+    "Source":  "Run-WutheringWaves-DLSSG.ps1:168 / Run-NevernessToEverness-DLSSG.ps1:140 / Run-SteamUE5-DLSSG.ps1:169（三处定义逐字相同）",
+    "Expression":  "[System.IO.Path]::GetFullPath($Path).TrimEnd(\u0027\\\u0027).ToLowerInvariant()",
+    "WorkingDirectory":  "D:\\Games\\dlssg_for_sm86",
+    "PowerShellVersion":  "5.1.26100.9711",
+    "Cases":  [
+                  {
+                      "Input":  "D:\\Games\\Foo\\",
+                      "Expected":  "d:\\games\\foo"
+                  },
+                  {
+                      "Input":  "d:\\games\\foo",
+                      "Expected":  "d:\\games\\foo"
+                  },
+                  {
+                      "Input":  "D:\\Games\\..\\Games\\.\\Foo\\\\",
+                      "Expected":  "d:\\games\\foo"
+                  },
+                  {
+                      "Input":  "D:\\Games\\\\Foo\\\\Bar",
+                      "Expected":  "d:\\games\\foo\\bar"
+                  },
+                  {
+                      "Input":  "C:\\",
+                      "Expected":  "c:"
+                  },
+                  {
+                      "Input":  "C:",
+                      "Expected":  "c:"
+                  },
+                  {
+                      "Input":  "\\\\?\\D:\\Games\\Foo",
+                      "Expected":  "\\\\?\\d:\\games\\foo"
+                  },
+                  {
+                      "Input":  "\\\\server\\share\\Game",
+                      "Expected":  "\\\\server\\share\\game"
+                  },
+                  {
+                      "Input":  "C:\\游戏\\黑神话悟空",
+                      "Expected":  "c:\\游戏\\黑神话悟空"
+                  },
+                  {
+                      "Input":  "%TEMP%\\dlssg_sm86-1234.ini",
+                      "Expected":  "d:\\games\\dlssg_for_sm86\\%temp%\\dlssg_sm86-1234.ini"
+                  },
+                  {
+                      "Input":  ".\\relative\\path",
+                      "Expected":  "d:\\games\\dlssg_for_sm86\\relative\\path"
+                  },
+                  {
+                      "Input":  "D:\\Games\\Foo\\Engine.ini",
+                      "Expected":  "d:\\games\\foo\\engine.ini"
+                  },
+                  {
+                      "Input":  "D:\\Games\\FOO\\engine.INI",
+                      "Expected":  "d:\\games\\foo\\engine.ini"
+                  }
+              ]
+}

@@ -1,0 +1,13 @@
+{
+    "Source":  "手写样本：逻辑内容相同，仅编码不同（对齐 LauncherConfig.ps1:6-43 的 BOM 顺序与 GBK 回退）",
+    "Text":  "; 编码兼容样本：逻辑内容相同，仅文件编码不同\r\n# 井号注释同样跳过\r\n[鸣潮]\r\n游戏目录=D:\\Games\\WuWa\r\n配置源=\"配置\\鸣潮\\Engine.ini\"\r\n启动器路径=C:\\a#b=c\\launcher.exe\r\n游戏配置目录=\r\n重启等待秒数=10\r\n[Gpu]\r\n设备实例标识=HDAUDIO\\FUNC_01\r\n",
+    "Files":  [
+                  "config/encodings/启动配置-utf8.ini",
+                  "config/encodings/启动配置-utf8-bom.ini",
+                  "config/encodings/启动配置-utf16-le.ini",
+                  "config/encodings/启动配置-utf16-be.ini",
+                  "config/encodings/启动配置-utf32-le.ini",
+                  "config/encodings/启动配置-utf32-be.ini",
+                  "config/encodings/启动配置-gbk.ini"
+              ]
+}

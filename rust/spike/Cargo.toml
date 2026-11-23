@@ -1,0 +1,16 @@
+[package]
+name = "spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# M0 只验证 egui + glow（与 plan §2.10 一致），不要 wgpu 默认特性。
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

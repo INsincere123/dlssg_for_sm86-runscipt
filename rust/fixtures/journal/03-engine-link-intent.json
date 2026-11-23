@@ -1,0 +1,41 @@
+{
+    "Version":  1,
+    "GameId":  "fixture",
+    "Session":  "<SESSION>",
+    "ScriptPid":  0,
+    "ScriptStarted":  "<STARTED>",
+    "Render":  "<TEMPROOT>\\01\\render",
+    "Engine":  "<TEMPROOT>\\01\\Engine.ini",
+    "Runtime":  "<TEMPROOT>\\01\\Engine.runtime.ini",
+    "Backup":  "<TEMPROOT>\\01\\Engine.backup.ini",
+    "OriginalExisted":  true,
+    "OriginalHash":  "BB2D74551F712EA4D0CD4E284A9A5C4CAF6F0E55608B3D6CA388814981EDA50C",
+    "StorageExisted":  false,
+    "Phase":  "deploying",
+    "Operations":  [
+                       {
+                           "Kind":  "runtime",
+                           "Path":  "<TEMPROOT>\\01\\Engine.runtime.ini",
+                           "Target":  "",
+                           "Hash":  "",
+                           "State":  "done"
+                       },
+                       {
+                           "Kind":  "backup",
+                           "Path":  "<TEMPROOT>\\01\\Engine.ini",
+                           "Target":  "<TEMPROOT>\\01\\Engine.backup.ini",
+                           "Hash":  "BB2D74551F712EA4D0CD4E284A9A5C4CAF6F0E55608B3D6CA388814981EDA50C",
+                           "State":  "done"
+                       },
+                       {
+                           "Kind":  "engineLink",
+                           "Path":  "<TEMPROOT>\\01\\Engine.ini",
+                           "Target":  "<TEMPROOT>\\01\\Engine.runtime.ini",
+                           "Hash":  "",
+                           "State":  "intent"
+                       }
+                   ],
+    "Reused":  [
+
+               ]
+}

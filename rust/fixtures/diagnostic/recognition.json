@@ -1,0 +1,42 @@
+{
+    "Source":  "启动脚本/scripts/common/LauncherConfig.ps1:409-421（Test-LauncherDiagnosticOptionsText）",
+    "Template":  "templates/wuthering/0.4.2.ini",
+    "Cases":  [
+                  {
+                      "Case":  "exact",
+                      "Accepted":  true
+                  },
+                  {
+                      "Case":  "value-changed",
+                      "Accepted":  true
+                  },
+                  {
+                      "Case":  "extra-section",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "duplicate-key",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "duplicate-key-same-value",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "comment-changed",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "unsupported-value",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "trailing-space",
+                      "Accepted":  false
+                  },
+                  {
+                      "Case":  "crlf-to-lf",
+                      "Accepted":  false
+                  }
+              ]
+}

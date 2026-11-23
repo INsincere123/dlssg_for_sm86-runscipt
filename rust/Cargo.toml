@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/launcher-core"]
+# spike 是 M0 的一次性测量工程，不参与产品构建
+exclude = ["spike"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

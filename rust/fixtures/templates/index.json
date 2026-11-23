@@ -1,0 +1,51 @@
+[
+    {
+        "Game":  "wuthering",
+        "Version":  "0.3.2",
+        "Variable":  "legacyDiagnosticIni",
+        "Source":  "启动脚本/scripts/games/Run-WutheringWaves-DLSSG.ps1",
+        "Fixture":  "templates/wuthering/0.3.2.ini"
+    },
+    {
+        "Game":  "wuthering",
+        "Version":  "0.4.0",
+        "Variable":  "diagnosticIni040",
+        "Source":  "启动脚本/scripts/games/Run-WutheringWaves-DLSSG.ps1",
+        "Fixture":  "templates/wuthering/0.4.0.ini"
+    },
+    {
+        "Game":  "wuthering",
+        "Version":  "0.4.2",
+        "Variable":  "diagnosticIni",
+        "Source":  "启动脚本/scripts/games/Run-WutheringWaves-DLSSG.ps1",
+        "Fixture":  "templates/wuthering/0.4.2.ini"
+    },
+    {
+        "Game":  "neverness",
+        "Version":  "0.4.0",
+        "Variable":  "diagnosticIni040",
+        "Source":  "启动脚本/scripts/games/Run-NevernessToEverness-DLSSG.ps1",
+        "Fixture":  "templates/neverness/0.4.0.ini"
+    },
+    {
+        "Game":  "neverness",
+        "Version":  "0.4.2",
+        "Variable":  "diagnosticIni",
+        "Source":  "启动脚本/scripts/games/Run-NevernessToEverness-DLSSG.ps1",
+        "Fixture":  "templates/neverness/0.4.2.ini"
+    },
+    {
+        "Game":  "steam-ue5",
+        "Version":  "0.4.0",
+        "Variable":  "diagnosticIni040",
+        "Source":  "启动脚本/scripts/games/Run-SteamUE5-DLSSG.ps1",
+        "Fixture":  "templates/steam-ue5/0.4.0.ini"
+    },
+    {
+        "Game":  "steam-ue5",
+        "Version":  "0.4.2",
+        "Variable":  "diagnosticIni",
+        "Source":  "启动脚本/scripts/games/Run-SteamUE5-DLSSG.ps1",
+        "Fixture":  "templates/steam-ue5/0.4.2.ini"
+    }
+]

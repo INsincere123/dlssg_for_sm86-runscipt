@@ -1,0 +1,8 @@
+{
+    "Pattern":  "recovered/\u003cSession\u003e-Engine.ini",
+    "SessionFormat":  "^[a-fA-F0-9]{32}$",
+    "LinkSimulated":  true,
+    "ArchivedContent":  "fixture replaced by game",
+    "RestoredContent":  "fixture original engine.ini",
+    "RestoredIsOriginalBytes":  true
+}

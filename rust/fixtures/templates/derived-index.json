@@ -1,0 +1,9 @@
+[
+    {
+        "Game":  "wuthering",
+        "Version":  "0.4.0-mode-off",
+        "Derivation":  "diagnosticIni040.Replace(\u0027[SuperResolution]\r\nMode=On\u0027, \u0027[SuperResolution]\r\nMode=Off\u0027)",
+        "Source":  "启动脚本/scripts/games/Run-WutheringWaves-DLSSG.ps1:140",
+        "Fixture":  "templates/wuthering/0.4.0-mode-off.ini"
+    }
+]
