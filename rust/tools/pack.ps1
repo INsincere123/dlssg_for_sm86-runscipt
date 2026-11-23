@@ -26,20 +26,30 @@
 .PARAMETER Output
     输出目录，默认 <仓库>\rust\dist。实际包目录是 <Output>\DlssgLauncher-<版本>-<模式>。
 
+.PARAMETER Compress
+    none（默认，只出目录）/ zip（deflate，逐文件校验）/ max（极限压缩）。
+    max 走 Bandizip 的 7z + LZMA2 等级 9，与旧脚本 `Export-PortableLauncher.ps1 -b`
+    是同一套做法（`bz c -fmt:7z -l:9 -r` 后再 `bz t` 校验）；找不到 Bandizip 时
+    退回 7z.exe，再退回 tar + xz，最后才退 zip，并在输出里说明用了哪个。
+
 .PARAMETER Zip
-    打完再压成同名 .zip。
+    老参数，等价于 -Compress zip（保留兼容）。
 
 .PARAMETER Force
     目标目录已存在时先删掉重建。
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'light')]
+    [ValidateSet('full', 'light', 'sr')]
     [string]$Mode = 'full',
     [string]$Output,
+    [ValidateSet('none', 'zip', 'max')]
+    [string]$Compress = 'none',
+    [switch]$ArchiveOnly,
     [switch]$Zip,
     [switch]$Force
 )
+if ($Zip -and $Compress -eq 'none') { $Compress = 'zip' }
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -90,13 +100,43 @@ if (-not $version) {
 if (-not $version) { Fail '读不到版本号' }
 $display = 'v' + ($version -replace '\.0$', '')
 
-$name = "DlssgLauncher-$display-$Mode"
+if ($Mode -eq 'sr') { $name = "DlssgLauncher-$display-sr-patch" } else { $name = "DlssgLauncher-$display-$Mode" }
 $packageRoot = Join-Path $Output $name
 if (Test-Path -LiteralPath $packageRoot) {
     if (-not $Force) { Fail "目标已存在：$packageRoot（要覆盖请加 -Force）" }
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+
+if ($Mode -eq 'sr') {
+    # 超分补丁：只带 sr 两个内核，目录结构与正式包一致，解压覆盖到启动器根即可
+    $srSource = Join-Path $repoRoot 'dlssg_sm86\sr'
+    if (-not (Test-Path -LiteralPath (Join-Path $srSource 'sr_kernels.dll'))) {
+        Fail "超分补丁需要 sr 内核：$srSource（这份是本地文件，不在 Git 里）"
+    }
+    Copy-Tree $srSource (Join-Path $packageRoot 'bin\dlssg_sm86\sr') '*.dll'
+    $baseName = "DlssgLauncher-$display-light"
+    $patchReadme = @"
+超分补丁（DLSSG 启动器 $display）
+
+这是给「轻量版」补超分内核用的补丁，两个文件合计约 172 MB：
+  bin\dlssg_sm86\sr\sr_kernels.dll
+  bin\dlssg_sm86\sr\nvngx_dlss.dll
+
+怎么用
+  1. 先解压 DlssgLauncher-$display-light。
+  2. 把本补丁里的 bin\ 目录覆盖到启动器根目录（与 DlssgLauncher.exe 同级）。
+  3. 重新打开启动器，「帧生成」里的 SuperResolution.Mode 就能选 M/L 档了。
+  补完之后的目录与「全量版」等价（同样 27 个文件）。
+
+校验
+  package-manifest.json 里有两个文件的 SHA256；补丁包内容与全量版的 sr 完全一致。
+"@
+    $patchReadmePath = Join-Path $packageRoot 'README-超分补丁.txt'
+    [System.IO.File]::WriteAllText($patchReadmePath, ($patchReadme -replace "`r`n", "`n" -replace "`n", "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+    Write-Host "超分补丁：只带 $srSource 里的 *.dll（合并目标 $baseName）" -ForegroundColor Cyan
+}
+else {
 
 # 1) exe 在根
 Copy-Item -LiteralPath $exe -Destination (Join-Path $packageRoot 'DlssgLauncher.exe') -Force
@@ -173,7 +213,9 @@ $(if ($Mode -eq 'light') { @"
 $readmePath = Join-Path $packageRoot 'README.txt'
 [System.IO.File]::WriteAllText($readmePath, ($readme -replace "`r`n", "`n" -replace "`n", "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
 
-# 5) 清单：每个文件的大小与 SHA256
+} # else：完整包（full / light）
+
+# 5) 清单：每个文件的大小与 SHA256（补丁包也走同一套）
 $files = Get-ChildItem -LiteralPath $packageRoot -File -Recurse | Sort-Object FullName
 $rows = @()
 $total = 0
@@ -187,7 +229,8 @@ $manifest = [pscustomobject]@{
     package = $name
     version = $version
     mode    = $Mode
-    layout  = 'exe at root, payload under bin/'
+    layout  = if ($Mode -eq 'sr') { 'patch over a light package: bin/ only' } else { 'exe at root, payload under bin/' }
+    appliesTo = if ($Mode -eq 'sr') { "DlssgLauncher-$display-light" } else { $null }
     created = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssK')
     totals  = [pscustomobject]@{ files = $rows.Count; bytes = $total }
     files   = $rows
@@ -199,9 +242,112 @@ $manifestJson = $manifest | ConvertTo-Json -Depth 5
 Write-Host ("包目录：{0}" -f $packageRoot) -ForegroundColor Green
 Write-Host ("  文件 {0} 个，解压后 {1:N1} MB，版本 {2}，模式 {3}" -f $rows.Count, ($total / 1MB), $version, $Mode)
 
-if ($Zip) {
-    $zipPath = Join-Path $Output ($name + '.zip')
-    if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-    Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
-    Write-Host ("压缩包：{0}（{1:N1} MB）" -f $zipPath, ((Get-Item -LiteralPath $zipPath).Length / 1MB)) -ForegroundColor Green
+
+# 6) 压缩（可选）：先写临时档，校验通过再改名，失败的包不能看起来像成品
+function Test-ZipEntries([string]$archivePath) {
+    # 直接和磁盘上的包目录比对：清单里不能写自己的哈希，逐文件核对要落在目录上
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $expected = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $packageRoot -File -Recurse) {
+        $key = $file.FullName.Substring($packageRoot.Length).TrimStart('\').Replace('\', '/')
+        $expected[$key] = $file
+    }
+    $seen = 0
+    $reader = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+    try {
+        foreach ($entry in $reader.Entries) {
+            if ($entry.Name -eq '') { continue }
+            # 压缩包条目可能用反斜杠，统一成 / 再比
+            $key = $entry.FullName.Replace('\', '/')
+            if (-not $expected.ContainsKey($key)) { Fail "压缩包里有目录中没有的条目：$key" }
+            if ($entry.Length -ne $expected[$key].Length) { Fail "压缩包条目大小不符：$key" }
+            $stream = $entry.Open()
+            try {
+                $sha = [System.Security.Cryptography.SHA256]::Create()
+                try { $digest = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
+                finally { $sha.Dispose() }
+            }
+            finally { $stream.Dispose() }
+            $onDisk = (Get-FileHash -LiteralPath $expected[$key].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($digest -ne $onDisk) { Fail "压缩包条目 SHA256 与目录不符：$key" }
+            $seen++
+        }
+    }
+    finally { $reader.Dispose() }
+    if ($seen -ne $expected.Count) { Fail "压缩包条目数 $seen 与目录 $($expected.Count) 个文件不符" }
+}
+
+if ($Compress -ne 'none') {
+    $staging = Join-Path $Output ($name + '.partial')
+    Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue
+    $finalPath = $null
+    $tool = $null
+
+    $bandizip = 'C:\Bandizip\bz.exe'
+    $sevenZip = @(
+        'C:\Program Files\7-Zip\7z.exe',
+        'C:\Program Files (x86)\7-Zip\7z.exe'
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+
+    if ($Compress -eq 'zip') {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($packageRoot, $staging, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+        Test-ZipEntries $staging
+        $finalPath = Join-Path $Output ($name + '.zip')
+        $tool = 'zip / Deflate(Optimal)，逐条目大小与 SHA256 已核对'
+    }
+    elseif ((Test-Path -LiteralPath $bandizip)) {
+        # 与旧脚本 Export-PortableLauncher.ps1 -b 完全一致：7z + LZMA2，等级 9（最高）
+        $staging = Join-Path $Output ($name + '.partial.7z')
+        Push-Location $Output
+        try {
+            & $bandizip c -fmt:7z -l:9 -r $staging (Split-Path -Leaf $packageRoot) | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail "Bandizip 压缩失败，退出代码：$LASTEXITCODE" }
+            & $bandizip t $staging | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail "Bandizip 完整性检查失败，退出代码：$LASTEXITCODE" }
+        }
+        finally { Pop-Location }
+        $finalPath = Join-Path $Output ($name + '.7z')
+        $tool = '7z / LZMA2 等级 9（Bandizip 极限压缩），CRC 已校验'
+    }
+    elseif ($sevenZip) {
+        Write-Host '找不到 Bandizip，极限压缩改用 7-Zip' -ForegroundColor Yellow
+        $staging = Join-Path $Output ($name + '.partial.7z')
+        Push-Location $Output
+        try {
+            & $sevenZip a -t7z -mx=9 -r $staging (Split-Path -Leaf $packageRoot) | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail "7-Zip 压缩失败，退出代码：$LASTEXITCODE" }
+            & $sevenZip t $staging | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail "7-Zip 完整性检查失败，退出代码：$LASTEXITCODE" }
+        }
+        finally { Pop-Location }
+        $finalPath = Join-Path $Output ($name + '.7z')
+        $tool = '7z / LZMA2 -mx=9（7-Zip 命令行），CRC 已校验'
+    }
+    else {
+        Write-Host '找不到 Bandizip / 7-Zip，极限压缩退回 tar + xz' -ForegroundColor Yellow
+        $staging = Join-Path $Output ($name + '.partial.tar.xz')
+        & tar -c -J -f $staging -C $Output (Split-Path -Leaf $packageRoot)
+        if ($LASTEXITCODE -ne 0) { Fail "tar 压缩失败，退出代码：$LASTEXITCODE" }
+        & tar -t -f $staging | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "tar 完整性检查失败，退出代码：$LASTEXITCODE" }
+        $finalPath = Join-Path $Output ($name + '.tar.xz')
+        $tool = 'tar + xz，条目清单已校验'
+    }
+
+    if (-not $finalPath) { Fail '压缩没有产出文件' }
+    if (Test-Path -LiteralPath $finalPath) { Remove-Item -LiteralPath $finalPath -Force }
+    Move-Item -LiteralPath $staging -Destination $finalPath
+    $size = (Get-Item -LiteralPath $finalPath).Length
+    Write-Host ("压缩：{0}" -f $tool)
+    Write-Host ("压缩包：{0}（{1:N1} MB，压到 {2:P0}）" -f $finalPath, ($size / 1MB), ($size / $total)) -ForegroundColor Green
+    Write-Host '  解压后可按包内 package-manifest.json 逐文件核对 sha256'
+    if ($ArchiveOnly) {
+        # 只留压缩包：解压目录随时能再生成，省磁盘
+        Remove-Item -LiteralPath $packageRoot -Recurse -Force
+        Write-Host '  已按 -ArchiveOnly 删除解压目录，只保留压缩包'
+    }
+}
+elseif ($ArchiveOnly) {
+    Write-Host '-ArchiveOnly 需要同时指定 -Compress zip|max，否则会把唯一的产物删掉' -ForegroundColor Yellow
 }

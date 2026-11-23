@@ -53,17 +53,40 @@ bin\dlssg_sm86\sr\{sr_kernels,nvngx_dlss}.dll   ← 轻量版没有这一对
 ## 打包（全量 / 轻量）
 
 ```
-pnpm-less：直接 PowerShell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode full  -Force -Zip
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode light -Force -Zip
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode full  -Force -Compress max
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode light -Force -Compress max
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr    -Force -Compress max -ArchiveOnly
 ```
 
-同一个 exe，两个包；差别只有 `bin\dlssg_sm86\sr`（`sr_kernels.dll` + `nvngx_dlss.dll`）。
+同一个 exe，两个包；差别只有 `bin\dlssg_sm86\sr`（`sr_kernels.dll` + `nvngx_dlss.dll`，共 172 MB）。
 
-| 包 | 解压后 | zip | 说明 |
+压缩方式三档（`-Compress`）：
+
+| 档 | 做法 | 校验 |
+|---|---|---|
+| `none`（默认） | 只出目录 | — |
+| `zip` | Deflate（Optimal），等价旧参数 `-Zip` | 逐条目大小 + SHA256 与清单比对 |
+| `max`（极限） | **7z / LZMA2 等级 9**，走 `C:\Bandizip\bz.exe`（与旧脚本 `Export-PortableLauncher.ps1 -b` 同一套）；没有 Bandizip 时退 7z.exe → tar+xz → zip | `bz t` CRC 校验，先写 `.partial` 再改名 |
+
+三份产物（`-Mode full|light|sr`），两种压缩都出过：
+
+| 包 | 解压后 | zip | max（7z） |
 |---|---|---|---|
-| `DlssgLauncher-v0.1-full` | 219 MB / 27 文件 | 88 MB | 含超分内核 |
-| `DlssgLauncher-v0.1-light` | 47 MB / 25 文件 | 24 MB | 超分只能用 Off，开超分会在部署前报错 |
+| `DlssgLauncher-v0.1-full`（全量） | 219.1 MB / 27 文件 | 87.7 MB | **57.5 MB**（26%） |
+| `DlssgLauncher-v0.1-light`（轻量） | 46.7 MB / 25 文件 | 24.4 MB | **18.8 MB**（40%） |
+| `DlssgLauncher-v0.1-sr-patch`（超分补丁） | 172.4 MB / 3 文件 | 63.2 MB | **38.2 MB**（22%） |
+
+**轻量 + 补丁 = 全量**：逐个文件比过 SHA256 完全一致；功能上也验过——合并后开
+`SuperResolution.Mode=M-Int8` 跑 `--engine run --dry-run` 得 `preflight:ok, resources:5`，
+没打补丁的轻量包同样条件会被预检拒绝（"缺超分内核"）。
+
+体积上拆分基本不亏：`18.8 + 38.2 = 57.0 MB` 与全量的 57.5 MB 几乎相同，
+但不需要超分的人只要下 18.8 MB。补丁的用法写在该包的 `README-超分补丁.txt` 里
+（把 `bin\` 覆盖到启动器根目录即可）。
+
+`-ArchiveOnly` 可在压缩成功后删掉解压目录，只留压缩包。
+
+所有 7z 都做过解压后逐文件 SHA256 复核。
 
 输出到 `rust\dist\`（已 gitignore），每个包里有 `package-manifest.json`（版本、模式、每文件 sha256）
 和给用户看的 `README.txt`。`-Mode full` 要求 `dlssg_sm86\sr` 在库里存在（这两个文件不在 Git 里，
