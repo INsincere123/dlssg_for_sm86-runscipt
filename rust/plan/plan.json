@@ -51,7 +51,8 @@
     { "id": "D", "status": "pass", "scope": "settings 12 键 + 诊断模板", "evidence": "12 份诊断样本逐字节一致；9 条识别边界同 PS" },
     { "id": "E", "status": "pass", "scope": "session + log + 差分报告", "evidence": "PARITY-REPORT.md；check 全绿" },
     { "id": "F", "status": "pass", "scope": "M2 引擎壳：launcher-win 真实现 + CLI + 提权 + IPC + 单会话 + 复用启动器", "evidence": "208 测试通过（M2 新增 14 个）；check.ps1 全绿；未验证：从非提权父进程触发 UAC 弹窗（本会话已是高完整性，弹窗路径测得的是 classify_shell_error(1223) 单测）" },
-    { "id": "G", "status": "pass", "scope": "M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位", "evidence": "251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本" }
+    { "id": "G", "status": "pass", "scope": "M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位", "evidence": "251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本" },
+    { "id": "H", "status": "pass", "scope": "M4 界面：主窗/设置页/自定义 INI/添加游戏/日志与关于/性能与 DPI", "evidence": "274 测试通过；docs/M4-REPORT.md 记录实测（生产 WS 84.3 MB、自检 87.0 MB、首帧 128–161 ms、ppp=1.5、单实例 64 ms 退出）；未验证：手工交互、多显示器与 100%/200% 缩放" }
   ],
   "tasks": [
     { "id": "M1-01", "milestone": "M1", "title": "workspace + 错误类型 + 4 个能力 trait + 样本读取器", "status": "done", "deps": [], "acceptance": ["cargo test -p launcher-core 通过", "clippy 无告警"], "artifacts": ["rust/Cargo.toml", "src/ops.rs", "src/error.rs", "src/fixtures.rs"] },
@@ -83,13 +84,13 @@
     { "id": "M3-04", "milestone": "M3", "title": "代理推荐：PE 导入表扫描，只推荐存在的代理名", "status": "done", "deps": ["M3-03"], "acceptance": ["伪造 PE 样本的导入表命中"], "artifacts": ["launcher-win"] },
     { "id": "M3-05", "milestone": "M3", "title": "quality：EngineHost(none/UE4/UE5) → 档位路径", "status": "done", "deps": ["M3-04"], "acceptance": ["纯函数单测覆盖 none 与 01-05 档位"], "artifacts": ["core::quality"] },
 
-    { "id": "M4-01", "milestone": "M4", "title": "GUI 骨架：egui+glow、单实例、交接成功后退出", "status": "todo", "deps": ["M3-05"], "acceptance": ["空窗实测 WS ≤85 MB、冷启动 ≤300 ms"], "artifacts": ["rust/crates/launcher"] },
-    { "id": "M4-02", "milestone": "M4", "title": "主窗：游戏列表 + 状态胶囊（可启动/需恢复/会话中）", "status": "todo", "deps": ["M4-01"], "acceptance": ["四种状态都能渲染；布局无重叠"], "artifacts": ["launcher/ui"] },
-    { "id": "M4-03", "milestone": "M4", "title": "设置页：常用 5 项 + 高级 7 项 + 联动灰化 + 严格校验", "status": "todo", "deps": ["M4-02"], "acceptance": ["12 键与 settings::validate 一致；XeSS 上限联动"], "artifacts": ["launcher/ui"] },
-    { "id": "M4-04", "milestone": "M4", "title": "自定义 INI：导入、预览生成结果、恢复默认", "status": "todo", "deps": ["M4-03"], "acceptance": ["导入未知键报提示但仍保留原文"], "artifacts": ["launcher/ui"] },
-    { "id": "M4-05", "milestone": "M4", "title": "添加游戏：发现 → 候选 → 确认 + EngineHost 三选一", "status": "todo", "deps": ["M4-04"], "acceptance": ["唯一可信结果自动采用，异常才提示"], "artifacts": ["launcher/ui"] },
-    { "id": "M4-06", "milestone": "M4", "title": "日志入口、关于（程序版本 + 组件基线）、通知", "status": "todo", "deps": ["M4-05"], "acceptance": ["通知不抢焦点；日志入口打开 logs 目录"], "artifacts": ["launcher/ui"] },
-    { "id": "M4-07", "milestone": "M4", "title": "性能与 DPI 验收：150% 缩放、中文渲染、内存/启动达标", "status": "todo", "deps": ["M4-06"], "acceptance": ["ppp=1.5 无模糊；WS 与启动时间写进报告"], "artifacts": ["docs/"] },
+    { "id": "M4-01", "milestone": "M4", "title": "GUI 骨架：egui+glow、单实例、交接成功后退出", "status": "done", "deps": ["M3-05"], "acceptance": ["实测 2026-11-22 release：WS 83.9 MB（含微软雅黑）、首帧 165 ms、ppp=1.5；采样需在稳定后 ≥900 ms", "第二个实例 64 ms 内退出且不开窗"], "artifacts": ["rust/crates/launcher"] },
+    { "id": "M4-02", "milestone": "M4", "title": "主窗：游戏列表 + 状态胶囊（可启动/需恢复/会话中/需定位）+ 偏好读写", "status": "done", "deps": ["M4-01"], "acceptance": ["四种状态都能渲染；布局无重叠"], "artifacts": ["launcher/ui"] },
+    { "id": "M4-03", "milestone": "M4", "title": "设置页：常用 5 项 + 高级 7 项 + 联动灰化 + 严格校验", "status": "done", "deps": ["M4-02"], "acceptance": ["12 键与 settings::validate 一致；XeSS 上限联动"], "artifacts": ["launcher/ui"] },
+    { "id": "M4-04", "milestone": "M4", "title": "自定义 INI：导入、预览生成结果、恢复默认", "status": "done", "deps": ["M4-03"], "acceptance": ["导入未知键报提示但仍保留原文"], "artifacts": ["launcher/ui"] },
+    { "id": "M4-05", "milestone": "M4", "title": "添加游戏：扫描 → 候选 → 确认 + EngineHost 三选一", "status": "done", "deps": ["M4-04"], "acceptance": ["唯一可信结果自动采用，异常才提示"], "artifacts": ["launcher/ui"] },
+    { "id": "M4-06", "milestone": "M4", "title": "日志入口、关于（程序版本 + 组件基线）、通知", "status": "done", "deps": ["M4-05"], "acceptance": ["通知不抢焦点；日志入口打开 logs 目录"], "artifacts": ["launcher/ui"] },
+    { "id": "M4-07", "milestone": "M4", "title": "性能与 DPI 验收：150% 缩放、中文渲染、内存/启动达标", "status": "done", "deps": ["M4-06"], "acceptance": ["ppp=1.5 无模糊；WS 与启动时间写进报告"], "artifacts": ["docs/"] },
 
     { "id": "M5-01", "milestone": "M5", "title": "显卡名工具：CfgMgr32 枚举 PCI\\VEN_10DE + DeviceDesc 读写 + ProgramData 状态备份", "status": "todo", "deps": ["M4-07"], "acceptance": ["隔离模拟注册表通过（对齐 NvidiaDeviceName.Tests）"], "artifacts": ["launcher-win"] },
     { "id": "M5-02", "milestone": "M5", "title": "便携导出：基础包 + sr 配件、package-manifest FormatVersion=1", "status": "todo", "deps": ["M5-01"], "acceptance": ["文件集合与体积符合 PARITY 12.4"], "artifacts": ["core::export"] },

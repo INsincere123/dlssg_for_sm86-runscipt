@@ -9,6 +9,13 @@
 
 #![windows_subsystem = "windows"]
 
+mod about;
+mod add_game;
+mod settings_form;
+mod ui;
+mod view_model;
+
+use eframe::egui;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -125,6 +132,13 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
 
 fn run() -> Result<u8, Failure> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // 没有 `--engine` 就是图形入口；GUI 自己解析参数，绝不落到引擎的参数校验里。
+    if !arguments
+        .iter()
+        .any(|value| value == "--engine" || value == "--version")
+    {
+        return run_gui(&arguments);
+    }
     let parsed = parse(&arguments)?;
     let Some(command) = parsed.engine.as_deref() else {
         return Err(Failure::Usage(
@@ -265,6 +279,108 @@ fn report_path_from_env() -> Option<PathBuf> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let index = arguments.iter().position(|value| value == "--report")?;
     arguments.get(index + 1).map(PathBuf::from)
+}
+
+/// 图形入口（M4-01）：单实例 + 主窗口；`--ui-selftest <ms>` 用于验收。
+fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
+    let mut self_test = ui::SelfTest::default();
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--ui-selftest" => {
+                self_test.hold_ms = arguments
+                    .get(index + 1)
+                    .ok_or_else(|| Failure::Usage("--ui-selftest 缺少时长".to_owned()))?
+                    .parse()
+                    .map_err(|_| Failure::Usage("--ui-selftest 需要毫秒数".to_owned()))?;
+                self_test.report =
+                    Some(PathBuf::from(arguments.get(index + 2).ok_or_else(
+                        || Failure::Usage("--ui-selftest 缺少报告路径".to_owned()),
+                    )?));
+                index += 3;
+            }
+            other => {
+                return Err(Failure::Usage(format!("未知参数：{other}")));
+            }
+        }
+    }
+
+    // 图形入口自己的单实例：与引擎的会话锁分开，避免"界面开着"就挡住引擎。
+    let single =
+        launcher_win::acquire_named_session("Local\\DlssgLauncherUi", std::time::Duration::ZERO)
+            .map_err(|error| Failure::Usage(format!("界面单实例不可用：{error}")))?;
+    let Some(_guard) = single else {
+        // 已经有一个界面在跑：直接退出，由现有窗口继续。
+        return Ok(EXIT_OK);
+    };
+
+    // 从本机偏好读游戏列表，并按事实推导每个的状态（M4-02）。
+    let root = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_default();
+    let mut view = view_model::LauncherView::new();
+    if let Ok(path) = launcher_core::prefs::preferences_path(&root) {
+        if let Ok(preferences) = launcher_core::preferences::load(&path) {
+            let session_active = launcher_win::session_active();
+            for game in &preferences.games {
+                let journal = root.join(".state").join(&game.id).join("active.json");
+                let pending = launcher_core::journal_store::load(&journal)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                view.upsert(view_model::GameEntry {
+                    id: game.id.clone(),
+                    name: game.name.clone(),
+                    directory: game.directory.clone(),
+                    status: view_model::derive_status(
+                        game.directory.is_dir(),
+                        pending,
+                        session_active,
+                    ),
+                    engine_host: game.engine_host.clone(),
+                });
+            }
+        }
+        if let Some(first) = (!view.games.is_empty()).then_some(0) {
+            view.select(first);
+        }
+    }
+    let app = ui::LauncherApp::new(
+        view,
+        if self_test.hold_ms > 0 {
+            Some(self_test)
+        } else {
+            None
+        },
+    )
+    .with_preferences(launcher_core::prefs::preferences_path(&root).ok())
+    .with_root(root.clone());
+    let result = eframe::run_native(
+        "DLSSG 启动器",
+        ui::native_options("DLSSG 启动器"),
+        Box::new(move |cc| {
+            if let Some(bytes) = ui::font_bytes() {
+                let mut fonts = egui::FontDefinitions::default();
+                fonts.font_data.insert(
+                    "msyh".to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                );
+                for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                    fonts
+                        .families
+                        .entry(family)
+                        .or_default()
+                        .insert(0, "msyh".to_owned());
+                }
+                cc.egui_ctx.set_fonts(fonts);
+            }
+            Ok(Box::new(app))
+        }),
+    );
+    result
+        .map(|_| EXIT_OK)
+        .map_err(|error| Failure::Usage(format!("窗口创建失败：{error}")))
 }
 
 fn write_report(path: Option<&std::path::Path>, text: &str) {

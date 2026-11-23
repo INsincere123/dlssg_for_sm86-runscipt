@@ -11,5 +11,7 @@ name = "DlssgLauncher"
 path = "src/main.rs"
 
 [dependencies]
+# GUI：与 M0 spike 一致，只启用 glow，不引入 wgpu。
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 launcher-core = { path = "../launcher-core" }
 launcher-win = { path = "../launcher-win" }

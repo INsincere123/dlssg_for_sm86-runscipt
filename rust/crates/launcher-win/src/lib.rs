@@ -82,6 +82,14 @@ fn wide_str(value: &str) -> Vec<u16> {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn CreateSymbolicLinkW(link: *const u16, target: *const u16, flags: u32) -> u8;
+    fn ShellExecuteW(
+        window: Handle,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> Handle;
     fn CreateFileW(
         name: *const u16,
         access: u32,
@@ -127,6 +135,7 @@ unsafe extern "system" {
     ) -> i32;
     fn GetCurrentProcessId() -> u32;
     fn GetConsoleWindow() -> Handle;
+    fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> Handle;
 }
 
 fn last_error() -> Error {
@@ -468,6 +477,40 @@ pub fn is_elevated() -> bool {
         .unwrap_or(false)
 }
 
+/// 用系统默认程序打开一个路径（日志目录、偏好文件等）。
+pub fn open_path(path: &Path) -> Result<()> {
+    const SW_SHOWNORMAL: i32 = 1;
+    let operation = wide_str("open");
+    let file = path_wide(path);
+    let result = unsafe {
+        ShellExecuteW(
+            0,
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW 返回值 > 32 表示成功。
+    if result <= 32 {
+        return Err(Error::io_plain(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// 只探测"引擎会话是否在跑"：不抢占锁，拿不到就是没有。
+pub fn session_active() -> bool {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let name = wide_str(SINGLE_SESSION_MUTEX);
+    let handle = unsafe { OpenMutexW(SYNCHRONIZE, 0, name.as_ptr()) };
+    if handle == 0 || handle == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    unsafe { CloseHandle(handle) };
+    true
+}
+
 /// 当前进程的控制台窗口句柄；`0` 表示没有控制台（`windows` 子系统或 `CREATE_NO_WINDOW`）。
 pub fn console_window() -> isize {
     unsafe { GetConsoleWindow() }
@@ -506,7 +549,12 @@ impl Drop for SingleSession {
 /// 真正的排斥发生在另一个线程/进程上——测试用另一个线程验证，
 /// 跨进程语义由 `Global\` 命名对象本身保证。
 pub fn acquire_single_session(wait: Duration) -> Result<Option<SingleSession>> {
-    match WinMutexOps.acquire(SINGLE_SESSION_MUTEX, wait) {
+    acquire_named_session(SINGLE_SESSION_MUTEX, wait)
+}
+
+/// 任意具名互斥的单实例锁（界面用 `Local\DlssgLauncherUi`，与引擎会话锁分开）。
+pub fn acquire_named_session(name: &str, wait: Duration) -> Result<Option<SingleSession>> {
+    match WinMutexOps.acquire(name, wait) {
         Ok(handle) => Ok(Some(SingleSession { handle })),
         Err(Error::MutexTimeout { .. }) => Ok(None),
         Err(other) => Err(other),

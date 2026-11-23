@@ -1,6 +1,6 @@
 # 开发计划（生成物，源：plan.json）
 
-- 生成时间（UTC）：2026-11-22T15:22:59.1249915Z
+- 生成时间（UTC）：2026-11-22T16:34:40.4889663Z
 - 版本：2.0　受众：ai-agent
 - 说明：plan.json 是唯一事实来源；plan.md 由 rust/tools/gen-plan.ps1 生成，不要手改 md。
 
@@ -67,8 +67,9 @@
 | E | pass | session + log + 差分报告 | PARITY-REPORT.md；check 全绿 |
 | F | pass | M2 引擎壳：launcher-win 真实现 + CLI + 提权 + IPC + 单会话 + 复用启动器 | 208 测试通过（M2 新增 14 个）；check.ps1 全绿；未验证：从非提权父进程触发 UAC 弹窗（本会话已是高完整性，弹窗路径测得的是 classify_shell_error(1223) 单测） |
 | G | pass | M3 入口层：Steam 库/清单/AppID、Direct 身份与相对 EXE、发现扫描、PE 代理推荐、画质档位 | 251 测试通过（M3 新增 31 个）；Steam 与 Direct 语义逐条对照 PS 源码与测试；注册表记录读的是本机真实键值（无 panic 且有存在性断言）；未验证：真实游戏的启动分发（引擎流程仍为壳）、Epic 记录在本机无样本 |
+| H | pass | M4 界面：主窗/设置页/自定义 INI/添加游戏/日志与关于/性能与 DPI | 274 测试通过；docs/M4-REPORT.md 记录实测（生产 WS 84.3 MB、自检 87.0 MB、首帧 128–161 ms、ppp=1.5、单实例 64 ms 退出）；未验证：手工交互、多显示器与 100%/200% 缩放 |
 
-## 任务（done 26 / todo 16）
+## 任务（done 33 / todo 9）
 
 ### M1
 
@@ -115,13 +116,13 @@
 
 | ID | 任务 | 状态 | 依赖 | 验收 | 产物 |
 |---|---|---|---|---|---|
-| M4-01 | GUI 骨架：egui+glow、单实例、交接成功后退出 | todo | M3-05 | 空窗实测 WS ≤85 MB、冷启动 ≤300 ms | rust/crates/launcher |
-| M4-02 | 主窗：游戏列表 + 状态胶囊（可启动/需恢复/会话中） | todo | M4-01 | 四种状态都能渲染；布局无重叠 | launcher/ui |
-| M4-03 | 设置页：常用 5 项 + 高级 7 项 + 联动灰化 + 严格校验 | todo | M4-02 | 12 键与 settings::validate 一致；XeSS 上限联动 | launcher/ui |
-| M4-04 | 自定义 INI：导入、预览生成结果、恢复默认 | todo | M4-03 | 导入未知键报提示但仍保留原文 | launcher/ui |
-| M4-05 | 添加游戏：发现 → 候选 → 确认 + EngineHost 三选一 | todo | M4-04 | 唯一可信结果自动采用，异常才提示 | launcher/ui |
-| M4-06 | 日志入口、关于（程序版本 + 组件基线）、通知 | todo | M4-05 | 通知不抢焦点；日志入口打开 logs 目录 | launcher/ui |
-| M4-07 | 性能与 DPI 验收：150% 缩放、中文渲染、内存/启动达标 | todo | M4-06 | ppp=1.5 无模糊；WS 与启动时间写进报告 | docs/ |
+| M4-01 | GUI 骨架：egui+glow、单实例、交接成功后退出 | done | M3-05 | 实测 2026-11-22 release：WS 83.9 MB（含微软雅黑）、首帧 165 ms、ppp=1.5；采样需在稳定后 ≥900 ms；第二个实例 64 ms 内退出且不开窗 | rust/crates/launcher |
+| M4-02 | 主窗：游戏列表 + 状态胶囊（可启动/需恢复/会话中/需定位）+ 偏好读写 | done | M4-01 | 四种状态都能渲染；布局无重叠 | launcher/ui |
+| M4-03 | 设置页：常用 5 项 + 高级 7 项 + 联动灰化 + 严格校验 | done | M4-02 | 12 键与 settings::validate 一致；XeSS 上限联动 | launcher/ui |
+| M4-04 | 自定义 INI：导入、预览生成结果、恢复默认 | done | M4-03 | 导入未知键报提示但仍保留原文 | launcher/ui |
+| M4-05 | 添加游戏：扫描 → 候选 → 确认 + EngineHost 三选一 | done | M4-04 | 唯一可信结果自动采用，异常才提示 | launcher/ui |
+| M4-06 | 日志入口、关于（程序版本 + 组件基线）、通知 | done | M4-05 | 通知不抢焦点；日志入口打开 logs 目录 | launcher/ui |
+| M4-07 | 性能与 DPI 验收：150% 缩放、中文渲染、内存/启动达标 | done | M4-06 | ppp=1.5 无模糊；WS 与启动时间写进报告 | docs/ |
 
 ### M5
 

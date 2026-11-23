@@ -8,6 +8,8 @@ M1（`launcher-core`，15 步）已完成并通过 184 + 2 个测试；下一步
 | `docs/parity-functions.md` | 193 个 PS 函数的逐行映射（生成物，勿手改） |
 | `docs/M0-REPORT.md` | M0 门禁报告：样本状态、spike 实测、未达标项与选项 |
 | `docs/PARITY-REPORT.md` | 等价报告：逐条契约的验证方式与剩余未知 |
+| `docs/M4-REPORT.md` | 界面验收：内存/首帧/DPI 实测与测量方法 |
+| `docs/m4-ui-150.png` | 150% 缩放下的窗口截图 |
 | `docs/phase1-progress.md` | Phase 1 进度与关卡 A–E 结论 |
 | `plan/plan.json` | **机器可读计划**：任务、依赖、验收、规则、关卡（事实来源） |
 | `plan/plan.md` | 计划的只读视图（由 `tools/gen-plan.ps1` 生成） |

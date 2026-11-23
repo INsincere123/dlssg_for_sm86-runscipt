@@ -28,6 +28,7 @@ pub mod log;
 pub mod ops;
 pub mod path;
 pub mod pe;
+pub mod preferences;
 pub mod prefs;
 pub mod quality;
 pub mod resources;
@@ -46,3 +47,7 @@ pub use ops::{
 
 /// crate 版本，写进日志便于排查。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `dlssg_sm86` 组件基线。当前仓库使用 0.4.2 资源布局（runtime/backend/kernels/xefg/sr），
+/// 界面「关于」与便携包清单都以它为口径。
+pub const COMPONENT_BASELINE: &str = "0.4.2";

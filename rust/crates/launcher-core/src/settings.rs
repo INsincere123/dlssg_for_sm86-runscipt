@@ -10,6 +10,8 @@
 //!    与"无记录回收"时的精确文本识别。
 
 use crate::config;
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
 /// 身份标记行的前缀。恢复流程靠它识别"这份文件是我们生成的"。
@@ -17,7 +19,7 @@ pub const MARKER_PREFIX: &str = "; dlssg-launcher-config=";
 
 // ---------------------------------------------------------------- 枚举
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineKind {
     Dlss,
     XeSs,
@@ -40,7 +42,7 @@ impl EngineKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Preset {
     A,
     B,
@@ -68,7 +70,7 @@ impl Preset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuperResolutionMode {
     Off,
     MInt8,
@@ -119,7 +121,7 @@ impl SuperResolutionMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlowResolution {
     Coarse,
     Middle,
@@ -150,7 +152,7 @@ impl FlowResolution {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UseHudless {
     Auto,
     Zero,
@@ -178,7 +180,7 @@ impl UseHudless {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeMode {
     Bundled,
     External,
@@ -213,7 +215,7 @@ impl RuntimeMode {
 // ---------------------------------------------------------------- 模型
 
 /// 12 键设置。字段名与 `dlssg_sm86` 的键一一对应。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub enabled: bool,
     pub engine: EngineKind,
