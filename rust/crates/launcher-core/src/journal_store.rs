@@ -309,6 +309,48 @@ impl std::fmt::Debug for DeploymentSession<'_> {
     }
 }
 
+/// 旧实现的状态基目录名（其下是 `启动脚本\.state`），只读兜底。
+pub const LEGACY_STATE_DIRECTORY: &str = "启动脚本";
+
+/// 状态**基目录**：`DeploymentSession` 会把 `.state/<gameId>/active.json` 拼在它下面。
+/// 新程序用启动器根目录本身。
+pub fn primary_state_root(root: &Path) -> PathBuf {
+    root.to_path_buf()
+}
+
+/// 旧实现的状态基目录：`<根>\启动脚本`（记录在 `<根>\启动脚本\.state` 下）。
+pub fn legacy_state_root(root: &Path) -> PathBuf {
+    root.join(LEGACY_STATE_DIRECTORY)
+}
+
+/// 依次尝试的状态基目录：新根优先，旧根兜底。
+pub fn state_roots(root: &Path) -> Vec<PathBuf> {
+    vec![primary_state_root(root), legacy_state_root(root)]
+}
+
+/// 实际使用的状态基目录：谁的 `.state` 存在就用谁，都不存在时返回新根（写入位置）。
+pub fn resolve_state_root(root: &Path) -> PathBuf {
+    for candidate in state_roots(root) {
+        if candidate.join(".state").is_dir() {
+            return candidate;
+        }
+    }
+    primary_state_root(root)
+}
+
+/// 按双根顺序读取某个游戏的记录，返回命中的路径与内容。
+///
+/// 新根优先：新程序写入后不会被旧根里的过期记录盖掉；旧根只读兜底，
+/// 迁移到新根由调用方决定（M6-01 只负责读得到）。
+pub fn load_for_game(root: &Path, game_id: &str) -> Result<Option<(PathBuf, Journal)>> {
+    for state_root in state_roots(root) {
+        let path = state_root.join(state_relative_path(game_id));
+        if let Some(journal) = load(&path)? {
+            return Ok(Some((path, journal)));
+        }
+    }
+    Ok(None)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +404,126 @@ mod tests {
     fn civil_conversion_handles_leap_day() {
         let time = UNIX_EPOCH + Duration::from_secs(951_782_400); // 2000-02-29T00:00:00Z
         assert_eq!(format_script_started(time), "2000-02-29T00:00:00.0000000Z");
+    }
+}
+
+#[cfg(test)]
+mod dual_root_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Tree(PathBuf);
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tree(name: &str) -> Tree {
+        let root = std::env::temp_dir().join(format!("dlssg-dual-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("根目录");
+        Tree(root)
+    }
+
+    fn write_record(state_root: &Path, game_id: &str, session: &str) {
+        let mut journal =
+            Journal::from_json(&crate::fixtures::read_text("journal/01-new.json")).expect("样本");
+        journal.game_id = game_id.to_owned();
+        journal.session = session.to_owned();
+        let relative = state_relative_path(game_id);
+        let path = state_root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("父目录")).expect("目录");
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&journal).expect("序列化"),
+        )
+        .expect("写");
+    }
+
+    #[test]
+    fn primary_root_wins_over_legacy() {
+        let tree = tree("primary");
+        write_record(
+            &primary_state_root(&tree.0),
+            "steam-1",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        write_record(
+            &legacy_state_root(&tree.0),
+            "steam-1",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+
+        assert_eq!(resolve_state_root(&tree.0), primary_state_root(&tree.0));
+        let (path, journal) = load_for_game(&tree.0, "steam-1")
+            .expect("读取")
+            .expect("应命中");
+        assert_eq!(journal.session, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert!(path.starts_with(primary_state_root(&tree.0).join(".state")));
+    }
+
+    #[test]
+    fn legacy_root_is_used_when_primary_missing() {
+        let tree = tree("legacy");
+        write_record(
+            &legacy_state_root(&tree.0),
+            "steam-2",
+            "cccccccccccccccccccccccccccccccc",
+        );
+
+        assert_eq!(resolve_state_root(&tree.0), legacy_state_root(&tree.0));
+        let (path, journal) = load_for_game(&tree.0, "steam-2")
+            .expect("读取")
+            .expect("应命中");
+        assert_eq!(journal.game_id, "steam-2");
+        assert!(path.starts_with(legacy_state_root(&tree.0).join(".state")));
+    }
+
+    #[test]
+    fn unknown_game_and_empty_roots_return_none() {
+        let tree = tree("none");
+        assert!(load_for_game(&tree.0, "steam-404").expect("读取").is_none());
+        std::fs::create_dir_all(primary_state_root(&tree.0).join(".state")).expect("建目录");
+        assert!(load_for_game(&tree.0, "steam-404").expect("读取").is_none());
+        assert_eq!(resolve_state_root(&tree.0), primary_state_root(&tree.0));
+    }
+
+    #[test]
+    fn real_workspace_record_is_readable_when_present() {
+        // 只读校验：仓库里可能留有真实部署记录（例如 steam-4356430），能解析就说明双根逻辑对得上。
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .map(|value| value.to_path_buf());
+        let Some(root) = root else { return };
+        let legacy = legacy_state_root(&root).join(".state");
+        if !legacy.is_dir() {
+            eprintln!("跳过：本工作区没有旧状态根（{}）", legacy.display());
+            return;
+        }
+        let mut found = 0;
+        for entry in std::fs::read_dir(&legacy).expect("读目录") {
+            let entry = entry.expect("条目");
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let Some(game_id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if let Some((path, journal)) = load_for_game(&root, &game_id).expect("读取") {
+                assert_eq!(journal.game_id, game_id);
+                assert_eq!(journal.version, 1);
+                eprintln!(
+                    "命中真实记录：{}（{} 个操作）",
+                    path.display(),
+                    journal.operations.len()
+                );
+                found += 1;
+            }
+        }
+        eprintln!("旧状态根下可读记录数：{found}");
     }
 }

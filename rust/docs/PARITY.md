@@ -21,7 +21,7 @@
 | 必须逐字节一致 | 诊断 INI 文本、runtime 副本（marker + CRLF + 源文本、UTF-8 无 BOM、只读）、`recovered/<Session>-Engine.ini` 命名 |
 | 只需字段级一致 | `active.json`（PS 的 `ConvertTo-Json` 缩进形态不复刻，见 D-1） |
 | 已有样本 | 33 个文件：7 份模板 + 1 份派生模板 + 12 份参数矩阵 + 8 条识别用例 + 7 个 journal 阶段 + 13 条路径用例 |
-| 有意偏离 | 8 条（D-1 ~ D-8），全部集中在"输出格式"与"默认值"，不涉及恢复语义 |
+| 有意偏离 | 10 条（D-1 ~ D-10），集中在"输出格式""默认值"与"分包字段"，不涉及恢复语义 |
 | 未验证 | 6 项，见 §6 |
 
 ## 2. 契约清单
@@ -29,6 +29,9 @@
 「现有实现」列是 Read 过的真实代码位置；「验证」列的样本路径相对 `rust/fixtures/`。
 
 ### C1 · journal schema v1
+
+> 阶段取值：`deploying` / `recovering` / **`retained`**（三款 Run 脚本在 `-KeepLinks` 之后写入）。
+> M6-01 用真实记录 `启动脚本\.state\steam-4356430\active.json` 验证过：缺 `retained` 会导致旧记录读不出来。
 
 | 项 | 要求 |
 |---|---|
@@ -177,7 +180,7 @@
 
 - 现有实现：`DeploymentJournal.ps1:381-401`。
 
-### C14 · 便携包清单
+### C14 · 便携包清单（M5-02 已实现：`launcher-core/src/export.rs`）
 
 | 项 | 要求 |
 |---|---|
@@ -247,7 +250,9 @@ Rust 侧：按 `gameId` 声明"临时文件名前缀 + 接受的旧文本集合"
 | D-5 | `sr` 资源按需（`Mode=Off` 允许缺失） | 172 MB 不值得为不用超分的人承担 | 组件在 `Mode=Off` 时是否仍探测 `sr` 文件**未验证**（§6-3） |
 | D-6 | 单会话（`Global\DlssgSession`） | 见 `rust开发.md` 2.3 | 同时开两款游戏的用法失效，需明确提示 |
 | D-7 | 便携包不再含 `.ps1`/`.bat`，`PackageType` 语义改为基础包/配件 | 入口合并为一个 EXE | 旧包脚本不可用；说明需重写 |
-| D-8 | 恢复时旧 PS 记录里的 0.4.2 诊断 INI **按旧模板识别**，新生成用 12 键 | 旧链接必须能回收 | 识别集合必须包含 `templates/**` 全部 8 份模板（C7） |
+| D-8 | 恢复时旧 PS 记录里的 0.4.2 诊断 INI **按旧模板识别**，新生成用 12 键 | 旧链接必须能回收 | 识别集合必须包含 `templates/**` 全部 8 份模板
+| D-9 | 恢复收尾的残留检查由 core 的 `resources::assert_resources_removed` 提供，PS 在删记录前内联调用 | 调用方必须显式执行，否则可能带着残留删记录 | `tests/step10_11_restore.rs` 往返用例断言 |
+| D-10 | `package-manifest.json` 每个条目多一个 `Package`（base / sr）字段，其余字段与 PS 完全一致 | 便携包按"基础包 + sr 配件"拆发；旧工具只用 `Path/Length/SHA256`，不会误解 | `export::tests` 校验键名与往返 |（C7） |
 
 ## 5. Golden 样本
 

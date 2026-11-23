@@ -7,6 +7,8 @@
 //! `"Key":  value`（冒号后两个空格）、空数组跨四行等形态，这里不复刻。
 //! 读入时对未知字段宽容（旧版本可能多写字段），对已知字段严格。
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -21,6 +23,9 @@ pub enum Phase {
     Deploying,
     #[serde(rename = "recovering")]
     Recovering,
+    /// `-KeepLinks` 之后保留部署；三款游戏脚本都会写这个阶段（`Set-DeploymentPhase ''retained''`）。
+    #[serde(rename = "retained")]
+    Retained,
 }
 
 impl Phase {
@@ -28,6 +33,7 @@ impl Phase {
         match self {
             Phase::Deploying => "deploying",
             Phase::Recovering => "recovering",
+            Phase::Retained => "retained",
         }
     }
 }
@@ -291,6 +297,48 @@ pub fn is_valid_session(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+impl Journal {
+    /// 新部署的起始记录：`phase=deploying`、操作列表为空。
+    ///
+    /// `session` 必须是 32 位小写十六进制（`validate` 会再查一次），`script_started`
+    /// 用 [`crate::journal_store::format_script_started`] 生成。
+    #[allow(clippy::too_many_arguments)]
+    pub fn initialize(
+        game_id: &str,
+        session: &str,
+        script_pid: u32,
+        script_started: String,
+        render: &Path,
+        engine: &Path,
+        runtime: &Path,
+        backup: &Path,
+        original_existed: bool,
+        original_hash: Option<String>,
+        storage_existed: bool,
+        deployment_mode: Option<DeploymentMode>,
+        proxy_name: &str,
+    ) -> Self {
+        Self {
+            version: 1,
+            game_id: game_id.to_owned(),
+            session: session.to_owned(),
+            script_pid,
+            script_started,
+            render: render.to_string_lossy().into_owned(),
+            engine: engine.to_string_lossy().into_owned(),
+            runtime: runtime.to_string_lossy().into_owned(),
+            backup: backup.to_string_lossy().into_owned(),
+            original_existed,
+            original_hash,
+            storage_existed,
+            phase: Phase::Deploying,
+            operations: Vec::new(),
+            reused: Vec::new(),
+            deployment_mode,
+            proxy_name: Some(proxy_name.to_owned()),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,5 +521,67 @@ mod tests {
         let reparsed = Journal::from_json(&text).expect("解析");
         assert!(reparsed.is_dlssg_only());
         assert_eq!(reparsed.proxy_name.as_deref(), Some("winmm.dll"));
+    }
+}
+
+#[cfg(test)]
+mod initialize_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn initialize_builds_a_valid_deploying_record() {
+        let journal = Journal::initialize(
+            "wuthering",
+            "0123456789abcdef0123456789abcdef",
+            4242,
+            "2026-11-23T00:00:00.0000000Z".to_owned(),
+            Path::new(r"D:\Game\bin"),
+            Path::new(r"D:\Game\bin\Engine.ini"),
+            Path::new(r"C:\Temp\rt.ini"),
+            Path::new(r"C:\Temp\bk.ini"),
+            true,
+            Some("ABCD".to_owned()),
+            false,
+            None,
+            "version.dll",
+        );
+        assert_eq!(journal.version, 1);
+        assert_eq!(journal.phase, Phase::Deploying);
+        assert!(journal.operations.is_empty());
+        assert!(journal.reused.is_empty());
+        assert_eq!(journal.proxy_name.as_deref(), Some("version.dll"));
+        journal.validate().expect("新记录应通过校验");
+        // 序列化键名与 PS 一致
+        let json = serde_json::to_string(&journal).expect("序列化");
+        for key in [
+            "\"GameId\"",
+            "\"Session\"",
+            "\"ScriptStarted\"",
+            "\"Phase\":\"deploying\"",
+            "\"ProxyName\"",
+        ] {
+            assert!(json.contains(key), "缺少 {key}：{json}");
+        }
+    }
+
+    #[test]
+    fn initialize_rejects_a_bad_session_through_validate() {
+        let journal = Journal::initialize(
+            "wuthering",
+            "not-hex",
+            1,
+            "2026-11-23T00:00:00.0000000Z".to_owned(),
+            Path::new(r"D:\Game"),
+            Path::new(r"D:\Game\Engine.ini"),
+            Path::new(r"C:\Temp\rt.ini"),
+            Path::new(r"C:\Temp\bk.ini"),
+            false,
+            None,
+            false,
+            None,
+            "version.dll",
+        );
+        assert!(journal.validate().is_err(), "非法会话号必须被校验拒绝");
     }
 }

@@ -10,6 +10,7 @@
 //! 3. 互斥是线程所有的：`ReleaseMutex` 必须由获取它的线程调用（引擎是单线程，够用）。
 
 pub mod elevate;
+pub mod gpu;
 pub mod ipc;
 pub mod registry;
 

@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 use launcher_core::discovery::{DiscoveryRoot, merge_roots};
 
 type Handle = isize;
-const HKEY_CURRENT_USER: Handle = 0x8000_0001u32 as Handle;
-const HKEY_LOCAL_MACHINE: Handle = 0x8000_0002u32 as Handle;
-const KEY_READ: u32 = 0x0002_0019;
+pub(crate) const HKEY_CURRENT_USER: Handle = 0x8000_0001u32 as Handle;
+pub(crate) const HKEY_LOCAL_MACHINE: Handle = 0x8000_0002u32 as Handle;
+pub(crate) const KEY_READ: u32 = 0x0002_0019;
 const KEY_WOW64_64KEY: u32 = 0x0100;
 const REG_SZ: u32 = 1;
 const REG_EXPAND_SZ: u32 = 2;
@@ -53,6 +53,14 @@ unsafe extern "system" {
         last_write: *mut c_void,
     ) -> i32;
     fn RegCloseKey(key: Handle) -> i32;
+    fn RegSetValueExW(
+        key: Handle,
+        name: *const u16,
+        reserved: u32,
+        kind: u32,
+        data: *const u8,
+        size: u32,
+    ) -> i32;
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -62,7 +70,7 @@ fn wide(value: &str) -> Vec<u16> {
         .collect()
 }
 
-fn open(root: Handle, sub_key: &str) -> Option<Handle> {
+pub(crate) fn open(root: Handle, sub_key: &str) -> Option<Handle> {
     let name = wide(sub_key);
     for access in [KEY_READ | KEY_WOW64_64KEY, KEY_READ] {
         let mut handle: Handle = 0;
@@ -74,7 +82,7 @@ fn open(root: Handle, sub_key: &str) -> Option<Handle> {
     None
 }
 
-fn read_string(root: Handle, sub_key: &str, value_name: &str) -> Option<String> {
+pub(crate) fn read_string(root: Handle, sub_key: &str, value_name: &str) -> Option<String> {
     let handle = open(root, sub_key)?;
     let name = wide(value_name);
     let mut kind: u32 = 0;
@@ -117,7 +125,7 @@ fn read_string(root: Handle, sub_key: &str, value_name: &str) -> Option<String> 
     (!text.trim().is_empty()).then(|| text.trim().to_owned())
 }
 
-fn sub_keys(root: Handle, sub_key: &str) -> Vec<String> {
+pub(crate) fn sub_keys(root: Handle, sub_key: &str) -> Vec<String> {
     let Some(handle) = open(root, sub_key) else {
         return Vec::new();
     };
@@ -247,6 +255,39 @@ pub fn installed_game_roots() -> Vec<DiscoveryRoot> {
     merge_roots(roots)
 }
 
+/// 写入一个 REG_SZ 值（需要管理员权限；调用方必须先备份）。
+pub(crate) fn write_string(
+    root: Handle,
+    sub_key: &str,
+    value_name: &str,
+    value: &str,
+) -> launcher_core::Result<()> {
+    let handle = open(root, sub_key)
+        .ok_or_else(|| launcher_core::Error::invalid(format!("注册表键不存在：{sub_key}")))?;
+    let name = wide(value_name);
+    let mut data: Vec<u8> = value
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    data.extend_from_slice(&[0, 0]);
+    let status = unsafe {
+        RegSetValueExW(
+            handle,
+            name.as_ptr(),
+            0,
+            REG_SZ,
+            data.as_ptr(),
+            data.len() as u32,
+        )
+    };
+    unsafe { RegCloseKey(handle) };
+    if status != ERROR_SUCCESS {
+        return Err(launcher_core::Error::invalid(format!(
+            "写入注册表失败（{sub_key}\\{value_name}）：错误码 {status}"
+        )));
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

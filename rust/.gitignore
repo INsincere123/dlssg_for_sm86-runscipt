@@ -1,4 +1,4 @@
-# 构建产物（cargo 默认 target，spike 是独立 crate 有自己的一份）
+# 构建产物（cargo 默认 target；spike 是独立 crate，target 另算）
 /target/
 /spike/target/
 
@@ -8,7 +8,7 @@
 /.vscode/
 *.rs.bk
 
-# OS 与编辑器临时文件（仓库根另有同名规则，这里覆盖在 rust/ 下生成的情况）
+# OS 与编辑器临时文件
 *.tmp
 *.tmp.previous
 *.swp
@@ -18,12 +18,21 @@
 Thumbs.db
 Desktop.ini
 
-# 测试与调试的临时落盘点；正式产物在 %TEMP% 下，不进这里
+# 测试与调试的临时落盘（正式产物都在 %TEMP%，这里防手滑）
 /tests-scratch/
 /ipc-scratch/
+/logs/
+
+# 生成物：一律可由脚本重新生成，不入库
+#   plan/plan.md          ← tools/gen-plan.ps1（源：plan/plan.json）
+#   docs/parity-functions.md ← tools/gen-parity-inventory.ps1（源：启动脚本/scripts）
+#   spike/Cargo.lock      ← spike 不参与 workspace，锁文件无复用价值
+/plan/plan.md
+/docs/parity-functions.md
+/spike/Cargo.lock
 
 # 注意：以下内容必须继续被跟踪，不要加进忽略
 # - fixtures/**（黄金样本，换行由 .gitattributes 的 -text 保护）
-# - plan/plan.json 与 plan/plan.md（计划事实来源与生成视图）
-# - docs/*.png（M0 实测截图）
+# - plan/plan.json（计划事实来源）
+# - docs/*.png（M0/M4 验收截图，重新生成需要跑 GUI）
 # - Cargo.lock（工作区依赖锁定）

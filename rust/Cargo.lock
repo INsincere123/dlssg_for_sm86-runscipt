@@ -938,6 +938,7 @@ name = "launcher-win"
 version = "0.0.1"
 dependencies = [
  "launcher-core",
+ "serde_json",
 ]
 
 [[package]]

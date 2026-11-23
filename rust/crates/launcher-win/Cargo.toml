@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 launcher-core = { path = "../launcher-core" }
+serde_json = "1"

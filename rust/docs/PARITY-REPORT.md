@@ -10,7 +10,7 @@
 | 项 | 结果 |
 |---|---|
 | 步骤 | **15 / 15 全部实现** |
-| `cargo test --workspace` | **184 通过 / 0 失败** |
+| `cargo test --workspace` | **306 通过 / 0 失败**（M5 后统计；M6-01/02 又加 5 个） |
 | 真实软链接用例（`#[ignore]`） | **2 通过 / 0 失败**（2026-11-22 提权终端复测，无跳过、无 1314） |
 | `cargo clippy --all-targets -- -D warnings` | 无告警 |
 | `cargo fmt --all -- --check` | 无差异 |
