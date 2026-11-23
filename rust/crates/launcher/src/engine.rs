@@ -27,6 +27,8 @@ pub struct RunPlan {
     pub game_name: String,
     /// 游戏根目录（用户填的那个）。
     pub game_directory: PathBuf,
+    /// 负载根：正式包里是 `<根>\bin`，旧布局就是启动器根。
+    pub resource_root: PathBuf,
     /// 实际渲染 EXE。
     pub render_executable: PathBuf,
     /// 实际启动的 EXE（官方启动器；未配置时等于渲染程序）。
@@ -65,12 +67,45 @@ pub struct RunPlan {
 /// 平台相关的输入（真实路径来自注册表/环境变量，测试里注入假值）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformPaths {
-    /// 启动器根目录（资源、配置源、`.state` 都相对它）。
+    /// 启动器根目录（配置源、`logs`、`.state` 都相对它）。
     pub launcher_root: PathBuf,
     /// `%TEMP%`。
     pub temp_directory: PathBuf,
     /// 当前进程号（用于临时文件名）。
     pub pid: u32,
+}
+
+/// 负载根：正式包里 DLL 与 INI 放在 `<根>\bin`，exe 留在根目录。
+///
+/// `bin` 存在就用它，不存在就退回启动器根——旧布局（资源直接摊在根目录）继续能用。
+pub fn resource_root_of(launcher_root: &Path) -> PathBuf {
+    let bin = launcher_root.join("bin");
+    if bin.is_dir() {
+        bin
+    } else {
+        launcher_root.to_path_buf()
+    }
+}
+
+/// 从部署记录反推负载根：用记下来的代理名（`version.dll` 或 `alternatives\winmm.dll`）
+/// 去剥代理链接目标的尾巴。换过布局的用户恢复旧记录时，这样仍然指向当初那份资源。
+fn journal_resource_root(journal: &launcher_core::journal::Journal) -> Option<PathBuf> {
+    let proxy = journal.proxy_name.as_deref()?;
+    let suffix = proxy.replace('/', "\\").to_lowercase();
+    // 记录里的「路径」是链接落点（游戏目录下的 `winmm.dll`），
+    // 而代理名可能是 `alternatives\winmm.dll`：按文件名比对，按代理名层数剥目标。
+    let file_name = suffix.rsplit('\\').next()?;
+    for operation in &journal.operations {
+        if !operation.path.to_lowercase().ends_with(file_name) {
+            continue;
+        }
+        let mut root = PathBuf::from(&operation.target);
+        for _ in 0..suffix.split('\\').count() {
+            root = root.parent()?.to_path_buf();
+        }
+        return Some(root);
+    }
+    None
 }
 
 /// 由偏好条目算出运行计划；任何前置条件不满足就报错，不做猜测。
@@ -155,13 +190,15 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
     };
     let proxy = ProxyChoice::from_index(&profile.proxy_index.to_string())?;
     let stem = format!("dlssg_sm86-{}-{}", profile.id, paths.pid);
-    // 代理 DLL 的**目标**必须存在：否则部署出悬空链接，任何导入该 DLL 的模块（含 ACE）都会以 126 失败。
+    // 负载根：正式包里 DLL/INI 在 `<根>\bin`（`bin` 不存在时退回根，旧布局照旧）。
+    let resource_root = resource_root_of(&paths.launcher_root);
     // 代理 DLL 的**目标**必须存在：否则部署出悬空链接，任何导入该 DLL 的模块
     // （包括反作弊自己的 ACE-Base64.dll）都会以 126（模块找不到）加载失败。
-    let proxy_target = paths.launcher_root.join(proxy.relative());
+    let proxy_target = resource_root.join(proxy.relative());
     if !proxy_target.is_file() {
         return Err(Error::invalid(format!(
-            "代理 DLL 目标不存在：{}（运行根需要 dlssg_sm86.ini、version.dll 与 alternatives\\）",
+            "代理 DLL 目标不存在：{}\n\
+             运行根里需要 dlssg_sm86.ini、version.dll 与 alternatives\\（正式包放在 bin\\ 子目录，旧布局放根目录）。",
             proxy_target.display()
         )));
     }
@@ -170,6 +207,7 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         game_id: profile.id.clone(),
         game_name: profile.name.clone(),
         game_directory: profile.directory.clone(),
+        resource_root: resource_root.clone(),
         adopted: false,
         launcher_process_name: if launch_executable == render_executable {
             None
@@ -219,7 +257,7 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
 /// 部署前统一预检：一次列出**所有**缺失项，避免逐个步骤才暴露。
 ///
 /// 只做存在性判断，不做修复；返回空表示可以部署。
-pub fn preflight(plan: &RunPlan, launcher_root: &Path) -> Vec<String> {
+pub fn preflight(plan: &RunPlan) -> Vec<String> {
     let mut missing = Vec::new();
     if !plan.render_executable.is_file() {
         missing.push(format!(
@@ -233,20 +271,27 @@ pub fn preflight(plan: &RunPlan, launcher_root: &Path) -> Vec<String> {
             plan.launch_executable.display()
         ));
     }
-    let proxy_target = launcher_root.join(&plan.proxy_relative);
+    let proxy_target = plan.resource_root.join(&plan.proxy_relative);
     if !proxy_target.is_file() {
         missing.push(format!("代理 DLL 目标不存在：{}", proxy_target.display()));
     }
-    for relative in [
-        "dlssg_sm86.ini",
-        r"dlssg_sm86\runtime\nvngx_dlssg.dll",
-        r"dlssg_sm86\backend\sm86_backend.dll",
-        r"dlssg_sm86\kernels\fg_kernels.dll",
-        r"dlssg_sm86\xefg\xefg_kernels.dll",
-    ] {
-        let path = launcher_root.join(relative);
+    for relative in launcher_core::resources::CORE_REQUIRED {
+        let path = plan.resource_root.join(relative);
         if !path.is_file() {
             missing.push(format!("资源缺失：{}", path.display()));
+        }
+    }
+    // 超分开着才要求 sr 内核；轻量版（没有 sr 目录）在这条路上给出明确出路。
+    if plan.settings.requires_super_resolution_resources() {
+        for relative in launcher_core::resources::SUPER_RESOLUTION_REQUIRED {
+            let path = plan.resource_root.join(relative);
+            if !path.is_file() {
+                missing.push(format!(
+                    "缺超分内核：{}\n\
+                     （轻量版不带 sr；要用超分请换全量包，或把 SuperResolution.Mode 设为 Off）",
+                    path.display()
+                ));
+            }
         }
     }
     if !plan.engine_path.as_os_str().is_empty() {
@@ -268,12 +313,8 @@ pub fn preflight(plan: &RunPlan, launcher_root: &Path) -> Vec<String> {
 }
 /// 资源视图（`Deployment` 需要借用生命周期；真实执行接线时会用到）。
 #[allow(dead_code)]
-pub fn deployment<'a>(
-    plan: &'a RunPlan,
-    launcher_root: &'a Path,
-    proxy: ProxyChoice,
-) -> Deployment<'a> {
-    Deployment::new(launcher_root, &plan.render_directory, proxy)
+pub fn deployment<'a>(plan: &'a RunPlan, proxy: ProxyChoice) -> Deployment<'a> {
+    Deployment::new(&plan.resource_root, &plan.render_directory, proxy)
 }
 
 /// 「结束并恢复」的结果（写成报告给界面读）。
@@ -551,6 +592,9 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         .to_owned();
     let proxy =
         ProxyChoice::from_name(&recorded_proxy).unwrap_or_else(|_| ProxyChoice::default_choice());
+    // 负载根优先按记录反推（换过布局也能找到当初那份资源），推不出来再用约定规则。
+    let resource_root =
+        journal_resource_root(&journal).unwrap_or_else(|| resource_root_of(launcher_root));
     let mut state = journal_store::DeploymentSession::open(
         &launcher_win::WinMutexOps,
         launcher_root,
@@ -567,7 +611,7 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         &|_stopped| Ok(()),
         &[],
     )?;
-    let deployment = Deployment::new(launcher_root, &render, proxy);
+    let deployment = Deployment::new(&resource_root, &render, proxy);
     launcher_core::resources::assert_resources_removed(
         &deployment,
         None,
@@ -748,7 +792,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         ..RunSummary::default()
     };
     // 预检放在最前面：一次把缺的东西全列出来。
-    let missing = preflight(plan, launcher_root);
+    let missing = preflight(plan);
     if !missing.is_empty() && !options.dry_run {
         return Err(Error::invalid(format!(
             "部署前预检未通过（{} 项）：\n{}",
@@ -765,7 +809,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     let ops = launcher_win::WinSymlinkOps;
     let mutex = launcher_win::WinMutexOps;
     let proxy = ProxyChoice::from_index(&plan.proxy_index.to_string())?;
-    let deployment = resources::Deployment::new(launcher_root, &plan.render_directory, proxy);
+    let deployment = resources::Deployment::new(&plan.resource_root, &plan.render_directory, proxy);
 
     // 起始记录：会话号 32 位小写十六进制，脚本启动时间用 PS 的 7 位小数格式。
     let seed = format!(
@@ -1147,6 +1191,95 @@ mod tests {
         profile.render_executable =
             Some(r"Project\Binaries\Win64\Game-Win64-Shipping.exe".to_owned());
         profile
+    }
+
+    #[test]
+    fn payload_moves_into_bin_when_that_subdirectory_exists() {
+        let (_sandbox, game, root, _paths) = fixture("bin-layout");
+        // 没有 bin：负载根就是启动器根（旧布局）
+        assert_eq!(resource_root_of(&root), root);
+        // 有 bin：负载根切到 bin
+        std::fs::create_dir_all(root.join("bin")).expect("bin");
+        assert_eq!(resource_root_of(&root), root.join("bin"));
+        // 游戏侧配置目录（preflight 会看它）
+        std::fs::create_dir_all(game.join(r"Project\Saved\Config\Windows")).expect("config dir");
+
+        // 把负载挪进 bin，plan 应该照样成立（并且用它去找代理）
+        std::fs::rename(root.join("version.dll"), root.join("bin/version.dll")).expect("挪代理");
+        std::fs::rename(root.join("dlssg_sm86.ini"), root.join("bin/dlssg_sm86.ini"))
+            .expect("挪 ini");
+        write(&root, "bin/dlssg_sm86/runtime/nvngx_dlssg.dll", b"stub");
+        write(&root, "bin/dlssg_sm86/backend/sm86_backend.dll", b"stub");
+        write(&root, "bin/dlssg_sm86/kernels/fg_kernels.dll", b"stub");
+        write(&root, "bin/dlssg_sm86/xefg/xefg_kernels.dll", b"stub");
+        let paths = PlatformPaths {
+            launcher_root: root.clone(),
+            temp_directory: std::env::temp_dir().join("dlssg-bin-layout-temp"),
+            pid: 4242,
+        };
+        std::fs::create_dir_all(&paths.temp_directory).expect("temp");
+        let run_plan = plan(&profile(&game), &paths).expect("bin 布局应能规划");
+        assert_eq!(run_plan.resource_root, root.join("bin"));
+        assert!(
+            preflight(&run_plan).is_empty(),
+            "{:?}",
+            preflight(&run_plan)
+        );
+
+        // 代理不在 bin 里时应报错并指出 bin
+        std::fs::remove_file(root.join("bin/version.dll")).expect("删代理");
+        let error = plan(&profile(&game), &paths).expect_err("缺代理应拒绝");
+        assert!(error.to_string().contains("bin"), "{error}");
+    }
+
+    #[test]
+    fn journal_recovers_the_resource_root_it_was_deployed_from() {
+        use launcher_core::journal::{Journal, Operation, OperationKind, OperationState};
+
+        let render = PathBuf::from(r"D:\Game\Binaries\Win64");
+        let mut journal = Journal::initialize(
+            "nte",
+            "0123456789abcdef0123456789abcdef",
+            4242,
+            "2026-11-23T06:00:00.0000000Z".to_owned(),
+            &render,
+            Path::new(r"C:\game\Engine.ini"),
+            Path::new(r"C:\temp\a-engine.ini"),
+            Path::new(r"C:\temp\a.bak.ini"),
+            true,
+            Some("ABCDEF".to_owned()),
+            false,
+            None,
+            r"alternatives\winmm.dll",
+        );
+        // 记录里的代理链接：落点在游戏目录，目标在负载根（新布局是 bin）。
+        let mut operation = Operation::new(
+            OperationKind::Link,
+            r"D:\Game\Binaries\Win64\winmm.dll",
+            OperationState::Done,
+        );
+        operation.target = r"D:\launcher\bin\alternatives\winmm.dll".to_owned();
+        journal.operations.push(operation);
+        assert_eq!(
+            journal_resource_root(&journal),
+            Some(PathBuf::from(r"D:\launcher\bin")),
+            "两层代理名要退两层"
+        );
+
+        // 旧布局（version.dll 在根）也要能推对
+        journal.proxy_name = Some("version.dll".to_owned());
+        journal.operations.clear();
+        let mut operation = Operation::new(
+            OperationKind::Link,
+            r"D:\Game\Binaries\Win64\version.dll",
+            OperationState::Done,
+        );
+        operation.target = r"D:\launcher\version.dll".to_owned();
+        journal.operations.push(operation);
+        assert_eq!(
+            journal_resource_root(&journal),
+            Some(PathBuf::from(r"D:\launcher"))
+        );
     }
 
     #[test]

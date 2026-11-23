@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "launcher"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "eframe",
  "launcher-core",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-win"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "launcher-core",
  "serde_json",

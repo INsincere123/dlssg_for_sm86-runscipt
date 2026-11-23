@@ -138,11 +138,6 @@ pub struct LauncherApp {
     quit_after_frame: bool,
     /// 允许真正关闭（托盘"退出"或自检结束）；否则关闭按钮只隐藏到托盘。
     allow_close: bool,
-    /// 自定义 INI 的导入路径与预览文本（M4-04）。
-    ini_path: String,
-    ini_preview: Option<String>,
-    ini_message: String,
-    ini_verbatim: bool,
     /// 添加游戏对话框（M4-05）。
     add_game: Option<crate::add_game::AddGameState>,
     /// 关于对话框（M4-06）。
@@ -214,10 +209,6 @@ impl LauncherApp {
             detect_queue: Vec::new(),
             scan_job: None,
             scan_report: None,
-            ini_path: String::new(),
-            ini_preview: None,
-            ini_message: String::new(),
-            ini_verbatim: false,
             add_game: None,
             show_about: false,
             root: std::path::PathBuf::new(),
@@ -248,8 +239,6 @@ impl LauncherApp {
             .ok()
             .flatten()
             .is_some();
-        self.ini_message.clear();
-        self.ini_preview = None;
         self.settings = Some(crate::settings_form::SettingsForm::from_profile(
             view, &profile, pending,
         ));
@@ -389,7 +378,10 @@ impl LauncherApp {
                 }
                 if !self.view.notice.is_empty() {
                     ui.separator();
-                    ui.label(&self.view.notice);
+                    // 底部空间有限，长提示会截断：悬停看全文。
+                    let notice = self.view.notice.clone();
+                    ui.label(egui::RichText::new(&notice).small())
+                        .on_hover_text(&notice);
                 }
                 // 按钮回调留给 M4-05/M4-06 接引擎；这里先保证布局与可用性正确。
             });
@@ -997,8 +989,14 @@ impl LauncherApp {
         crate::about::logs_directory(&self.root).join(name)
     }
 
-    /// 引擎当前占着会话、并且在跑哪个游戏（读 `logs\status.json`，并核对它的 pid 还活着）。
-    ///
+    /// 负载里有没有超分内核（轻量版没有）：`<负载根>\dlssg_sm86\sr\sr_kernels.dll`。
+    fn super_resolution_available(&self) -> bool {
+        crate::engine::resource_root_of(&self.root)
+            .join(r"dlssg_sm86\sr\sr_kernels.dll")
+            .is_file()
+    }
+
+    /// 引擎当前占着会话、并且在跑哪个游戏（读 `logs\status.json`，并核对它的 pid 还活着）。    ///
     /// 用来把「恢复原状」在"引擎正跑着这个游戏"时置灰：这时手动恢复会和引擎抢同一份
     /// 部署记录，既容易失败，也会把游戏留在半个部署状态。该走「结束并恢复」。
     fn engine_owner(&self) -> Option<String> {
@@ -1319,6 +1317,12 @@ impl LauncherApp {
             EngineKind, FlowResolution, RuntimeMode, SuperResolutionMode, UseHudless,
         };
         let states = form.field_states();
+        if !self.super_resolution_available() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
+                "轻量版：没带超分内核（dlssg_sm86\\sr），SuperResolution.Mode 只能用 Off；要用超分请换全量包。",
+            );
+        }
         ui.label(format!("常用（{} 项）", COMMON_KEYS.len()));
         ui.add_enabled_ui(true, |ui| {
             ui.checkbox(&mut form.settings.enabled, "Enabled · 启用组件")
@@ -1353,6 +1357,7 @@ impl LauncherApp {
                 ui.label(format!("上限 {}", states.max_generated_frames));
             });
             ui.horizontal(|ui| {
+                let sr_available = self.super_resolution_available();
                 ui.label("SuperResolution.Mode")
                     .on_hover_text(crate::settings_form::key_hint("SuperResolution.Mode"));
                 for (mode, text) in [
@@ -1362,10 +1367,19 @@ impl LauncherApp {
                     (SuperResolutionMode::MFp16, "M-Fp16"),
                     (SuperResolutionMode::LFp16, "L-Fp16"),
                 ] {
-                    if ui
-                        .selectable_value(&mut form.settings.super_resolution, mode, text)
-                        .clicked()
-                    {
+                    // 轻量版没有 sr 内核：除 Off 之外的档位置灰，别让用户选了再失败。
+                    let enabled = sr_available || mode == SuperResolutionMode::Off;
+                    let response = ui.add_enabled_ui(enabled, |ui| {
+                        ui.selectable_value(&mut form.settings.super_resolution, mode, text)
+                    });
+                    let response = if enabled {
+                        response.inner
+                    } else {
+                        response.inner.on_disabled_hover_text(
+                            "当前是轻量版，不含超分内核（sr_kernels.dll / nvngx_dlss.dll）",
+                        )
+                    };
+                    if response.clicked() {
                         form.set_super_resolution(mode);
                     }
                 }
@@ -1503,73 +1517,24 @@ impl LauncherApp {
                 });
             });
 
-        ui.separator();
-        egui::CollapsingHeader::new("自定义 INI")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("文件");
-                    ui.text_edit_singleline(&mut self.ini_path);
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("导入").clicked() {
-                        match std::fs::read_to_string(self.ini_path.trim()) {
-                            Ok(text) => {
-                                if self.ini_verbatim {
-                                    form.import_verbatim(&text);
-                                    self.ini_message = "已按自定义全文导入".to_owned();
-                                } else {
-                                    match form.import_text(&text) {
-                                        Ok(outcome) => {
-                                            self.ini_message = format!(
-                                                "已应用 {} 项，未知 {} 项，提示 {} 条",
-                                                outcome.applied.len(),
-                                                outcome.unknown.len(),
-                                                outcome.hints.len()
-                                            );
-                                        }
-                                        Err(message) => self.ini_message = message,
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                self.ini_message = format!("读取失败：{error}");
-                            }
-                        }
-                    }
-                    ui.checkbox(&mut self.ini_verbatim, "整份作为自定义 INI");
-                    if form.is_verbatim() {
-                        ui.label(egui::RichText::new("当前使用自定义全文").small().weak());
-                    }
-                    if ui.button("预览").clicked() {
-                        self.ini_preview = Some(match form.preview() {
-                            Ok(text) => text,
-                            Err(message) => message,
-                        });
-                    }
-                    if ui.button("恢复默认").clicked() {
-                        form.restore_defaults();
-                        self.ini_verbatim = false;
-                        self.ini_message = "已恢复默认".to_owned();
-                        self.ini_preview = None;
-                    }
-                });
-                if !self.ini_message.is_empty() {
-                    ui.label(&self.ini_message);
-                }
-                if let Some(preview) = self.ini_preview.clone() {
-                    egui::ScrollArea::vertical()
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut preview.as_str())
-                                    .desired_width(f32::INFINITY)
-                                    .interactive(false),
-                            );
-                        });
+        // 「自定义 INI」只属于画质视图（05-自定义 里选文件），帧生成这边不再重复给一份。
+        // 旧偏好里可能还留着"组件配置全文"：给一个清掉它的出口，否则预设会一直灰着。
+        if form.settings.custom_ini.is_some() {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
+                    "这条记录用的是「组件配置全文」，12 键预设不生效。",
+                );
+                if ui
+                    .button("清除全文，改回 12 键")
+                    .on_hover_text("删除记录里保存的整份 INI，改由上面的 12 个键生成")
+                    .clicked()
+                {
+                    form.settings.custom_ini = None;
+                    form.dirty = true;
                 }
             });
-
+        }
         ui.separator();
         self.draw_proxy_section(ui, form);
     }

@@ -48,6 +48,8 @@ impl Scenario {
         let render = root.join("render");
         let state = root.join("state");
         std::fs::create_dir_all(project.join("dlssg_sm86").join("runtime")).expect("项目资源");
+        // 全量包的 sr 目录（轻量版没有它，资源链接会少一条；本文件的用例按全量布局跑）
+        std::fs::create_dir_all(project.join("dlssg_sm86").join("sr")).expect("sr 资源");
         std::fs::create_dir_all(&render).expect("渲染目录");
         std::fs::create_dir_all(&state).expect("状态目录");
         std::fs::write(project.join("version.dll"), PROXY_PAYLOAD).expect("代理");

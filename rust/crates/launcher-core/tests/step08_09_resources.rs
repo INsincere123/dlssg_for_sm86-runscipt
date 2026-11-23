@@ -37,6 +37,12 @@ fn setup(name: &str) -> Fixture {
         std::fs::write(&path, "resource").expect("资源文件");
     }
     std::fs::write(project.join("version.dll"), "proxy-payload").expect("代理文件");
+    // 全量包才有的 sr 目录：这些用例按全量布局跑，轻量版的行为由单元测试覆盖。
+    std::fs::create_dir_all(project.join("dlssg_sm86").join("sr")).expect("sr 目录");
+    for name in ["sr_kernels.dll", "nvngx_dlss.dll"] {
+        std::fs::write(project.join("dlssg_sm86").join("sr").join(name), "resource")
+            .expect("sr 资源");
+    }
     let alternates = project.join("alternatives");
     std::fs::create_dir_all(&alternates).expect("alternatives");
     for name in [
@@ -91,6 +97,10 @@ fn fake_link(target: &Path, target_is_dir: bool) -> LinkInfo {
 #[test]
 fn required_resources_depend_on_super_resolution() {
     let fixture = setup("required");
+    // 先按轻量版的样子把 sr 内核删掉：核心资源仍然齐全，只有开超分才该报错。
+    for relative in SUPER_RESOLUTION_REQUIRED {
+        std::fs::remove_file(fixture.project.join(relative)).expect("删掉 sr 内核");
+    }
     assert_eq!(required_files(false).len(), 5);
     assert_required_files(&fixture.project, false).expect("核心资源齐全");
 

@@ -29,6 +29,9 @@ pub const PROXY_NAMES: [&str; 6] = [
 /// 资源目录顺序与 `LauncherResources.ps1:77` 一致。
 pub const RESOURCE_DIRS: [&str; 5] = ["runtime", "backend", "kernels", "xefg", "sr"];
 
+/// 可以整目录缺席的负载（轻量版不含超分内核）。
+pub const OPTIONAL_DIRS: [&str; 1] = ["sr"];
+
 /// 永远要求的资源（相对启动器根）。
 pub const CORE_REQUIRED: [&str; 5] = [
     "dlssg_sm86.ini",
@@ -147,10 +150,17 @@ impl<'a> Deployment<'a> {
         self.render_dir.join("_storage_").join(self.proxy.name())
     }
 
-    /// 5 个资源目录链接。
+    /// 资源目录链接：4 个核心目录 + 存在时的 `sr`。
+    ///
+    /// `sr` 是**轻量版**唯一省略的东西（两个内核共 172 MB）。它在负载里不存在时就不下发，
+    /// 免得往游戏目录建一条悬空链接；只要超分没开，缺它不影响任何功能。
     pub fn resource_specs(&self) -> Vec<LinkSpec> {
         RESOURCE_DIRS
             .iter()
+            .filter(|name| {
+                !OPTIONAL_DIRS.contains(name)
+                    || self.project_root.join("dlssg_sm86").join(name).is_dir()
+            })
             .map(|name| LinkSpec {
                 path: self.resource_root().join(name),
                 target: self.project_root.join("dlssg_sm86").join(name),
@@ -624,14 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn specs_put_the_proxy_first_and_cover_five_directories() {
+    fn specs_put_the_proxy_first_and_skip_missing_optional_directories() {
         let deployment = Deployment::new(
             Path::new(r"D:\launcher"),
             Path::new(r"D:\game"),
             ProxyChoice::from_index("2").expect("2"),
         );
         let specs = deployment.all_specs();
-        assert_eq!(specs.len(), 6);
+        // `D:\launcher\dlssg_sm86\sr` 在测试机上不存在 → 只下发 4 个核心目录
+        assert_eq!(specs.len(), 5, "{specs:?}");
         assert_eq!(specs[0].path, PathBuf::from(r"D:\game\winmm.dll"));
         assert_eq!(
             specs[0].target,
@@ -648,14 +659,34 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(
-            directories,
-            vec!["runtime", "backend", "kernels", "xefg", "sr"]
-        );
+        assert_eq!(directories, vec!["runtime", "backend", "kernels", "xefg"]);
         assert!(specs[1..].iter().all(|spec| spec.target_is_dir));
+    }
+
+    #[test]
+    fn optional_directory_is_included_once_it_exists() {
+        // 用临时目录造一个真的 `dlssg_sm86\sr`：轻量版没有它，全量版有，两边都要正确。
+        let root = std::env::temp_dir().join(format!("dlssg-sr-spec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(r"dlssg_sm86\sr")).expect("sr");
+        let deployment =
+            Deployment::new(&root, Path::new(r"D:\game"), ProxyChoice::default_choice());
+        let names: Vec<String> = deployment
+            .resource_specs()
+            .iter()
+            .map(|spec| {
+                spec.path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["runtime", "backend", "kernels", "xefg", "sr"]);
         assert_eq!(
             deployment.storage_dll(),
-            PathBuf::from(r"D:\game\_storage_\winmm.dll")
+            PathBuf::from(r"D:\game\_storage_\version.dll")
         );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

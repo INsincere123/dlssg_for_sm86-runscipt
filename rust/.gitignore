@@ -29,6 +29,8 @@ Desktop.ini
 #   spike/Cargo.lock      ← spike 不参与 workspace，锁文件无复用价值
 # 真机验证运行根与引擎产物（不进 Git）
 /dist-test/
+# 打包输出（tools/pack.ps1 生成：全量/轻量 zip 与解压目录）
+/dist/
 /.state/
 /logs/
 

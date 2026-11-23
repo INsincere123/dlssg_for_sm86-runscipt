@@ -361,10 +361,8 @@ fn engine_stop(parsed: &Arguments) -> Result<u8, Failure> {
         .preferences
         .clone()
         .or_else(|| launcher_core::prefs::preferences_path(&install_base).ok());
-    let preferences = preferences_file
-        .as_deref()
-        .and_then(|path| launcher_core::preferences::load(path).ok())
-        .unwrap_or_default();
+    let preferences = load_preferences(preferences_file.as_deref())
+        .map_err(|error| Failure::Usage(format!("读不到偏好：{error}")))?;
     let profile = preferences
         .find(&game)
         .cloned()
@@ -374,6 +372,22 @@ fn engine_stop(parsed: &Arguments) -> Result<u8, Failure> {
         .map_err(|error| Failure::Usage(format!("结束并恢复失败：{error}")))?;
     write_report(parsed.report.as_deref(), &summary.to_json());
     Ok(EXIT_OK)
+}
+
+/// 读偏好：文件不存在算空，读到了但解析失败要**报出来**。
+///
+/// 以前这里 `.ok()` 一把吞掉：偏好文件被手改坏之后，界面/引擎只会说
+/// "偏好里没有这个游戏"，排查时完全看不出真正原因。
+fn load_preferences(
+    path: Option<&std::path::Path>,
+) -> Result<launcher_core::preferences::Preferences, String> {
+    let Some(path) = path else {
+        return Ok(launcher_core::preferences::Preferences::default());
+    };
+    if !path.exists() {
+        return Ok(launcher_core::preferences::Preferences::default());
+    }
+    launcher_core::preferences::load(path).map_err(|error| format!("{}：{error}", path.display()))
 }
 
 /// `--engine check --elevate`：自我提权跑一次 check，记录子进程结果。
@@ -480,10 +494,8 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
         .preferences
         .clone()
         .or_else(|| launcher_core::prefs::preferences_path(&install_base).ok());
-    let preferences = preferences_file
-        .as_deref()
-        .and_then(|path| launcher_core::preferences::load(path).ok())
-        .unwrap_or_default();
+    let preferences = load_preferences(preferences_file.as_deref())
+        .map_err(|error| Failure::Usage(format!("读不到偏好：{error}")))?;
     let profile = preferences
         .find(&game)
         .cloned()
@@ -552,8 +564,13 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
     let mut view = view_model::LauncherView::new();
     // 运行根：偏好里指定了就用它（资源可能在另一个目录），否则用 exe 所在目录。
     let mut run_root = root.clone();
-    if let Ok(path) = launcher_core::prefs::preferences_path(&root) {
-        if let Ok(preferences) = launcher_core::preferences::load(&path) {
+    let preferences_path = launcher_core::prefs::preferences_path(&root).ok();
+    match load_preferences(preferences_path.as_deref()) {
+        Err(error) => {
+            // 偏好坏了就明说，别让它"看起来一个游戏都没有"。
+            view.notice = format!("偏好读不出来（列表会是空的）：{error}");
+        }
+        Ok(preferences) => {
             if let Some(declared) = preferences.launcher_root.as_deref() {
                 if !declared.trim().is_empty() {
                     run_root = PathBuf::from(declared.trim());
@@ -578,9 +595,9 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
                 });
             }
         }
-        if !view.games.is_empty() {
-            view.select(0);
-        }
+    }
+    if !view.games.is_empty() {
+        view.select(0);
     }
 
     // 日志保留 7 天：只清 <运行根>\logs\*.log，报告 JSON 与其它文件不动。

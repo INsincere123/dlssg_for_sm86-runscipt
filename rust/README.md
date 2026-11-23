@@ -1,7 +1,12 @@
-# rust/ — Rust 单 EXE 启动器（M1–M6、M8–M9 已完成；M7 真机验收待做）
+# rust/ — Rust 单 EXE 启动器（v0.1，M1–M10 已完成）
 
 界面 + 引擎都在一个 `DlssgLauncher.exe` 里：不带参数是单窗口界面，带 `--engine` 是引擎。
-计划与任务清单见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。
+计划与任务清单见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。版本号取自
+`crates/launcher/Cargo.toml`，`DlssgLauncher.exe --version --report out.json` 可查。
+
+> 磁盘：`target/` 与 `spike/target/` 都不入库。跑过 `check.ps1` 之后
+> `target/debug` 会长到几个 G（本次约 4.4 G），`cargo clean` 或直接删目录都能再长回来；
+> `target/release` 只有约 660 MB，里面是发布用的 exe。
 
 | 路径 | 内容 |
 |---|---|
@@ -25,6 +30,47 @@
 | `tools/measure-ui.ps1` | 界面验收：3 次启动采样内存/首帧并截图 |
 | `tools/shot-ui.ps1` | 开发期截图：按标题抓窗口（Per-Monitor V2 DPI、整屏裁切、可悬停触发提示） |
 | `spike/` | egui + glow 的最小工程，只用于测指标，不进产品 |
+
+## 运行根布局
+
+正式包**只有一个 exe 在根目录**，DLL 与 INI 放进 `bin\`：
+
+```
+DlssgLauncher.exe
+bin\dlssg_sm86.ini
+bin\version.dll
+bin\alternatives\{winmm,dbghelp,dinput8,dxgi,d3d12}.dll
+bin\dlssg_sm86\{runtime,backend,kernels,xefg}\*.dll
+bin\dlssg_sm86\sr\{sr_kernels,nvngx_dlss}.dll   ← 轻量版没有这一对
+配置\虚幻通用分类\UE{4,5}\{01..05}\Engine.ini
+配置\鸣潮\Engine.ini   配置\异环\Engine.ini
+```
+
+`bin\` 存在就把负载根切到它，不存在就用启动器根（旧布局照旧可用）。
+`配置\`、`logs\`、`.state\` 始终跟着启动器根。恢复原状时按部署记录里的代理链接
+反推负载根，所以换过布局也能正确收尾。
+
+## 打包（全量 / 轻量）
+
+```
+pnpm-less：直接 PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode full  -Force -Zip
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode light -Force -Zip
+```
+
+同一个 exe，两个包；差别只有 `bin\dlssg_sm86\sr`（`sr_kernels.dll` + `nvngx_dlss.dll`）。
+
+| 包 | 解压后 | zip | 说明 |
+|---|---|---|---|
+| `DlssgLauncher-v0.1-full` | 219 MB / 27 文件 | 88 MB | 含超分内核 |
+| `DlssgLauncher-v0.1-light` | 47 MB / 25 文件 | 24 MB | 超分只能用 Off，开超分会在部署前报错 |
+
+输出到 `rust\dist\`（已 gitignore），每个包里有 `package-manifest.json`（版本、模式、每文件 sha256）
+和给用户看的 `README.txt`。`-Mode full` 要求 `dlssg_sm86\sr` 在库里存在（这两个文件不在 Git 里，
+是本地文件）；`-Mode light` 会显式跳过并打印提示。
+
+说明：`配置\鸣潮\Engine.ini` 只有在档案的 `config_source` 指向它（或游戏名/id 与目录同名）时才会被用上；
+手动添加的游戏可以在「画质」里用 `05-自定义` 指到包内这份文件。
 
 ## 界面
 

@@ -55,7 +55,7 @@
     { "id": "H", "status": "pass", "scope": "M4 界面：主窗/设置页/自定义 INI/添加游戏/日志与关于/性能与 DPI", "evidence": "274 测试通过；docs/M4-REPORT.md 记录实测（生产 WS 84.3 MB、自检 87.0 MB、首帧 128–161 ms、ppp=1.5、单实例 64 ms 退出）；未验证：手工交互、多显示器与 100%/200% 缩放" },
     { "id": "I", "status": "pass", "scope": "M5 工具：显卡名（模型+真实只读枚举）、便携包清单、导出自检", "evidence": "293 + 13 测试通过；本机枚举到 2 台 NVIDIA 设备且 DeviceDesc 可解析；清单格式 FormatVersion=1 与 PS 字段兼容；自检能识别缺失/大小/篡改/多余。未验证：真实写入 DeviceDesc（需授权并重启）、真实打包成 ZIP" },
     { "id": "J", "status": "pass", "scope": "M6 代码与差分：双根读取、retained 阶段、PS↔Rust 差分核对、文档同步", "evidence": "差分 21 项差异 0（docs/M6-DIFF.md）；真实记录 steam-4356430 读取成功并暴露 retained 缺陷已修；该记录已于 2026-11-23 由用户恢复，state 与 version.dll 均已清除" },
-    { "id": "K", "status": "todo", "scope": "M7 真机验收：鸣潮热重启、异环首次退出恢复、Steam/Direct 全目标与 120s 超时", "evidence": "需要在实际游戏中启动并退出后核对日志与目录状态；前置条件是引擎接线（--engine run 全链路）完成" },
+    { "id": "K", "status": "pass", "scope": "M7 真机验收：鸣潮热重启、异环首次退出恢复、Steam/Direct 全目标与 120s 超时", "evidence": "三款真机各跑完一轮（2026-11-23 06:11–06:16，logs/engine_20261123_0611*_*.log、_0612*_*.log、_0614*_*.log）：鸣潮 46 秒、异环 93 秒、影之刃零 86 秒，均「部署 → GameExited → 恢复完成，残留检查通过」；鸣潮 10 秒热重启分支未触发（restarts: 0），仍属未验证项；另经「结束并恢复」验证引擎卡死与引擎已退出的两种收尾路径" },
     { "id": "L", "status": "pass", "scope": "M9 界面收尾：恢复弹窗、帧生成/画质分视图与代理、12 键提示、日志保留、平台扫描与内置定位、UE 识别", "evidence": "check.ps1 全绿；真机核对：扫描 19.5s 定位异环、识别鸣潮 UE4/异环 UE5、notepad 不误报；界面截图逐张核对（主窗/两个视图/两种弹窗/扫描结果）。未验证：新构建在真实游戏里的完整部署→启动→恢复（M7-01..03 仍为 todo）" }
   ],
   "tasks": [
@@ -103,9 +103,9 @@
     { "id": "M6-01", "milestone": "M6", "title": ".state 双根读取（新根优先，旧 启动脚本\\.state 只读兜底）", "status": "done", "deps": ["M5-03"], "acceptance": ["读取现有 steam-4356430 记录并恢复成功"], "artifacts": ["core::journal_store"] },
     { "id": "M6-02", "milestone": "M6", "title": "差分测试：PS 现算 vs 入库样本（诊断 INI/识别边界）＋不可比项清单", "status": "done", "deps": ["M6-01"], "acceptance": ["差异为 0 或全部有 D-n 解释"], "artifacts": ["rust/tools/"] },
     { "id": "M8-01", "milestone": "M8", "title": "引擎接线：--engine run 全链路（规划/部署/启动/等待/恢复/日志）", "status": "done", "deps": ["M7-03"], "acceptance": ["--dry-run 在临时假根上走完全流程且不落盘", "真实路径在真机上完成一次部署→启动→恢复"], "artifacts": ["launcher/src/engine.rs", "launcher-win::spawn_process"] },
-    { "id": "M7-01", "milestone": "M7", "title": "真机：鸣潮（含 10s 热重启）", "status": "todo", "deps": ["M8-01"], "acceptance": ["经官方启动器拉起，启动器关闭且游戏退出后恢复完整；无残留"], "artifacts": ["logs/"] },
-    { "id": "M7-02", "milestone": "M7", "title": "真机：异环（首次退出即恢复）", "status": "todo", "deps": ["M7-01"], "acceptance": ["同上；启动器先退出时继续等游戏，策略未被统一"], "artifacts": ["logs/"] },
-    { "id": "M7-03", "milestone": "M7", "title": "真机：Steam 与 EXE 启动（等全部目标进程退出）", "status": "todo", "deps": ["M7-02"], "acceptance": ["等全部目标进程退出后恢复；不设启动超时，程序常驻等待"], "artifacts": ["logs/"] },
+    { "id": "M7-01", "milestone": "M7", "title": "真机：鸣潮（含 10s 热重启）", "status": "done", "deps": ["M8-01"], "acceptance": ["经官方启动器拉起，启动器关闭且游戏退出后恢复完整；无残留", "实测 2026-11-23 06:11:58→06:12:44（engine_20261123_061158_947_14368.log）：部署 version.dll → GameExited → 恢复完成，残留检查通过；热重启分支未触发（restarts: 0）"], "artifacts": ["logs/"] },
+    { "id": "M7-02", "milestone": "M7", "title": "真机：异环（首次退出即恢复）", "status": "done", "deps": ["M7-01"], "acceptance": ["同上；启动器先退出时继续等游戏，策略未被统一", "实测 2026-11-23 06:12:53→06:14:26（engine_20261123_061253_703_6372.log）：拉起 NTEGame.exe → 部署 winmm.dll → GameExited → 恢复完成，残留检查通过"], "artifacts": ["logs/"] },
+    { "id": "M7-03", "milestone": "M7", "title": "真机：Steam 与 EXE 启动（等全部目标进程退出）", "status": "done", "deps": ["M7-02"], "acceptance": ["等全部目标进程退出后恢复；不设启动超时，程序常驻等待", "实测 2026-11-23 06:14:41→06:16:07（engine_20261123_061441_443_9200.log）：Steam -applaunch 影之刃零 → 部署 winmm.dll → GameExited → 恢复完成，残留检查通过"], "artifacts": ["logs/"] },
     { "id": "M6-06", "milestone": "M6", "title": "文档同步：PARITY（D-9/D-10、retained）、等价报告 C14、README 与 M6-DIFF", "status": "done", "deps": ["M6-05"], "acceptance": ["四份文档与实际行为一致"], "artifacts": ["docs/"] },
     { "id": "M9-01", "milestone": "M9", "title": "恢复结果弹窗（不画进度条）", "status": "done", "deps": ["M8-01"], "acceptance": ["恢复交给引擎后窗口保持可见；成功/失败各弹一次居中卡片，点「确定」才消失；120 秒没结果按失败弹窗"], "artifacts": ["launcher/src/restore_result.rs", "launcher/src/ui.rs"] },
     { "id": "M9-02", "milestone": "M9", "title": "帧生成 / 画质拆成两个视图 + 代理文件选择", "status": "done", "deps": ["M9-01"], "acceptance": ["两个视图各自独立；帧生成含 6 个代理选项与「当前」；异环建议 winmm.dll、有遗留部署时灰掉；画质只在画质视图保存时改配置源"], "artifacts": ["launcher/src/settings_form.rs", "launcher/src/ui.rs"] },

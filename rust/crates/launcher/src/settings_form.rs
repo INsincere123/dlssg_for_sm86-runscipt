@@ -18,7 +18,10 @@
 //! | `Logging.Directory` | 高级 | 始终可编辑（非空、无非法字符） |
 //! | `FlowResolution` / `UseHudless` | 高级 | 始终可编辑 |
 //! | `Runtime.Mode` / `Runtime.Path` | 高级 | `Bundled` 时路径灰掉且必须为空 |
-//! | 自定义 INI | 高级 | 有自定义内容时预设灰掉 |
+//!
+//! 「自定义 INI」不在帧生成视图：它属于**画质**（`05-自定义` 里选一个 Engine.ini）。
+//! 组件配置的整份覆盖（`Settings::custom_ini`）仍被 `render` 尊重，但界面不再提供导入入口；
+//! 旧偏好里如果留着内容，帧生成页会提示"预设不可选"，免得用户以为按钮坏了。
 //!
 //! 代理与画质档位**不属于**这 12 个键：它们存在偏好里（`proxy_index` / `quality_tier`），
 //! 由本模块一并搬运，因此界面只跟一个结构打交道。
@@ -189,13 +192,6 @@ impl SettingsForm {
         self.dirty = true;
     }
 
-    /// 设置自定义 INI；`None` 表示用预设（M4-04 的自定义 INI 页调用）。
-    #[allow(dead_code)]
-    pub fn set_custom_ini(&mut self, text: Option<String>) {
-        self.settings.custom_ini = text.filter(|value| !value.trim().is_empty());
-        self.dirty = true;
-    }
-
     /// 校验并记录错误；返回是否通过。
     pub fn validate(&mut self) -> bool {
         if let Err(error) = self.settings.validate() {
@@ -220,62 +216,6 @@ impl SettingsForm {
         } else {
             None
         }
-    }
-}
-
-/// 一次导入的结果，供界面显示。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ImportOutcome {
-    /// 成功识别的键。
-    pub applied: Vec<String>,
-    /// 不认识但保留在文件里的键。
-    pub unknown: Vec<String>,
-    /// 旧键名提示。
-    pub hints: Vec<String>,
-}
-
-impl SettingsForm {
-    /// 导入一份完整 INI：识别 12 键并填充表单，未知键原样报告（M4-04）。
-    pub fn import_text(&mut self, text: &str) -> Result<ImportOutcome, String> {
-        let mut probe = self.settings.clone();
-        match probe.apply_ini(text) {
-            Ok(report) => {
-                self.settings = probe;
-                self.dirty = true;
-                Ok(ImportOutcome {
-                    applied: report.applied,
-                    unknown: report.unknown,
-                    hints: report.hints,
-                })
-            }
-            Err(error) => Err(format!("导入失败：{error}")),
-        }
-    }
-
-    /// 把整份文本当作自定义 INI（原样使用，只由 `render` 补标记行）。
-    pub fn import_verbatim(&mut self, text: &str) {
-        let normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
-        self.settings.custom_ini = Some(normalized);
-        self.dirty = true;
-    }
-
-    /// 生成运行时配置文本（预览与部署同一份）。身份用固定占位值，避免预览与写入不一致。
-    pub fn preview(&self) -> Result<String, String> {
-        self.settings
-            .render("preview")
-            .map_err(|error| format!("预览失败：{error}"))
-    }
-
-    /// 恢复默认：清掉自定义 INI 与所有改动。
-    pub fn restore_defaults(&mut self) {
-        self.settings = Settings::default();
-        self.error = None;
-        self.dirty = true;
-    }
-
-    /// 是否处于"自定义全文"模式（界面与测试共用）。
-    pub fn is_verbatim(&self) -> bool {
-        self.settings.custom_ini.is_some()
     }
 }
 
@@ -637,95 +577,6 @@ mod tests {
         assert!(!form.validate(), "需要路径的模式缺路径应失败");
         form.settings.runtime_path = Some(r"D:\rt".to_owned());
         assert!(form.validate());
-    }
-
-    #[test]
-    fn import_applies_known_keys_and_reports_unknown_ones() {
-        let mut form = form();
-        let text = "\
-[General]\r
-Enabled=0\r
-[FrameGeneration]\r
-Engine=XeSS\r
-MaxGeneratedFrames=2\r
-Mystery=42\r
-";
-        let outcome = form.import_text(text).expect("导入");
-        assert!(!form.settings.enabled);
-        assert_eq!(form.settings.engine, EngineKind::XeSs);
-        assert_eq!(form.settings.max_generated_frames, 2);
-        assert!(
-            outcome.unknown.iter().any(|key| key.contains("Mystery")),
-            "{:?}",
-            outcome.unknown
-        );
-        assert!(form.dirty);
-    }
-
-    #[test]
-    fn broken_import_leaves_the_form_untouched() {
-        let mut form = form();
-        let before = form.settings.clone();
-        let error = form
-            .import_text("[General]\nEnabled=maybe\n")
-            .expect_err("应报错");
-        assert!(error.contains("导入失败"), "{error}");
-        assert_eq!(form.settings, before, "失败不能改表单");
-    }
-
-    #[test]
-    fn verbatim_import_normalizes_to_crlf_and_marks_preview() {
-        let mut form = form();
-        form.import_verbatim("[General]\nEnabled=0\n");
-        assert!(form.is_verbatim());
-        let preview = form.preview().expect("预览");
-        assert!(
-            preview.starts_with("; dlssg-launcher-config=preview"),
-            "{preview}"
-        );
-        assert!(preview.contains("[General]\r\nEnabled=0\r\n"), "{preview}");
-        assert!(!form.field_states().preset_choice, "自定义全文时预设应灰掉");
-    }
-
-    #[test]
-    fn restore_defaults_clears_custom_ini_and_fields() {
-        let mut form = form();
-        form.import_verbatim("[General]\nEnabled=0\n");
-        form.settings.engine = EngineKind::XeSs;
-        form.restore_defaults();
-        assert!(!form.is_verbatim());
-        assert_eq!(form.settings, Settings::default());
-        assert!(form.dirty);
-    }
-
-    #[test]
-    fn preview_of_defaults_contains_all_sections() {
-        let form = form();
-        let preview = form.preview().expect("预览");
-        for section in [
-            "[General]",
-            "[FrameGeneration]",
-            "[DLSSG]",
-            "[SuperResolution]",
-            "[Logging]",
-            "[XeSSFG]",
-            "[Runtime]",
-        ] {
-            assert!(preview.contains(section), "缺少 {section}");
-        }
-        assert!(preview.ends_with("; dlssg-launcher-config=preview\r\n"));
-    }
-
-    #[test]
-    fn custom_ini_disables_preset_choice() {
-        let mut form = form();
-        assert!(form.field_states().preset_choice);
-        form.set_custom_ini(Some("; custom\n".to_owned()));
-        assert!(form.settings.custom_ini.is_some());
-        assert!(!form.field_states().preset_choice);
-        form.set_custom_ini(Some("   ".to_owned()));
-        assert!(form.settings.custom_ini.is_none(), "空白内容按清除处理");
-        assert!(form.field_states().preset_choice);
     }
 
     #[test]
