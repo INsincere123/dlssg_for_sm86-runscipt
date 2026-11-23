@@ -875,9 +875,25 @@ pub fn is_elevated() -> bool {
 
 /// 用系统默认程序打开一个路径（日志目录、偏好文件等）。
 pub fn open_path(path: &Path) -> Result<()> {
+    let file = path_wide(path);
+    shell_open(&file, &path.display().to_string())
+}
+
+/// 用系统默认处理器打开一个目标：协议 URI。
+///
+/// Epic 游戏靠它走 `com.epicgames.launcher://apps/<AppName>?action=launch&silent=true`：
+/// 由系统找到（必要时拉起）Epic 启动器，再让它启动游戏。直接起渲染 EXE 会绕开
+/// Epic 的归属校验和在线服务，和 Steam 那边是同一类问题。
+pub fn open_target(target: &str) -> Result<()> {
+    if target.trim().is_empty() {
+        return Err(Error::invalid("要打开的目标为空。"));
+    }
+    shell_open(&wide_str(target), target)
+}
+
+fn shell_open(file: &[u16], label: &str) -> Result<()> {
     const SW_SHOWNORMAL: i32 = 1;
     let operation = wide_str("open");
-    let file = path_wide(path);
     let result = unsafe {
         ShellExecuteW(
             0,
@@ -888,9 +904,11 @@ pub fn open_path(path: &Path) -> Result<()> {
             SW_SHOWNORMAL,
         )
     };
-    // ShellExecuteW 返回值 > 32 表示成功。
+    // ShellExecuteW 返回值 > 32 表示成功；≤ 32 是它自己的错误码（不是 LastError）。
     if result <= 32 {
-        return Err(Error::io_plain(std::io::Error::last_os_error()));
+        return Err(Error::unavailable(format!(
+            "系统没能打开 {label}（ShellExecuteW 返回 {result}）：缺少对应的启动器或协议处理器？"
+        )));
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-﻿# PARITY.md — 行为等价契约清单（M0 冻结）
+# PARITY.md — 行为等价契约清单（M0 冻结）
 
 - 文档版本：v1.0
 - 日期：2026-11-22
@@ -201,6 +201,8 @@
 | N-6 | 便携包 `PackageType` 取值改为 `1=基础包 / 2=sr 配件` | 旧 0–4 废弃 |
 | N-7 | 运行时 INI 生成**完整 12 键** | 现有模板只有 8 键（D-2） |
 | N-8 | 默认值 `MaxGeneratedFrames=3`、`Optimized=1`、`Level=1` | 现有模板是 5 / 2 / 2（D-2） |
+| N-9 | 平台游戏必须由平台拉起：`launch_mode=Steam` 必须解析出 `Steam.exe` 与合法 AppID（缺 AppID 拒绝规划，不退回直接起 EXE）；扫描与手动添加都把 Steam 库里的目录写成 `steam.exe -applaunch <AppID>` | 新增（旧实现缺 `launch_executable` 时退回直接起渲染 EXE；Steamworks 游戏会自己要求 Steam 重启，部署在真正在跑的进程出现前就被恢复） |
+| N-10 | 平台游戏必须由平台拉起（Epic）：`launch_mode=Epic` 必须解析出 `AppName`，启动走 `com.epicgames.launcher://apps/<AppName>?action=launch&silent=true`（ShellExecuteW），缺 AppName 拒绝规划；扫描与手动添加按 `LauncherInstalled.dat` 写 AppName；GOG 保持 Direct（DRM-free，直接起 EXE 是正常方式） | 新增（同 N-9：直接起 EXE 会绕开 Epic 的归属校验/在线服务） |
 
 ## 3. 三家游戏脚本的重复函数：不能盲目合并
 
@@ -285,3 +287,5 @@ Rust 侧：按 `gameId` 声明"临时文件名前缀 + 接受的旧文本集合"
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | v1.0 | 2026-11-22 | M0 首版：14 条兼容契约 + 8 条新增规则 + 3 组重复函数差异 + 8 条有意偏离 + 6 项未验证 |
+| v1.1 | 2026-11-23 | 新增 N-9（平台游戏必须由平台拉起）：`launch_mode=Steam` 缺 AppID/`Steam.exe` 时拒绝规划；扫描/手动添加都按 Steam 清单写启动方式 |
+| v1.2 | 2026-11-23 | 新增 N-10：Epic 档案按 `com.epicgames.launcher://` 拉起（缺 AppName 拒绝规划），扫描/手动添加按 `LauncherInstalled.dat` 识别；GOG 保持 Direct |

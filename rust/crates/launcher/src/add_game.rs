@@ -124,7 +124,9 @@ impl AddGameState {
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_else(|| directory.display().to_string());
-        // 手动添加一律走 Direct：渲染程序已由扫描确定，不需要 Steam 清单。
+        // 手动添加的默认启动方式是 Direct；目录在 Steam 库里时改成 Steam 启动——
+        // Steamworks 游戏（影之刃零/Phantom Blade Zero 就是这样）被直接启动时会让 Steam
+        // 重启自己，注入窗口就错过了，代理 DLL 根本等不到真正在跑的那个进程。
         let id = launcher_core::direct::new_direct_id(&candidate.path.to_string_lossy());
         // 选中的渲染程序必须写进偏好，否则引擎无法定位（曾漏掉导致计划阶段失败）。
         let relative = candidate
@@ -137,8 +139,55 @@ impl AddGameState {
         profile.launch_mode = "Direct".to_owned();
         profile.engine_host = self.host.as_text().to_owned();
         profile.render_executable = Some(relative);
+        apply_platform_launch(&mut profile);
         Some(profile)
     }
+}
+
+/// 目录在平台库里时把启动方式改成平台启动：Steam → `steam.exe -applaunch <AppID>`，
+/// Epic → `com.epicgames.launcher://apps/<AppName>?action=launch`。
+///
+/// 只认库里真实存在的记录：Steam 要 `appmanifest_*.acf` + 真的 `Steam.exe`，Epic 要
+/// `LauncherInstalled.dat` 里的目录配对；对不上就保持 Direct，不猜。返回是否改成了平台启动。
+pub fn apply_platform_launch(profile: &mut GameProfile) -> bool {
+    if apply_steam_launch(profile) {
+        return true;
+    }
+    let Some(app_name) = launcher_win::registry::epic_app_name_for(&profile.directory) else {
+        return false;
+    };
+    apply_epic(profile, &app_name)
+}
+
+fn apply_steam_launch(profile: &mut GameProfile) -> bool {
+    let Some(install) = launcher_core::steam::install_of_directory(&profile.directory) else {
+        return false;
+    };
+    let Some(executable) = launcher_core::steam::steam_executable_for(&install.steamapps) else {
+        return false;
+    };
+    let Ok(arguments) = launcher_core::steam::launch_arguments(&install.app_id) else {
+        return false;
+    };
+    profile.launch_mode = "Steam".to_owned();
+    profile.app_id = Some(install.app_id);
+    profile.launch_arguments = Some(arguments);
+    profile.launch_executable = Some(executable.display().to_string());
+    profile.launcher_process_name = Some("steam.exe".to_owned());
+    true
+}
+
+/// Epic 档案只写 `AppName`：启动走系统 URI，没有"启动 EXE"，也不该有启动参数。
+fn apply_epic(profile: &mut GameProfile, app_name: &str) -> bool {
+    if launcher_core::platform::epic_launch_uri(app_name).is_err() {
+        return false;
+    }
+    profile.launch_mode = "Epic".to_owned();
+    profile.epic_app_name = Some(app_name.to_owned());
+    profile.launch_arguments = None;
+    profile.launch_executable = None;
+    profile.launcher_process_name = None;
+    true
 }
 
 #[cfg(test)]
@@ -257,5 +306,72 @@ mod tests {
         let limits = DiscoveryLimits::default();
         assert_eq!(limits.max_directories, 12_000);
         assert_eq!(limits.max_depth, 12);
+    }
+
+    #[test]
+    fn epic_games_are_recorded_without_a_launch_executable() {
+        let mut profile = GameProfile::new(
+            &launcher_core::direct::new_direct_id(r"D:\Epic\Sakura"),
+            "Sakura",
+            PathBuf::from(r"D:\Epic\Sakura"),
+        );
+        assert!(apply_epic(&mut profile, "Sakura"));
+        assert_eq!(profile.launch_mode, "Epic");
+        assert_eq!(profile.epic_app_name.as_deref(), Some("Sakura"));
+        assert!(
+            profile.launch_executable.is_none(),
+            "Epic 走系统 URI，没有启动 EXE"
+        );
+        assert!(profile.launch_arguments.is_none());
+        assert!(profile.app_id.is_none());
+        assert!(
+            !apply_epic(&mut profile, "bad name"),
+            "非法 AppName 不能改写档案"
+        );
+    }
+
+    #[test]
+    fn a_steam_library_game_is_added_with_steam_launch() {
+        let (mut state, root) = state_with_dir("steam");
+        let steamapps = root.join("steamapps");
+        let game = steamapps.join("common").join("PBZ");
+        std::fs::create_dir_all(game.join("platform").join("steam")).expect("目录");
+        std::fs::write(game.join(r"platform\steam\PBZ.exe"), b"MZ").expect("渲染程序");
+        std::fs::write(
+            steamapps.join("appmanifest_4115450.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"4115450\"\n\t\"name\"\t\t\"Phantom Blade Zero\"\n\
+             \t\"installdir\"\t\t\"PBZ\"\n}\n",
+        )
+        .expect("清单");
+        std::fs::write(root.join("Steam.exe"), b"MZ").expect("Steam.exe");
+
+        state.directory = game.display().to_string();
+        state.apply_scan(outcome(vec![RendererCandidate {
+            path: game.join(r"platform\steam\PBZ.exe"),
+            relative: r"platform\steam\PBZ.exe".to_owned(),
+            score: 140,
+            reasons: vec!["测试".to_owned()],
+        }]));
+
+        let profile = state.confirm().expect("应能确认");
+        assert_eq!(
+            profile.launch_mode, "Steam",
+            "Steam 库里的游戏要按 Steam 启动"
+        );
+        assert_eq!(profile.app_id.as_deref(), Some("4115450"));
+        assert_eq!(
+            profile.launch_arguments,
+            Some(vec!["-applaunch".to_owned(), "4115450".to_owned()])
+        );
+        assert_eq!(
+            profile.launch_executable.as_deref(),
+            Some(root.join("Steam.exe").to_string_lossy().as_ref()),
+            "启动程序必须是库里的 Steam.exe"
+        );
+        assert_eq!(profile.launcher_process_name.as_deref(), Some("steam.exe"));
+        assert_eq!(
+            profile.render_executable.as_deref(),
+            Some(r"platform\steam\PBZ.exe")
+        );
     }
 }

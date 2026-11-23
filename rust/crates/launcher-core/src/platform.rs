@@ -25,7 +25,9 @@ pub struct FoundGame {
     pub source: String,
     /// Steam AppID（其它平台为 `None`）。
     pub app_id: Option<String>,
-    /// `Steam` / `Direct`。
+    /// Epic 的 `AppName`（`LauncherInstalled.dat` 里的值，其它平台为 `None`）。
+    pub epic_app_name: Option<String>,
+    /// `Steam` / `Epic` / `Direct`。
     pub launch_mode: String,
 }
 
@@ -36,6 +38,7 @@ impl FoundGame {
             directory,
             source,
             app_id: None,
+            epic_app_name: None,
             launch_mode: "Direct".to_owned(),
         }
     }
@@ -118,6 +121,7 @@ pub fn steam_games(steamapps: &Path) -> Vec<FoundGame> {
             directory,
             source: source.clone(),
             app_id: Some(app_id),
+            epic_app_name: None,
             launch_mode: "Steam".to_owned(),
         });
     }
@@ -158,6 +162,9 @@ pub fn gog_games(entries: &[(String, PathBuf)]) -> Vec<FoundGame> {
 }
 
 /// Epic：`(AppName, 显示名可选, 安装目录)` → 条目。
+///
+/// Epic 游戏带着 `AppName` 走：启动要用 `com.epicgames.launcher://` 让 Epic 启动器拉起
+/// （直接起 EXE 会绕开归属校验/在线服务，和 Steam 那边是同一类问题）。
 pub fn epic_games(entries: &[(String, Option<String>, PathBuf)]) -> Vec<FoundGame> {
     entries
         .iter()
@@ -166,9 +173,37 @@ pub fn epic_games(entries: &[(String, Option<String>, PathBuf)]) -> Vec<FoundGam
                 .clone()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| app_name.clone());
-            FoundGame::direct(name, directory.clone(), "Epic 清单".to_owned())
+            FoundGame {
+                name,
+                directory: directory.clone(),
+                source: "Epic 清单".to_owned(),
+                app_id: None,
+                epic_app_name: Some(app_name.clone()),
+                launch_mode: "Epic".to_owned(),
+            }
         })
         .collect()
+}
+
+/// Epic 启动 URI：`com.epicgames.launcher://apps/<AppName>?action=launch&silent=true`。
+///
+/// `AppName` 取自 `LauncherInstalled.dat`，不是显示名。只接受 `[A-Za-z0-9._-]`：
+/// URI 直接交给系统（ShellExecute），不能让 AppName 里的分隔符拆坏路径或参数。
+pub fn epic_launch_uri(app_name: &str) -> crate::error::Result<String> {
+    let trimmed = app_name.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 128
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if !valid {
+        return Err(crate::error::Error::invalid(format!(
+            "Epic AppName 无效：{app_name}"
+        )));
+    }
+    Ok(format!(
+        "com.epicgames.launcher://apps/{trimmed}?action=launch&silent=true"
+    ))
 }
 
 /// 逐行取 `"键" "值"` 的值（恰好一行才算，与 `steam::single_value` 同规则）。
@@ -324,8 +359,9 @@ mod tests {
     fn gog_and_epic_entries_map_to_direct_games() {
         let gog = gog_games(&[("Cyberpunk 2077".to_owned(), PathBuf::from(r"D:\GOG\CP"))]);
         assert_eq!(gog[0].name, "Cyberpunk 2077");
-        assert_eq!(gog[0].launch_mode, "Direct");
+        assert_eq!(gog[0].launch_mode, "Direct", "GOG 是 DRM-free，直接起 EXE");
         assert!(gog[0].app_id.is_none());
+        assert!(gog[0].epic_app_name.is_none());
 
         let epic = epic_games(&[
             (
@@ -341,6 +377,24 @@ mod tests {
         ]);
         assert_eq!(epic[0].name, "Sakura: The Game");
         assert_eq!(epic[1].name, "NoDisplayName", "没有显示名时用 AppName");
+        assert_eq!(epic[0].launch_mode, "Epic", "Epic 游戏要由 Epic 启动器拉起");
+        assert_eq!(epic[0].epic_app_name.as_deref(), Some("Sakura"));
+        assert_eq!(epic[1].epic_app_name.as_deref(), Some("NoDisplayName"));
+    }
+
+    #[test]
+    fn epic_launch_uri_is_built_from_the_app_name() {
+        assert_eq!(
+            epic_launch_uri("Gingerbread").expect("URI"),
+            "com.epicgames.launcher://apps/Gingerbread?action=launch&silent=true"
+        );
+        assert_eq!(
+            epic_launch_uri("  a1_b2-c3.d4  ").expect("去空白"),
+            "com.epicgames.launcher://apps/a1_b2-c3.d4?action=launch&silent=true"
+        );
+        for bad in ["", "   ", "../evil", "a b", "a?b", "a&b"] {
+            assert!(epic_launch_uri(bad).is_err(), "应拒绝 {bad:?}");
+        }
     }
 
     #[test]

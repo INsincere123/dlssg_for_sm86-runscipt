@@ -117,10 +117,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 - **扫描游戏**：只扫 Steam / GOG / Epic 的平台记录与注册表（不翻全盘）。有证据的
   （UE 打包本体或同目录自带 DLSS-G 组件、或鸣潮/异环的内置模板）直接加进列表，
   其余进「扫描结果」等确认；每行一个「选择渲染程序」入口。
+  Steam 游戏一律写成 **Steam 启动**（`steam.exe -applaunch <AppID>`，AppID 只从
+  `appmanifest_*.acf` 读）；找不到 `Steam.exe` 时进「扫描结果」说明原因，不生成会绕开 Steam 的档案。
+  Epic 游戏写成 **Epic 启动**（`com.epicgames.launcher://apps/<AppName>?action=launch`，
+  AppName 只从 `LauncherInstalled.dat` 读）；GOG 保持 Direct——DRM-free，直接起 EXE 就是正常方式。
   鸣潮这类"注册表只登记启动器、游戏本体装在别的盘"的情况（真机：启动器在
   `C:\Program Files\Wuthering Waves`，游戏在 `C:\Games\Wuthering Waves Game`）另有一层
   **浅层兜底**：在固定磁盘前 3 层里按模板的文件夹名找，且必须 `<目录>\<渲染 EXE>` 真的存在
   才算，找到多个只报歧义；实测 3 个固定磁盘只读 317 个目录、16 毫秒左右，有目录上限并跳过系统目录。
+- **添加游戏**：手动选目录 → 扫描候选 → 确认渲染程序。目录在平台库里时自动改成平台启动：
+  Steam（`<库>\steamapps\common\<installdir>` 且有匹配清单，`Steam.exe` 取注册表或库根）或
+  Epic（`LauncherInstalled.dat` 里目录对得上，写 AppName）；两个平台都对不上才保持 Direct。
+  档案写着 Steam/Epic 却缺 AppID、AppName 或 `Steam.exe` 时，引擎**直接拒绝规划**，不会退回
+  "直接起渲染 EXE"——那等于绕开平台，Steamworks 游戏（影之刃零）还会自己要求 Steam 重启，
+  部署会在真正在跑的进程出现之前被恢复，日志看着"部署完成"，游戏却没注入。
 - **帧生成**：12 个组件键（常用 5 + 高级 7）+ 自定义 INI + 代理文件（6 选一，
   异环建议 `winmm.dll`，有遗留部署时代理整块灰掉）。
 - **画质**：引擎版本（可重新识别 / 手动校准）+ 4 档画质 + `05-自定义`；

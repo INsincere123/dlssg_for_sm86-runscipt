@@ -288,6 +288,32 @@ pub fn steam_install_directory() -> Option<PathBuf> {
     Some(PathBuf::from(steam))
 }
 
+/// 由安装目录反查 Epic 的 `AppName`（`LauncherInstalled.dat` 里的配对）。
+///
+/// 手动「添加游戏」时用：目录对上就说明这台机器上它是 Epic 装的，启动要走
+/// `com.epicgames.launcher://`，不能直接起 EXE。对不上返回 `None`，不猜。
+pub fn epic_app_name_for(directory: &Path) -> Option<String> {
+    let manifest = epic_manifest_path()?;
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let wanted = directory
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase();
+    let mut matches: Vec<String> = Vec::new();
+    for (app_name, install) in epic_pairs(&text) {
+        let install = install.replace('/', "\\");
+        let install = install.trim_end_matches('\\').to_lowercase();
+        if !install.is_empty() && install == wanted && !matches.contains(&app_name) {
+            matches.push(app_name);
+        }
+    }
+    match matches.len() {
+        1 => matches.pop(),
+        _ => None,
+    }
+}
+
 /// 全部 Steam 库的 `steamapps` 目录（主库 + `libraryfolders.vdf` 登记的库）。
 pub fn steam_library_steamapps() -> Vec<PathBuf> {
     let Some(steam) = steam_install_directory() else {

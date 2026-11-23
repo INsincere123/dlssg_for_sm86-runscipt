@@ -25,7 +25,7 @@ pub struct GameProfile {
     pub name: String,
     #[serde(default)]
     pub directory: PathBuf,
-    /// 启动方式：`Steam` / `Direct`。
+    /// 启动方式：`Steam` / `Epic` / `Direct`。
     #[serde(default = "default_launch_mode")]
     pub launch_mode: String,
     /// 引擎宿主声明：`none` / `UE4` / `UE5`。
@@ -40,6 +40,9 @@ pub struct GameProfile {
     /// Steam AppID（`launch_mode=Steam` 时用）。
     #[serde(default)]
     pub app_id: Option<String>,
+    /// Epic 的 `AppName`（`launch_mode=Epic` 时用；来自 `LauncherInstalled.dat`）。
+    #[serde(default)]
+    pub epic_app_name: Option<String>,
     /// 启动参数（Steam 用 `-applaunch <AppID>`；Direct 通常为空）。
     #[serde(default)]
     pub launch_arguments: Option<Vec<String>>,
@@ -101,6 +104,7 @@ impl GameProfile {
             quality_tier: default_tier(),
             proxy_index: default_proxy(),
             app_id: None,
+            epic_app_name: None,
             launch_arguments: None,
             config_source: None,
             launch_executable: None,

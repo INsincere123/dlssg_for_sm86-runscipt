@@ -250,6 +250,101 @@ fn resolve_app_id_with(
     }
 }
 
+/// 一个目录反查到的 Steam 安装。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryInstall {
+    pub app_id: String,
+    /// `<库>\steamapps`：`Steam.exe` 与清单都在这一级的旁边。
+    pub steamapps: PathBuf,
+    /// 命中的清单文件（写进日志便于核对）。
+    pub manifest: PathBuf,
+}
+
+/// 由游戏目录反查同库的 Steam 清单。
+///
+/// 只看目录自己所在的库（`<库>\steamapps\common\<installdir>`），不读注册表、不需要
+/// `Steam.exe`：手动「添加游戏」时用户选的就是这里的目录。最多向上找 4 层，允许用户
+/// 选到游戏目录下面；多个清单同时命中时返回 `None`，不猜。
+///
+/// 用途是**决定启动方式**：Steam 库里的游戏被直接启动时常常让 Steam 重启自己
+/// （`SteamAPI_RestartAppIfNecessary`），注入窗口会错过，所以要按 Steam 入口启动。
+pub fn install_of_directory(directory: &Path) -> Option<DirectoryInstall> {
+    let context = PathContext::current().ok()?;
+    let mut current = directory;
+    for _ in 0..4 {
+        let common = current.parent()?;
+        let steamapps = common.parent()?;
+        if leaf_eq(common, COMMON) && leaf_eq(steamapps, STEAMAPPS) && steamapps.is_dir() {
+            if let Some(found) = manifest_for_directory(&context, steamapps, current) {
+                return Some(found);
+            }
+        }
+        current = current.parent()?;
+    }
+    None
+}
+
+/// 库根里的 `Steam.exe`（`<库>\steamapps` 的上一级）；不存在时返回 `None`。
+pub fn steam_executable_for(steamapps: &Path) -> Option<PathBuf> {
+    let executable = steamapps.parent()?.join("Steam.exe");
+    executable.is_file().then_some(executable)
+}
+
+fn manifest_for_directory(
+    context: &PathContext,
+    steamapps: &Path,
+    game: &Path,
+) -> Option<DirectoryInstall> {
+    let wanted = clean(context, &game.to_string_lossy()).ok()?.to_lowercase();
+    let mut matches: Vec<DirectoryInstall> = Vec::new();
+    for entry in std::fs::read_dir(steamapps).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let lower = name.to_lowercase();
+        if !lower.starts_with("appmanifest_") || !lower.ends_with(".acf") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(app_id) = single_value(&text, "appid") else {
+            continue;
+        };
+        // 清单文件名与内部 appid 必须一致，否则这条记录不可信（与 resolve_app_id 一致）。
+        if !name.eq_ignore_ascii_case(&format!("appmanifest_{app_id}.acf")) {
+            continue;
+        }
+        let Some(install_directory) = single_value(&text, "installdir") else {
+            continue;
+        };
+        let install_directory = unescape(&install_directory);
+        if install_directory.is_empty() || is_rooted(&install_directory) {
+            continue;
+        }
+        let candidate = steamapps.join(COMMON).join(&install_directory);
+        let Ok(candidate) = clean(context, &candidate.to_string_lossy()) else {
+            continue;
+        };
+        if candidate.to_lowercase() != wanted {
+            continue;
+        }
+        matches.push(DirectoryInstall {
+            app_id,
+            steamapps: steamapps.to_path_buf(),
+            manifest: path,
+        });
+    }
+    match matches.len() {
+        1 => matches.pop(),
+        _ => None,
+    }
+}
+
 /// 逐行取 `"键" "值"` 里的值（含转义，未反转义）。
 fn vdf_values(text: &str, key: &str) -> Vec<String> {
     let mut values = Vec::new();
@@ -423,5 +518,78 @@ mod tests {
             single_value("\"installdir\" \"a\"\n", "installdir"),
             Some("a".to_owned())
         );
+    }
+
+    fn acf_text(app_id: &str, name: &str, install_directory: &str) -> String {
+        format!(
+            "\"AppState\"\n{{\n\t\"appid\"\t\t\"{app_id}\"\n\t\"name\"\t\t\"{name}\"\n\
+             \t\"installdir\"\t\t\"{install_directory}\"\n}}\n"
+        )
+    }
+
+    #[test]
+    fn a_directory_inside_a_steam_library_resolves_its_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "dlssg-steam-directory-{}-{}",
+            std::process::id(),
+            "install"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let steamapps = root.join(STEAMAPPS);
+        let game = steamapps.join(COMMON).join("PBZ");
+        std::fs::create_dir_all(&game).expect("游戏目录");
+        std::fs::write(
+            steamapps.join("appmanifest_4115450.acf"),
+            acf_text("4115450", "Phantom Blade Zero", "PBZ"),
+        )
+        .expect("清单");
+        // 用户可能选到渲染 EXE 所在的子目录，也要能反查到同一份清单。
+        let nested = game.join("platform").join("steam");
+        std::fs::create_dir_all(&nested).expect("子目录");
+
+        let install = install_of_directory(&game).expect("游戏目录应识别");
+        assert_eq!(install.app_id, "4115450");
+        assert_eq!(install.steamapps, steamapps);
+        assert!(install.manifest.ends_with("appmanifest_4115450.acf"));
+        assert_eq!(
+            install_of_directory(&nested).expect("子目录应识别").app_id,
+            "4115450"
+        );
+
+        // 不在 <库>\steamapps\common 下面的目录不能被认成 Steam 游戏。
+        let elsewhere = root.join("not-steam");
+        std::fs::create_dir_all(&elsewhere).expect("普通目录");
+        assert!(install_of_directory(&elsewhere).is_none());
+
+        assert!(
+            steam_executable_for(&steamapps).is_none(),
+            "没有 Steam.exe 时不能编出一个启动程序"
+        );
+        std::fs::write(root.join("Steam.exe"), b"MZ").expect("Steam.exe");
+        let executable = steam_executable_for(&steamapps).expect("应找到 Steam.exe");
+        assert!(executable.ends_with("Steam.exe"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_invalid_manifest_does_not_become_a_steam_install() {
+        let root = std::env::temp_dir().join(format!(
+            "dlssg-steam-directory-{}-{}",
+            std::process::id(),
+            "invalid"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let steamapps = root.join(STEAMAPPS);
+        let game = steamapps.join(COMMON).join("Game");
+        std::fs::create_dir_all(&game).expect("游戏目录");
+        // 文件名与内部 appid 不一致：这条清单不可信，不能拿来当启动方式。
+        std::fs::write(
+            steamapps.join("appmanifest_111.acf"),
+            acf_text("222", "Wrong Id", "Game"),
+        )
+        .expect("清单");
+        assert!(install_of_directory(&game).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -58,8 +58,10 @@ pub struct RunPlan {
     pub app_id: Option<String>,
     /// 该游戏的 12 键设置（生成诊断 INI 用）。
     pub settings: launcher_core::settings::Settings,
-    /// 启动参数（Steam 为 `-applaunch <AppID>`，Direct 一般为空）。
+    /// 启动参数（Steam 为 `-applaunch <AppID>`，Epic 为空）。
     pub launch_arguments: Vec<String>,
+    /// 平台启动 URI（Epic）：由系统交给 Epic 启动器，不经过 EXE。
+    pub launch_uri: Option<String>,
     /// 档案里声明的会话策略文本。
     pub session_policy: Option<String>,
 }
@@ -177,16 +179,109 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         )));
     }
 
-    let launch_executable = match profile.launch_executable.as_deref() {
-        Some(value) if !value.trim().is_empty() => {
-            let candidate = PathBuf::from(value.trim());
-            if candidate.is_absolute() {
-                candidate
-            } else {
-                profile.directory.join(candidate)
+    // Steam 档案必须真的由 Steam 拉起。以前缺 `launch_executable` 时会退回"直接起渲染 EXE"：
+    // 那等于绕开 Steam，Steamworks 游戏（影之刃零）还会自己要求 Steam 重启，部署会在真正
+    // 在跑的进程出现之前就被恢复——日志写着"部署完成"，游戏却没注入。这种档案现在直接拒绝，
+    // 缺 Steam.exe 时按注册表补一次。
+    let steam_mode = profile.launch_mode.eq_ignore_ascii_case("Steam");
+    // Epic 同理：由 Epic 启动器按 URI 拉起，绝不直接起渲染 EXE。
+    let epic_mode = profile.launch_mode.eq_ignore_ascii_case("Epic");
+    let declared_launch = profile
+        .launch_executable
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let launch_executable = if steam_mode {
+        let path = match declared_launch {
+            Some(value) => {
+                let candidate = PathBuf::from(value);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    profile.directory.join(candidate)
+                }
             }
+            None => launcher_win::registry::steam_install_directory()
+                .map(|steam| steam.join("Steam.exe"))
+                .filter(|candidate| candidate.is_file())
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "游戏「{}」是 Steam 启动，但档案里没有 Steam.exe，注册表里也没找到 Steam。\
+                         请确认 Steam 已安装，或删掉这条重新「添加游戏」。",
+                        profile.name
+                    ))
+                })?,
+        };
+        if !path.is_file() {
+            return Err(Error::invalid(format!(
+                "游戏「{}」是 Steam 启动，但启动程序不存在：{}\n\
+                 Steam 游戏必须由 Steam 拉起，不能直接启动渲染 EXE。",
+                profile.name,
+                path.display()
+            )));
         }
-        _ => render_executable.clone(),
+        path
+    } else if epic_mode {
+        // Epic 由启动器 URI 拉起，不存在"启动 EXE"这一步。
+        render_executable.clone()
+    } else {
+        match declared_launch {
+            Some(value) => {
+                let candidate = PathBuf::from(value);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    profile.directory.join(candidate)
+                }
+            }
+            None => render_executable.clone(),
+        }
+    };
+    // Steam 的启动参数只有一个来源：AppID。档案里没写参数时按 AppID 现算，
+    // 免得旧档案留着空参数被当成"直接启动"。
+    let launch_arguments = if steam_mode {
+        let app_id = profile
+            .app_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "游戏「{}」是 Steam 启动，但档案里没有 AppID；请删掉这条重新「添加游戏」，\
+                     并选 Steam 库里的游戏目录。",
+                    profile.name
+                ))
+            })?;
+        launcher_core::steam::launch_arguments(app_id).map_err(|error| {
+            Error::invalid(format!("游戏「{}」的 AppID 无效：{error}", profile.name))
+        })?
+    } else {
+        profile.launch_arguments.clone().unwrap_or_default()
+    };
+    // Epic 的启动方式是协议 URI；AppName 只从档案来（扫描/添加时取自 Epic 清单）。
+    let launch_uri = if epic_mode {
+        let app_name = profile
+            .epic_app_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "游戏「{}」是 Epic 启动，但档案里没有 AppName；请删掉这条重新「添加游戏」，\
+                     并选 Epic 库里的游戏目录。",
+                    profile.name
+                ))
+            })?;
+        Some(
+            launcher_core::platform::epic_launch_uri(app_name).map_err(|error| {
+                Error::invalid(format!(
+                    "游戏「{}」的 Epic AppName 无效：{error}",
+                    profile.name
+                ))
+            })?,
+        )
+    } else {
+        None
     };
     let proxy = ProxyChoice::from_index(&profile.proxy_index.to_string())?;
     let stem = format!("dlssg_sm86-{}-{}", profile.id, paths.pid);
@@ -243,7 +338,8 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         launch_mode: profile.launch_mode.clone(),
         app_id: profile.app_id.clone(),
         settings: profile.settings.clone().unwrap_or_default(),
-        launch_arguments: profile.launch_arguments.clone().unwrap_or_default(),
+        launch_arguments,
+        launch_uri,
         session_policy: profile.session_policy.clone(),
     };
 
@@ -394,11 +490,13 @@ pub fn launcher_path(profile: &GameProfile) -> Option<PathBuf> {
 /// **Steam 游戏不能把 steam.exe 算进去**：那是用户自己的客户端，结束它会把整个 Steam 关掉。
 pub fn game_processes(profile: &GameProfile) -> launcher_win::ProcessFilter {
     let steam = profile.launch_mode.eq_ignore_ascii_case("Steam");
+    // Epic 也一样：EpicGamesLauncher.exe 是用户自己的客户端，不能算成游戏进程。
+    let platform_launched = steam || profile.launch_mode.eq_ignore_ascii_case("Epic");
     let mut executables: Vec<PathBuf> = Vec::new();
     if let Some(render) = render_path(profile) {
         executables.push(render);
     }
-    if !steam {
+    if !platform_launched {
         if let Some(launcher) = launcher_path(profile) {
             if !executables.iter().any(|path| path == &launcher) {
                 executables.push(launcher);
@@ -406,7 +504,7 @@ pub fn game_processes(profile: &GameProfile) -> launcher_win::ProcessFilter {
         }
     }
     let mut names: Vec<String> = Vec::new();
-    if !steam {
+    if !platform_launched {
         if let Some(name) = profile.launcher_process_name.as_deref() {
             let index = name.to_ascii_lowercase().rfind(".exe");
             let trimmed = index
@@ -737,6 +835,8 @@ pub struct RunSummary {
     pub render: PathBuf,
     pub engine: PathBuf,
     pub launch: PathBuf,
+    /// 平台启动 URI（Epic）；空表示直接起 EXE 或 `-applaunch`。
+    pub uri: Option<String>,
     pub steps: Vec<String>,
 }
 
@@ -756,6 +856,7 @@ impl RunSummary {
             render: String,
             engine: String,
             launch: String,
+            uri: Option<&'a str>,
             steps: &'a [String],
         }
         let report = Report {
@@ -770,6 +871,7 @@ impl RunSummary {
             render: self.render.display().to_string(),
             engine: self.engine.display().to_string(),
             launch: self.launch.display().to_string(),
+            uri: self.uri.as_deref(),
             steps: &self.steps,
         };
         let mut text = serde_json::to_string_pretty(&report)
@@ -789,6 +891,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         render: plan.render_executable.clone(),
         engine: plan.engine_path.clone(),
         launch: plan.launch_executable.clone(),
+        uri: plan.launch_uri.clone(),
         ..RunSummary::default()
     };
     // 预检放在最前面：一次把缺的东西全列出来。
@@ -906,6 +1009,22 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             plan.render_executable.display()
         ),
     );
+    // 目录在 Steam 库里却按 Direct 启动：这类游戏（Steamworks）被直接启动时常常让 Steam
+    // 重启自己，部署会在真正在跑的进程出现之前就被恢复——日志上"部署完成"，游戏却没注入。
+    if !plan.launch_mode.eq_ignore_ascii_case("Steam") {
+        if let Some(install) = launcher_core::steam::install_of_directory(&plan.game_directory) {
+            note(
+                &mut log,
+                &format!(
+                    "注意：这个目录在 Steam 库里（AppID {}，清单 {}）。Steam 游戏被直接启动时\
+                     常常会要求 Steam 重启自己，注入窗口会错过；请把这条删掉重新「添加游戏」\
+                     一次（会自动识别成 Steam 启动），不要用直接 EXE 启动它。",
+                    install.app_id,
+                    install.manifest.display()
+                ),
+            );
+        }
+    }
 
     // 二游：先拉起官方启动器，等它出现后再部署（部署完成即注入生效）。
     // Steam 不走这条：它的启动顺序是"先部署 → 再 steam -applaunch → 等游戏"。
@@ -1075,20 +1194,45 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     if options.skip_launch {
         summary.steps.push("launch:skipped".to_owned());
     } else {
-        // Steam 游戏要**先部署再让 Steam 拉起**（游戏进程一启动就加载代理 DLL，
-        // 部署晚了注入就错过窗口）；二游走的是"先起官方启动器再部署"那条路。
-        if plan.launcher_process_name.is_none() || plan.launch_mode.eq_ignore_ascii_case("Steam") {
-            let child = launcher_win::spawn_process(
-                &plan.launch_executable,
-                &plan.launch_arguments,
-                Some(&plan.game_directory),
-                false,
-            )?;
-            child.forget();
-            summary.launched = true;
-            summary
-                .steps
-                .push(format!("launch:{}", process_name(&plan.launch_executable)));
+        // Steam/Epic 都要**先部署再让平台拉起**（游戏进程一启动就加载代理 DLL，部署晚了
+        // 注入就错过窗口）；二游走的是"先起官方启动器再部署"那条路。
+        // 启动失败必须把部署撤掉：否则游戏没起来、目录里却留着注入文件。
+        let launched: Result<()> = (|| {
+            if let Some(uri) = plan.launch_uri.as_deref() {
+                launcher_win::open_target(uri)?;
+                summary.launched = true;
+                summary.steps.push("launch:epic".to_owned());
+            } else if plan.launcher_process_name.is_none()
+                || plan.launch_mode.eq_ignore_ascii_case("Steam")
+            {
+                let child = launcher_win::spawn_process(
+                    &plan.launch_executable,
+                    &plan.launch_arguments,
+                    Some(&plan.game_directory),
+                    false,
+                )?;
+                child.forget();
+                summary.launched = true;
+                summary
+                    .steps
+                    .push(format!("launch:{}", process_name(&plan.launch_executable)));
+            }
+            Ok(())
+        })();
+        if let Err(error) = launched {
+            let _ = restore::restore(
+                &mut state,
+                &ops,
+                &restore::RestoreOptions {
+                    automatic: true,
+                    ..restore::RestoreOptions::default()
+                },
+                &|_stopped| Ok(()),
+                &[],
+            );
+            return Err(Error::invalid(format!(
+                "启动游戏失败（部署已回滚）：{error}"
+            )));
         }
 
         let spec = session_spec(plan);
@@ -1183,6 +1327,9 @@ mod tests {
 
     fn profile(game: &Path) -> GameProfile {
         let mut profile = GameProfile::new("wuthering", "鸣潮", game.to_path_buf());
+        // 二游走官方启动器，是 Direct；`GameProfile::new` 的缺省是 Steam（旧档案兼容），
+        // 测试里必须写清楚，否则会撞上"Steam 档案缺 AppID"的拒绝。
+        profile.launch_mode = "Direct".to_owned();
         profile.config_dir = Some(
             game.join(r"Project\Saved\Config\Windows")
                 .to_string_lossy()
@@ -1230,6 +1377,109 @@ mod tests {
         std::fs::remove_file(root.join("bin/version.dll")).expect("删代理");
         let error = plan(&profile(&game), &paths).expect_err("缺代理应拒绝");
         assert!(error.to_string().contains("bin"), "{error}");
+    }
+
+    #[test]
+    fn steam_profiles_launch_through_steam_with_derived_arguments() {
+        let (sandbox, game, _root, paths) = fixture("steam-plan");
+        write(&sandbox.0, "Steam.exe", b"MZ");
+        let executable = sandbox.0.join("Steam.exe");
+        let mut steam = profile(&game);
+        steam.launch_mode = "Steam".to_owned();
+        steam.app_id = Some("4115450".to_owned());
+        steam.launch_executable = Some(executable.display().to_string());
+        steam.launcher_process_name = Some("steam.exe".to_owned());
+
+        let planned = plan(&steam, &paths).expect("Steam 档案应能规划");
+        assert_eq!(planned.launch_executable, executable);
+        assert_eq!(
+            planned.launch_arguments,
+            vec!["-applaunch".to_owned(), "4115450".to_owned()],
+            "Steam 的启动参数只能由 AppID 得出"
+        );
+        assert_eq!(planned.launcher_process_name.as_deref(), Some("steam.exe"));
+    }
+
+    #[test]
+    fn steam_profiles_without_an_app_id_are_refused() {
+        let (sandbox, game, _root, paths) = fixture("steam-no-appid");
+        write(&sandbox.0, "Steam.exe", b"MZ");
+        let executable = sandbox.0.join("Steam.exe");
+        let mut steam = profile(&game);
+        steam.launch_mode = "Steam".to_owned();
+        steam.launch_executable = Some(executable.display().to_string());
+
+        let error = plan(&steam, &paths).expect_err("缺 AppID 必须拒绝，不能直接起 EXE");
+        assert!(error.to_string().contains("AppID"), "{error}");
+    }
+
+    #[test]
+    fn epic_profiles_launch_through_the_launcher_uri() {
+        let (_sandbox, game, _root, paths) = fixture("epic-plan");
+        let mut epic = profile(&game);
+        epic.launch_mode = "Epic".to_owned();
+        epic.epic_app_name = Some("Sakura".to_owned());
+
+        let planned = plan(&epic, &paths).expect("Epic 档案应能规划");
+        assert_eq!(
+            planned.launch_uri.as_deref(),
+            Some("com.epicgames.launcher://apps/Sakura?action=launch&silent=true")
+        );
+        assert_eq!(
+            planned.launch_executable, planned.render_executable,
+            "Epic 没有单独的启动 EXE"
+        );
+        assert!(
+            planned.launcher_process_name.is_none(),
+            "不能把 Epic 启动器当成游戏进程"
+        );
+        assert!(planned.launch_arguments.is_empty());
+    }
+
+    #[test]
+    fn epic_profiles_without_an_app_name_are_refused() {
+        let (_sandbox, game, _root, paths) = fixture("epic-no-name");
+        let mut epic = profile(&game);
+        epic.launch_mode = "Epic".to_owned();
+
+        let error = plan(&epic, &paths).expect_err("缺 AppName 必须拒绝");
+        assert!(error.to_string().contains("AppName"), "{error}");
+    }
+
+    #[test]
+    fn epic_games_never_treat_the_epic_launcher_as_their_process() {
+        let mut epic = GameProfile::new(
+            "direct-0123456789abcdef0123456789abcdef",
+            "Sakura",
+            PathBuf::from(r"C:\Epic\Sakura"),
+        );
+        epic.launch_mode = "Epic".to_owned();
+        epic.epic_app_name = Some("Sakura".to_owned());
+        epic.render_executable = Some(r"Binaries\Win64\Sakura-Win64-Shipping.exe".to_owned());
+        // 旧档案可能留着启动 EXE：Epic 模式下也不能把它算成游戏进程。
+        epic.launch_executable = Some(
+            r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
+                .to_owned(),
+        );
+        epic.launcher_process_name = Some("EpicGamesLauncher.exe".to_owned());
+
+        let filter = game_processes(&epic);
+        assert!(
+            filter
+                .executables
+                .iter()
+                .all(|path| !path.to_string_lossy().to_lowercase().contains("epicgames")),
+            "不能把 Epic 启动器当作目标：{:?}",
+            filter.executables
+        );
+        assert!(
+            filter
+                .names
+                .iter()
+                .all(|name| !name.to_lowercase().contains("epic")),
+            "也不能按名字匹配 Epic 启动器：{:?}",
+            filter.names
+        );
     }
 
     #[test]

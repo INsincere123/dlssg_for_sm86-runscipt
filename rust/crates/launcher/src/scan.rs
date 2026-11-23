@@ -238,25 +238,29 @@ pub fn scan(launcher_root: &Path, existing: &[(String, PathBuf)]) -> ScanResult 
                     profile.proxy_index =
                         crate::settings_form::SettingsForm::recommended_proxy(&id, &game.directory);
                     if let Some(app_id) = game.app_id.clone() {
-                        match launcher_core::steam::launch_arguments(&app_id) {
-                            Ok(arguments) => {
-                                profile.app_id = Some(app_id);
-                                profile.launch_arguments = Some(arguments);
-                                // Steam 游戏必须用 steam.exe 启动；直接用游戏 EXE 会绕开 Steam。
-                                if let Some(steam) =
-                                    launcher_win::registry::steam_install_directory()
-                                {
-                                    let executable = steam.join("Steam.exe");
-                                    if executable.is_file() {
-                                        profile.launch_executable =
-                                            Some(executable.display().to_string());
-                                        profile.launcher_process_name =
-                                            Some("steam.exe".to_owned());
-                                    }
-                                }
-                            }
-                            Err(_) => continue,
-                        }
+                        let Ok(arguments) = launcher_core::steam::launch_arguments(&app_id) else {
+                            continue;
+                        };
+                        // Steam 游戏必须用 steam.exe 启动；直接用游戏 EXE 会绕开 Steam
+                        // （Steamworks 游戏还会让 Steam 重启自己，注入窗口直接错过）。
+                        // 找不到 Steam.exe 时不要生成一条"写着 Steam 却直接起 EXE"的档案。
+                        let Some(executable) = platform_launcher(&game.directory) else {
+                            result.ambiguous.push(AmbiguousGame {
+                                name: game.name.clone(),
+                                directory: game.directory.clone(),
+                                source: game.source.clone(),
+                                reason: "是 Steam 游戏，但找不到 Steam.exe，无法按 Steam 启动"
+                                    .to_owned(),
+                            });
+                            continue;
+                        };
+                        profile.app_id = Some(app_id);
+                        profile.launch_arguments = Some(arguments);
+                        profile.launch_executable = Some(executable.display().to_string());
+                        profile.launcher_process_name = Some("steam.exe".to_owned());
+                    } else if let Some(app_name) = game.epic_app_name.clone() {
+                        // Epic 游戏由 Epic 启动器按 URI 拉起，档案只需要 AppName。
+                        profile.epic_app_name = Some(app_name);
                     }
                     result.ready.push(ReadyGame {
                         profile,
@@ -271,10 +275,22 @@ pub fn scan(launcher_root: &Path, existing: &[(String, PathBuf)]) -> ScanResult 
                         "没找到 x64 游戏程序".to_owned()
                     } else {
                         // 置信度只在内部用来判断"能不能直接加"，不显示分数。
-                        format!(
+                        let base = format!(
                             "有 {} 个候选，需要手动确认渲染程序",
                             outcome.candidates.len()
-                        )
+                        );
+                        // 平台游戏确认完就走平台启动（Steam 的 AppID / Epic 的 AppName 都从清单来）。
+                        let platform = if game.app_id.is_some() {
+                            Some("Steam")
+                        } else if game.epic_app_name.is_some() {
+                            Some("Epic")
+                        } else {
+                            None
+                        };
+                        match platform {
+                            Some(name) => format!("{base}（添加后按 {name} 启动）"),
+                            None => base,
+                        }
                     },
                 }),
             },
@@ -310,6 +326,24 @@ fn auto_add_evidence(candidate: &launcher_core::discovery::RendererCandidate) ->
         }
     }
     None
+}
+
+/// Steam 游戏要用的 `Steam.exe`：先注册表（主库），再从游戏目录自己的库推。
+///
+/// 注册表读不到 `SteamPath` 时（便携版、换过盘），游戏目录自己在
+/// `<库>\steamapps\common\` 下面，库根就有 `Steam.exe`。两个来源都没有时返回 `None`：
+/// 宁可不加，也不能生成一条"写着 Steam 却直接起 EXE"的档案。
+fn platform_launcher(directory: &Path) -> Option<PathBuf> {
+    let from_registry =
+        launcher_win::registry::steam_install_directory().map(|steam| steam.join("Steam.exe"));
+    platform_launcher_with(from_registry, directory)
+}
+
+fn platform_launcher_with(from_registry: Option<PathBuf>, directory: &Path) -> Option<PathBuf> {
+    from_registry.filter(|path| path.is_file()).or_else(|| {
+        launcher_core::steam::install_of_directory(directory)
+            .and_then(|install| launcher_core::steam::steam_executable_for(&install.steamapps))
+    })
 }
 
 /// Steam 游戏用 `steam-<AppID>`，其它用目录推导的稳定 ID。
@@ -372,6 +406,7 @@ mod tests {
             directory: PathBuf::from(r"D:\Steam\steamapps\common\BlackMythWukong"),
             source: "Steam".to_owned(),
             app_id: Some("2358720".to_owned()),
+            epic_app_name: None,
             launch_mode: "Steam".to_owned(),
         };
         assert_eq!(profile_id(&game), "steam-2358720");
@@ -384,6 +419,7 @@ mod tests {
             directory: PathBuf::from(r"C:\Games\PBZ"),
             source: "GOG".to_owned(),
             app_id: None,
+            epic_app_name: None,
             launch_mode: "Direct".to_owned(),
         };
         let id = profile_id(&game);
@@ -524,5 +560,44 @@ mod tests {
         assert!(text.contains("可添加 0 个"), "{text}");
         assert!(text.contains("需要确认 1 个"), "{text}");
         assert!(text.contains("没有 GOG 记录"), "{text}");
+    }
+
+    #[test]
+    fn a_steam_game_falls_back_to_the_library_steam_exe() {
+        let root =
+            std::env::temp_dir().join(format!("dlssg-scan-{}-steam-launcher", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let steamapps = root.join("steamapps");
+        let game = steamapps.join("common").join("PBZ");
+        std::fs::create_dir_all(&game).expect("游戏目录");
+        std::fs::write(
+            steamapps.join("appmanifest_4115450.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"4115450\"\n\t\"name\"\t\t\"Phantom Blade Zero\"\n\
+             \t\"installdir\"\t\t\"PBZ\"\n}\n",
+        )
+        .expect("清单");
+        std::fs::write(root.join("Steam.exe"), b"MZ").expect("Steam.exe");
+
+        // 注册表没给：从游戏自己的库推出来
+        let found = platform_launcher_with(None, &game).expect("库根应能找到 Steam.exe");
+        assert!(found.ends_with("Steam.exe"), "{}", found.display());
+        // 注册表给了一个不存在的路径：不能当成可用
+        assert_eq!(
+            platform_launcher_with(Some(root.join("nope.exe")), &game),
+            Some(found.clone())
+        );
+        // 注册表给的是真文件：优先用它
+        let other = root.join("Other.exe");
+        std::fs::write(&other, b"MZ").expect("另一个启动程序");
+        assert_eq!(
+            platform_launcher_with(Some(other.clone()), &game),
+            Some(other)
+        );
+        // 普通目录、两个来源都没有：必须报 None，不能编一个启动方式
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).expect("普通目录");
+        assert!(platform_launcher_with(None, &plain).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
