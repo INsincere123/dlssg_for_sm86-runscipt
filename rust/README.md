@@ -104,6 +104,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
   点别处也算保存。只改偏好里的 `name`——id、目录、部署记录都不动，所以引擎在跑或有未完成
   部署时也能改；名字只影响 `<根>\配置\<游戏名>\Engine.ini` 这条兜底配置源（显式写过
   `config_source` 的档案不受影响），空白名字或超过 60 字会被拒绝并保留原名。
+- **切换显卡**（底栏「添加游戏」后面）：改系统里显卡的显示名称，只改注册表的 `DeviceDesc`，
+  不动驱动、不改变真实能力。窗口里设备只读显示，目标名可编辑；**只支持单张 NVIDIA 显卡**
+  （核显与 N 卡的 HD 音频功能都忽略，多张直接报错不猜），默认填 `NVIDIA GeForce RTX 5070`，
+  之后用上次成功切换的名字。状态备份与 PS 工具同路径同字段
+  （`%ProgramData%\Toggle-NvidiaDeviceName\state.json`），两个工具可以互相还原；
+  没有备份时按驱动 `DriverDesc` 兜底还原。改名与还原都要重启才生效：**本次运行里改成功后**
+  窗口里出现红字「立即重启电脑」（切换和还原都出现，重启电脑或重开启动器后消失）；
+  如果随后又改回**本次运行开始时的名字**（净改动为零），提示与按钮直接消失，不用重启。
+  点它先二次确认，再 `shutdown /r /t 10`；引擎正在跑（部署/恢复/游戏）时改名与重启都置灰。
 
 - **扫描游戏**：只扫 Steam / GOG / Epic 的平台记录与注册表（不翻全盘）。有证据的
   （UE 打包本体或同目录自带 DLSS-G 组件、或鸣潮/异环的内置模板）直接加进列表，
@@ -117,6 +126,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 - **画质**：引擎版本（可重新识别 / 手动校准）+ 4 档画质 + `05-自定义`；
   只在画质视图保存时才改配置源，配置源不存在会直接拒绝保存。
 - 启动/恢复都交给提权后的引擎子进程；恢复**不显示进度**，结束后弹结果卡片。
+- **托盘**：左键单击图标 = 打开窗口，右键 = 菜单（显示窗口 / 打开日志目录 / 退出）。
+  窗口的关闭按钮只是**收进托盘**（进程留着，左键能再打开）；托盘菜单的「退出」是**直接结束进程**
+  （界面没有未落盘的状态，偏好改完即写）。启动游戏交接后窗口自动收进托盘，托盘悬停提示当前状态。
 
 ## 调试与验收入口
 
@@ -125,6 +137,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 DlssgLauncher.exe --engine check --report out.json
 DlssgLauncher.exe --engine run --game <id> --root <运行根> --report out.json
 DlssgLauncher.exe --engine restore --game <id> --root <运行根> --report out.json
+
+# 显卡名称：只读状态 / 切换 / 还原 / 清旧备份（写操作必须提权；界面自己会拉起提权子进程）
+DlssgLauncher.exe --gpu status  --report out.json
+DlssgLauncher.exe --gpu apply   --name "NVIDIA GeForce RTX 5070" --report out.json
+DlssgLauncher.exe --gpu restore --report out.json
+DlssgLauncher.exe --gpu reset-state --report out.json
 
 # 界面自检（开窗 hold 毫秒后自动关闭，写报告）
 DlssgLauncher.exe --ui-selftest 2200 out.json
@@ -141,6 +159,8 @@ cd rust
 cargo test -p launcher-core --lib unreal -- --ignored --nocapture probe_real_game
 # 平台扫描：读本机 Steam/GOG/Epic 记录与注册表（内置游戏带浅层兜底），打印可添加/待确认清单
 cargo test -p launcher --bin DlssgLauncher scan -- --ignored --nocapture probe_real_scan
+# 显卡名称：只读枚举本机 NVIDIA 显卡、状态备份与窗口初始按钮，不写注册表
+cargo test -p launcher gpu -- --ignored --nocapture probe_real_gpu
 ```
 
 ## 与现有实现的关系

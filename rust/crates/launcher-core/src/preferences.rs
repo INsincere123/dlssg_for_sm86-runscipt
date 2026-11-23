@@ -114,6 +114,14 @@ impl GameProfile {
     }
 }
 
+/// 本机显卡相关的偏好（只记"上次成功切换用的名字"，不含任何备份数据）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuPreference {
+    /// 上次成功切换过的目标显示名；第一次用没有值，由界面填默认的 5070。
+    #[serde(default)]
+    pub target_name: String,
+}
+
 /// 偏好文件内容。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
@@ -124,6 +132,9 @@ pub struct Preferences {
     pub version: u32,
     #[serde(default)]
     pub games: Vec<GameProfile>,
+    /// 显卡名称切换的本机记忆；没有就是"还没成功切换过"。
+    #[serde(default)]
+    pub gpu: Option<GpuPreference>,
 }
 
 fn default_version() -> u32 {
@@ -136,6 +147,7 @@ impl Default for Preferences {
             version: SCHEMA_VERSION,
             launcher_root: None,
             games: Vec::new(),
+            gpu: None,
         }
     }
 }
@@ -307,5 +319,27 @@ mod tests {
             preferences.find("b").map(|item| item.name.as_str()),
             Some("B")
         );
+    }
+
+    #[test]
+    fn gpu_memory_round_trips_and_old_files_still_load() {
+        let path = scratch("gpu");
+        let mut preferences = Preferences::default();
+        assert!(preferences.gpu.is_none(), "第一次用没有记忆");
+        preferences.gpu = Some(GpuPreference {
+            target_name: "NVIDIA GeForce RTX 5070".to_owned(),
+        });
+        save(&path, &preferences).expect("保存");
+        let loaded = load(&path).expect("读取");
+        assert_eq!(
+            loaded.gpu.as_ref().map(|gpu| gpu.target_name.as_str()),
+            Some("NVIDIA GeForce RTX 5070")
+        );
+
+        // 没有 gpu 字段的旧文件照常读（不能因为加字段就打不开偏好）
+        let old = scratch("gpu-legacy");
+        std::fs::write(&old, r#"{"version":1,"games":[]}"#).expect("写");
+        let loaded = load(&old).expect("旧文件");
+        assert!(loaded.gpu.is_none());
     }
 }

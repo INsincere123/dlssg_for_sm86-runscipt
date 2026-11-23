@@ -136,6 +136,7 @@ unsafe extern "system" {
         user: *mut FileTime,
     ) -> i32;
     fn GetCurrentProcessId() -> u32;
+    fn GetCurrentProcess() -> Handle;
     fn GetConsoleWindow() -> Handle;
     fn CreateProcessW(
         application: *const u16,
@@ -152,6 +153,18 @@ unsafe extern "system" {
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
     fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> Handle;
     fn TerminateProcess(process: Handle, code: u32) -> i32;
+}
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+    fn GetTokenInformation(
+        token: Handle,
+        class: u32,
+        info: *mut c_void,
+        length: u32,
+        needed: *mut u32,
+    ) -> i32;
 }
 
 fn last_error() -> Error {
@@ -834,14 +847,30 @@ impl Clock for SystemClock {
 }
 
 /// 当前进程是否处于高完整性（提权）上下文。
+///
+/// 用令牌里的 `TokenElevation` 判断，不启动子进程：以前跑 `net session`，
+/// 在 `windows` 子系统的提权子进程里会闪一下控制台窗口
+/// （显卡改名正是跑在那条路径上），而且 Server 服务停掉时会误报未提权。
 pub fn is_elevated() -> bool {
-    std::process::Command::new("cmd")
-        .args(["/c", "net", "session"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION: u32 = 20;
+    let mut token: Handle = 0;
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return false;
+    }
+    let mut elevated: u32 = 0;
+    let mut needed: u32 = 0;
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TOKEN_ELEVATION,
+            (&mut elevated as *mut u32).cast::<c_void>(),
+            4,
+            &mut needed,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    ok != 0 && elevated != 0
 }
 
 /// 用系统默认程序打开一个路径（日志目录、偏好文件等）。

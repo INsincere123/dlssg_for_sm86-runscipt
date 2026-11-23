@@ -10,6 +10,7 @@
 mod about;
 mod add_game;
 mod engine;
+mod gpu;
 mod handoff;
 mod rename;
 mod restore_result;
@@ -146,7 +147,7 @@ impl Preview {
                         r"D:\SteamLibrary\steamapps\common\NBA 2K27",
                     ),
                     source: "Steam 库 D:\\SteamLibrary".to_owned(),
-                    reason: "有 2 个候选但没有唯一可信项（最高 0 分）".to_owned(),
+                    reason: "有 2 个候选，需要手动确认渲染程序".to_owned(),
                 },
                 scan::AmbiguousGame {
                     name: "Risk of Rain 2".to_owned(),
@@ -176,6 +177,10 @@ struct Arguments {
     skip_launch: bool,
     root: Option<PathBuf>,
     preferences: Option<PathBuf>,
+    /// 显卡名称切换子命令（`apply` / `restore` / `reset-state` / `status`）。
+    gpu: Option<String>,
+    /// 显卡名称切换的目标名（`--gpu apply` 用）。
+    name: Option<String>,
     /// 测试辅助：什么都不做，睡这么多毫秒后退出（扮演"假游戏进程"）。
     sleep_ms: u64,
 }
@@ -199,6 +204,8 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
         skip_launch: false,
         root: None,
         preferences: None,
+        gpu: None,
+        name: None,
         sleep_ms: 0,
     };
     let mut index = 0;
@@ -206,6 +213,14 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
         match arguments[index].as_str() {
             "--engine" => {
                 parsed.engine = Some(next_value(arguments, index, "--engine")?);
+                index += 2;
+            }
+            "--gpu" => {
+                parsed.gpu = Some(next_value(arguments, index, "--gpu")?);
+                index += 2;
+            }
+            "--name" => {
+                parsed.name = Some(next_value(arguments, index, "--name")?);
                 index += 2;
             }
             "--report" => {
@@ -268,17 +283,22 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
 
 fn run() -> Result<u8, Failure> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    // 图形入口自己解析参数，绝不落到引擎的参数校验里。
+    // 图形入口自己解析参数，绝不落到引擎/显卡的参数校验里。
     if !arguments
         .iter()
-        .any(|value| value == "--engine" || value == "--version")
+        .any(|value| value == "--engine" || value == "--version" || value == "--gpu")
     {
         return run_gui(&arguments);
     }
     let parsed = parse(&arguments)?;
+    if let Some(action) = parsed.gpu.clone() {
+        return gpu_command(&parsed, &action);
+    }
     let Some(command) = parsed.engine.as_deref() else {
         return Err(Failure::Usage(
-            "用法：--engine check|run|restore [--game <id>] [--report <json>]".to_owned(),
+            "用法：--engine check|run|restore [--game <id>] [--report <json>]；\
+             或 --gpu status|apply|restore|reset-state [--name <名称>] [--report <json>]"
+                .to_owned(),
         ));
     };
     match command {
@@ -336,6 +356,25 @@ fn run() -> Result<u8, Failure> {
         }
         other => Err(Failure::Usage(format!("未知子命令：--engine {other}"))),
     }
+}
+
+/// `--gpu <动作>`：显卡名称切换。
+///
+/// **成功与失败都要写报告**：这个子进程是 `windows` 子系统、提权后没有控制台，
+/// 界面（和被拉起的父进程）只能从报告里拿结果。退出码只是给命令行排查用的。
+fn gpu_command(parsed: &Arguments, action: &str) -> Result<u8, Failure> {
+    let Some(kind) = gpu::Action::parse(action) else {
+        return Err(Failure::Usage(format!(
+            "未知的 --gpu 子命令：{action}（可用：status / apply / restore / reset-state）"
+        )));
+    };
+    let report = gpu::execute(kind, parsed.name.as_deref());
+    write_report(parsed.report.as_deref(), &report.to_json());
+    Ok(if report.ok {
+        EXIT_OK
+    } else {
+        EXIT_CHILD_FAILED
+    })
 }
 
 /// `--engine stop`：强行结束该游戏的进程，然后（必要时）恢复原状。

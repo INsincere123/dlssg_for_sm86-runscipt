@@ -22,6 +22,8 @@ pub(crate) const KEY_READ: u32 = 0x0002_0019;
 const KEY_WOW64_64KEY: u32 = 0x0100;
 const REG_SZ: u32 = 1;
 const REG_EXPAND_SZ: u32 = 2;
+const REG_DWORD: u32 = 4;
+const KEY_SET_VALUE: u32 = 0x0002;
 const ERROR_SUCCESS: i32 = 0;
 const ERROR_NO_MORE_ITEMS: i32 = 259;
 
@@ -82,6 +84,36 @@ pub(crate) fn open(root: Handle, sub_key: &str) -> Option<Handle> {
     None
 }
 
+/// 以**可写**权限打开子键。
+///
+/// 只读句柄上调 `RegSetValueExW` 会拿到 `ERROR_ACCESS_DENIED(5)`——这与 ACL 无关，
+/// 是句柄没申请 `KEY_SET_VALUE`（真机 2026-11-23 点「恢复原名称」时就这么失败的）。
+pub(crate) fn open_for_write(root: Handle, sub_key: &str) -> Option<Handle> {
+    let name = wide(sub_key);
+    for access in [
+        KEY_READ | KEY_SET_VALUE | KEY_WOW64_64KEY,
+        KEY_READ | KEY_SET_VALUE,
+    ] {
+        let mut handle: Handle = 0;
+        let status = unsafe { RegOpenKeyExW(root, name.as_ptr(), 0, access, &mut handle) };
+        if status == ERROR_SUCCESS && handle != 0 {
+            return Some(handle);
+        }
+    }
+    None
+}
+
+/// 只探测"这个键能不能以写权限打开"（**不写任何值**），用于状态自查。
+pub(crate) fn can_write(root: Handle, sub_key: &str) -> bool {
+    match open_for_write(root, sub_key) {
+        Some(handle) => {
+            unsafe { RegCloseKey(handle) };
+            true
+        }
+        None => false,
+    }
+}
+
 pub(crate) fn read_string(root: Handle, sub_key: &str, value_name: &str) -> Option<String> {
     let handle = open(root, sub_key)?;
     let name = wide(value_name);
@@ -123,6 +155,27 @@ pub(crate) fn read_string(root: Handle, sub_key: &str, value_name: &str) -> Opti
         .collect();
     let text = String::from_utf16_lossy(&units);
     (!text.trim().is_empty()).then(|| text.trim().to_owned())
+}
+
+/// 读一个 `REG_DWORD`；类型不对或不存在时返回 `None`。
+pub(crate) fn read_dword(root: Handle, sub_key: &str, value_name: &str) -> Option<u32> {
+    let handle = open(root, sub_key)?;
+    let name = wide(value_name);
+    let mut kind: u32 = 0;
+    let mut data: u32 = 0;
+    let mut size: u32 = 4;
+    let status = unsafe {
+        RegQueryValueExW(
+            handle,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut kind,
+            (&mut data as *mut u32).cast::<u8>(),
+            &mut size,
+        )
+    };
+    unsafe { RegCloseKey(handle) };
+    (status == ERROR_SUCCESS && kind == REG_DWORD && size == 4).then_some(data)
 }
 
 pub(crate) fn sub_keys(root: Handle, sub_key: &str) -> Vec<String> {
@@ -438,8 +491,11 @@ pub(crate) fn write_string(
     value_name: &str,
     value: &str,
 ) -> launcher_core::Result<()> {
-    let handle = open(root, sub_key)
-        .ok_or_else(|| launcher_core::Error::invalid(format!("注册表键不存在：{sub_key}")))?;
+    let handle = open_for_write(root, sub_key).ok_or_else(|| {
+        launcher_core::Error::invalid(format!(
+            "注册表键打不开（需要写权限）：HKLM\\{sub_key}；请确认以管理员身份运行"
+        ))
+    })?;
     let name = wide(value_name);
     let mut data: Vec<u8> = value
         .encode_utf16()
@@ -458,8 +514,13 @@ pub(crate) fn write_string(
     };
     unsafe { RegCloseKey(handle) };
     if status != ERROR_SUCCESS {
+        let hint = match status {
+            5 => "（拒绝访问：键的 ACL 不允许写，或进程不是管理员）",
+            2 => "（键或值不存在）",
+            _ => "",
+        };
         return Err(launcher_core::Error::invalid(format!(
-            "写入注册表失败（{sub_key}\\{value_name}）：错误码 {status}"
+            "写入注册表失败（HKLM\\{sub_key}\\{value_name}）：错误码 {status}{hint}"
         )));
     }
     Ok(())

@@ -3,9 +3,26 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // 单会话是机器级互斥：涉及会话锁的用例必须串行。
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+/// 等机器级的单会话锁空出来（最多 30 秒）。
+///
+/// 这把锁不只测试在用：用户开着的启动器窗口、真在跑的游戏会话都会占着它
+/// （`Global\DlssgSession`）。占着时引擎会按设计返回 `session-busy`，
+/// 用例若直接开跑就会把"别人正在跑游戏"误判成失败（真机 2026-11-23 遇到过）。
+fn wait_for_free_session() {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while launcher_win::session_active() {
+        assert!(
+            Instant::now() < deadline,
+            "等待单会话锁超时：本机还有引擎或游戏会话在跑，稍后重试"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_DlssgLauncher"))
@@ -192,6 +209,7 @@ fn dry_run_reports_the_plan_without_touching_anything() {
     let _guard = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
     let (root, preferences) = engine_fixture("plan");
     let report = root.join("plan.json");
     let status = run(&[
@@ -235,6 +253,7 @@ fn deploy_and_restore_a_fake_game_without_launching() {
     let _guard = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
     let (root, preferences) = engine_fixture("deploy");
     let engine = root.join("game/Project/Saved/Config/Windows/Engine.ini");
     let report = root.join("run.json");
@@ -282,6 +301,7 @@ fn launch_wait_and_restore_a_fake_game() {
     let _guard = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
     let (root, preferences) = engine_fixture("launch");
     // 用自身扮演游戏进程：--sleep-ms 让它活 1200ms 再退出。
     let self_exe = binary();
@@ -349,6 +369,7 @@ fn second_session_is_refused_while_the_first_holds_the_lock() {
     let _guard = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
     let (root, preferences) = engine_fixture("session");
     let root_arg = root.to_string_lossy().into_owned();
     let preferences_arg = preferences.to_string_lossy().into_owned();
@@ -411,6 +432,7 @@ fn running_launcher_is_detected_and_reported() {
     let _guard = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
     let (root, preferences) = engine_fixture("reuse");
     let root_arg = root.to_string_lossy().into_owned();
     let preferences_arg = preferences.to_string_lossy().into_owned();

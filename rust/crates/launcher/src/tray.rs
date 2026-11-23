@@ -1,9 +1,10 @@
-//! 托盘图标：交接后窗口可以隐藏，托盘仍能显示状态并提供入口。
+//! 托盘图标：窗口隐藏后仍能从托盘回到界面，并提供日志与退出入口。
 //!
-//! 托盘进程本身是 `asInvoker`，"恢复原状"只负责再拉起一次提权子进程。
+//! 交互按最常规的桌面习惯来：**左键单击 = 打开窗口**，**右键 = 菜单**
+//! （`menu_on_left_click(false)`，右键菜单由系统负责弹）。托盘进程本身是 `asInvoker`。
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
+use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// 用户在托盘里点了什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,8 @@ impl Tray {
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            // 左键不弹菜单（留给"打开窗口"），右键照旧由系统弹出菜单。
+            .with_menu_on_left_click(false)
             .with_tooltip(title)
             .with_icon(make_icon())
             .build()
@@ -47,7 +50,7 @@ impl Tray {
         })
     }
 
-    /// 取出一次菜单动作（每次界面帧调用一次）。
+    /// 取出一次动作（每帧调用一次）：菜单点击优先，其次是左键单击/双击图标。
     pub fn poll(&self) -> Option<Action> {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let id = event.id;
@@ -59,6 +62,23 @@ impl Tray {
             }
             if id == self.quit.id() {
                 return Some(Action::Quit);
+            }
+        }
+        // 左键按下/抬起都会来事件，只认抬起，避免一次点击触发两次。
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            let left_click = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+            if left_click {
+                return Some(Action::Show);
             }
         }
         None

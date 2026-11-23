@@ -270,10 +270,10 @@ pub fn scan(launcher_root: &Path, existing: &[(String, PathBuf)]) -> ScanResult 
                     reason: if outcome.candidates.is_empty() {
                         "没找到 x64 游戏程序".to_owned()
                     } else {
+                        // 置信度只在内部用来判断"能不能直接加"，不显示分数。
                         format!(
-                            "有 {} 个候选但没有唯一可信项（最高 {} 分）",
-                            outcome.candidates.len(),
-                            outcome.candidates[0].score
+                            "有 {} 个候选，需要手动确认渲染程序",
+                            outcome.candidates.len()
                         )
                     },
                 }),

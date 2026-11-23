@@ -49,9 +49,9 @@ pub struct AddGameState {
     pub directory: String,
     pub host: HostChoice,
     pub candidates: Vec<RendererCandidate>,
-    /// 用户选中的候选；扫描结束后默认取可信项。
+    /// 用户选中的候选；扫描结束后按内部置信度默认预选一个。
     pub selected: Option<usize>,
-    /// 是否有可信候选（唯一且分数 ≥60）。
+    /// 内部判定：置信度是否够高（唯一且分数 ≥60）；分数本身不显示给用户。
     pub trusted: bool,
     /// 扫描过程中或结果提示。
     pub message: String,
@@ -81,20 +81,21 @@ impl AddGameState {
         !self.directory.trim().is_empty() && path.is_dir()
     }
 
-    /// 消费一次扫描结果：填候选、按可信规则预选、写提示。
+    /// 消费一次扫描结果：填候选、按内部置信度预选、写提示。
     pub fn apply_scan(&mut self, outcome: DiscoveryOutcome) {
         self.candidates = outcome.candidates;
         self.trusted = trusted_renderer(&self.candidates).is_some();
         self.selected = if self.trusted { Some(0) } else { None };
+        // 置信度只影响"要不要替用户预选"，不进提示文案。
         self.message = if self.candidates.is_empty() {
             "没有找到可用的 x64 程序；请确认目录，或稍后手动指定。".to_owned()
         } else if self.trusted {
-            format!("找到 {} 个候选，已选中可信项。", self.candidates.len())
-        } else {
             format!(
-                "找到 {} 个候选，但没有唯一可信项，请自行确认。",
+                "找到 {} 个候选，已自动预选第一个；不对就手动选。",
                 self.candidates.len()
             )
+        } else {
+            format!("找到 {} 个候选，请手动选择一个。", self.candidates.len())
         };
         if !outcome.issues.is_empty() {
             self.message
@@ -180,7 +181,7 @@ mod tests {
         ]));
         assert!(state.trusted);
         assert_eq!(state.selected, Some(0));
-        assert!(state.message.contains("可信"));
+        assert!(state.message.contains("自动预选"));
 
         let (mut tied, _directory2) = state_with_dir("tied");
         tied.apply_scan(outcome(vec![
@@ -189,7 +190,7 @@ mod tests {
         ]));
         assert!(!tied.trusted, "同分不可信");
         assert_eq!(tied.selected, None);
-        assert!(tied.message.contains("自行确认"));
+        assert!(tied.message.contains("手动选择"));
     }
 
     #[test]

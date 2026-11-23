@@ -46,6 +46,8 @@ const RESTORE_TIMEOUT_SECONDS: u64 = 180;
 const RUN_GRACE_SECONDS: u64 = 6;
 /// 行状态轮询间隔（游戏进程、部署记录、会话锁都可能被引擎或用户改动）。
 const REFRESH_INTERVAL_MS: u64 = 900;
+/// 等提权子进程回报告的上限：超时就不再多等，提示重试。
+const GPU_TIMEOUT_SECONDS: u64 = 60;
 
 /// 正在等结果的动作。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,14 +149,21 @@ pub struct LauncherApp {
     scan_job: Option<std::thread::JoinHandle<crate::scan::ScanResult>>,
     /// 扫描结果窗口（有值时显示）。
     scan_report: Option<crate::scan::ScanResult>,
-    /// 已把工作交给引擎：本帧结束后关闭界面。
-    quit_after_frame: bool,
-    /// 允许真正关闭（托盘"退出"或自检结束）；否则关闭按钮只隐藏到托盘。
-    allow_close: bool,
+
     /// 添加游戏对话框（M4-05）。
     add_game: Option<crate::add_game::AddGameState>,
     /// 正在改名的行（双击标题进入；回车保存、Esc 放弃）。
     rename: Option<crate::rename::RenameState>,
+    /// 切换显卡名称窗口（有值就显示）。
+    gpu: Option<crate::gpu::Panel>,
+    /// 本次运行里成功改过显卡名称（切换或还原）：窗口里据此显示红字重启按钮。
+    ///
+    /// 又改回本次运行开始时的名字就不显示——净改动为零，重启没有意义。
+    gpu_change: Option<crate::gpu::Change>,
+    /// 本次运行第一次成功改动之前的名字（判断"是否已经改回原样"）。
+    gpu_changes: crate::gpu::SessionChanges,
+    /// 等提权子进程的起始时刻（超时后不再傻等）。
+    gpu_busy_since: Option<Instant>,
     /// 关于对话框（M4-06）。
     show_about: bool,
     /// 启动器根目录（日志与记录都在它下面）。
@@ -212,8 +221,7 @@ impl LauncherApp {
             settings: None,
             preferences_path: None,
             notice: String::new(),
-            quit_after_frame: false,
-            allow_close: false,
+
             tray: None,
             remove_pending: None,
             hide_after_handoff: false,
@@ -226,6 +234,10 @@ impl LauncherApp {
             scan_report: None,
             add_game: None,
             rename: None,
+            gpu: None,
+            gpu_change: None,
+            gpu_changes: crate::gpu::SessionChanges::default(),
+            gpu_busy_since: None,
             show_about: false,
             root: std::path::PathBuf::new(),
         }
@@ -381,6 +393,15 @@ impl LauncherApp {
                 if ui.button("添加游戏").clicked() {
                     self.add_game = Some(crate::add_game::AddGameState::new());
                 }
+                if ui
+                    .button("切换显卡")
+                    .on_hover_text(
+                        "改显卡在系统里的显示名称（只支持单张 NVIDIA 显卡）；\n改名与还原都要重启电脑才生效",
+                    )
+                    .clicked()
+                {
+                    self.open_gpu();
+                }
                 if ui.button("日志").clicked() {
                     let logs = crate::about::logs_directory(&self.root);
                     let _ = std::fs::create_dir_all(&logs);
@@ -406,6 +427,7 @@ impl LauncherApp {
         self.draw_about(ui);
         self.draw_add_game(ui);
         self.draw_settings(ui);
+        self.draw_gpu(ui);
 
         egui::CentralPanel::default().show(ui, |ui| {
             if self.view.is_empty() {
@@ -778,6 +800,390 @@ impl LauncherApp {
             self.popup = None;
         }
     }
+    /// 切换显卡名称窗口：只改注册表里的显示名，写入交给提权子进程。
+    ///
+    /// 重启提示与"当前是否伪装"无关，只跟**本次运行里成功改过**有关：
+    /// 切换和还原都会提示重启，重启电脑或重开启动器后提示自然消失（不检测重启状态）。
+    fn draw_gpu(&mut self, root: &mut egui::Ui) {
+        if self.gpu.is_none() {
+            return;
+        }
+        // 引擎在用（部署/恢复/游戏在跑）时不许改名、不许重启：改名要重启，重启会打断恢复。
+        let engine_busy = self.pending.is_some() || launcher_win::session_active();
+        let mut open = true;
+        let mut close = false;
+        let mut action: Option<crate::gpu::Action> = None;
+        let mut refresh = false;
+        let mut restart = false;
+        egui::Window::new("切换显卡名称")
+            .open(&mut open)
+            .default_width(560.0)
+            .resizable(false)
+            .show(root.ctx(), |ui| {
+                let Some(panel) = self.gpu.as_mut() else {
+                    return;
+                };
+                let device = panel.situation.as_ref().ok().map(|situation| {
+                    (
+                        situation.device.display_name.clone(),
+                        situation.device.instance_id.clone(),
+                    )
+                });
+                match device {
+                    Some((name, instance)) => {
+                        ui.label(format!("设备：{name}"));
+                        ui.label(egui::RichText::new(instance).small().weak());
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("设备：未找到").small().weak());
+                    }
+                }
+                let red = egui::Color32::from_rgb(0xD0, 0x4A, 0x4A);
+                let status = panel.status_text();
+                let failed = panel.situation.is_err();
+                let text_color = ui.visuals().text_color();
+                ui.label(egui::RichText::new(status).color(if failed { red } else { text_color }));
+                if !panel.error.is_empty() {
+                    ui.label(egui::RichText::new(&panel.error).color(red));
+                }
+                // 本次运行改过 → 红字提示 + 重启按钮（切换/还原同一套，文案不同）
+                if let Some(change) = self.gpu_change {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(change.text()).color(red));
+                    });
+                    if panel.restart_sent {
+                        ui.label(
+                            egui::RichText::new("已计划 10 秒后重启；要取消就运行 shutdown /a")
+                                .color(red),
+                        );
+                    } else if panel.confirm_restart {
+                        ui.label("确定现在重启？所有程序会被结束，未保存的改动会丢。");
+                        ui.label("10 秒后重启，运行 shutdown /a 可取消。");
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !engine_busy && panel.can_restart(),
+                                    egui::Button::new("重启"),
+                                )
+                                .on_disabled_hover_text("引擎正在跑，先结束游戏并恢复")
+                                .clicked()
+                            {
+                                restart = true;
+                            }
+                            if ui.button("取消").clicked() {
+                                panel.confirm_restart = false;
+                            }
+                        });
+                    } else if ui
+                        .add_enabled(
+                            !engine_busy && panel.can_restart(),
+                            egui::Button::new(egui::RichText::new("立即重启电脑").color(red)),
+                        )
+                        .on_disabled_hover_text("引擎正在跑，先结束游戏并恢复")
+                        .clicked()
+                    {
+                        panel.confirm_restart = true;
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("目标：");
+                    ui.add_enabled(
+                        !panel.busy,
+                        egui::TextEdit::singleline(&mut panel.target)
+                            .desired_width(300.0)
+                            .hint_text("NVIDIA GeForce RTX 5070"),
+                    );
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let apply_label = if panel.busy {
+                        "正在写入…".to_owned()
+                    } else {
+                        format!(
+                            "切换为 {}",
+                            launcher_core::gpu::validate_target_name(&panel.target)
+                                .unwrap_or_else(|_| "（名称无效）".to_owned())
+                        )
+                    };
+                    if ui
+                        .add_enabled(
+                            panel.can_apply() && !engine_busy,
+                            egui::Button::new(apply_label),
+                        )
+                        .on_hover_text("先备份原始名称再写注册表；需要重启才生效")
+                        .clicked()
+                    {
+                        action = Some(crate::gpu::Action::Apply);
+                    }
+                    if ui
+                        .add_enabled(
+                            panel.can_restore() && !engine_busy,
+                            egui::Button::new("恢复原名称"),
+                        )
+                        .on_hover_text("按状态备份还原；没有备份时按驱动的 DriverDesc 还原")
+                        .clicked()
+                    {
+                        action = Some(crate::gpu::Action::Restore);
+                    }
+                    if ui
+                        .add_enabled(
+                            panel.can_reset() && !engine_busy,
+                            egui::Button::new("清除旧备份"),
+                        )
+                        .on_hover_text("驱动更新已恢复真名时用：清掉旧备份，之后可重新切换")
+                        .clicked()
+                    {
+                        action = Some(crate::gpu::Action::ResetState);
+                    }
+                    if ui
+                        .add_enabled(!panel.busy, egui::Button::new("刷新"))
+                        .clicked()
+                    {
+                        refresh = true;
+                    }
+                    if ui.button("关闭").clicked() {
+                        close = true;
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "只改注册表里的显示名称，需重启电脑才生效；不会自动重启、不动驱动，也不改变显卡真实能力。",
+                    )
+                    .small()
+                    .weak(),
+                );
+                if engine_busy {
+                    ui.label(
+                        egui::RichText::new("引擎正在跑：改名和重启先放一放，结束游戏并恢复后再来。")
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+        if refresh {
+            self.refresh_gpu_panel();
+        }
+        if let Some(action) = action {
+            self.start_gpu_action(action);
+        }
+        if restart {
+            self.gpu_restart();
+        }
+        if close {
+            open = false;
+        }
+        // 写入途中不许关窗：报告没人收的话，改没改成、要不要重启都会丢。
+        let busy = self.gpu.as_ref().map(|panel| panel.busy).unwrap_or(false);
+        if busy {
+            open = true;
+        }
+        if !open {
+            self.gpu = None;
+            self.gpu_busy_since = None;
+        }
+    }
+
+    /// 打开显卡窗口：目标名优先用现役目标，其次本机记住的上次名字，最后默认 5070。
+    fn open_gpu(&mut self) {
+        // 已经开着就只刷新：别把正在进行的写入或重启确认状态清掉。
+        if self.gpu.is_some() {
+            self.refresh_gpu_panel();
+            return;
+        }
+        let remembered = self
+            .preferences_path
+            .as_deref()
+            .and_then(|path| launcher_core::preferences::load(path).ok())
+            .and_then(|preferences| preferences.gpu)
+            .map(|gpu| gpu.target_name)
+            .unwrap_or_default();
+        self.gpu = Some(crate::gpu::Panel::load(&remembered));
+    }
+
+    /// 重新读设备事实（动作结束、点「刷新」时）。
+    fn refresh_gpu_panel(&mut self) {
+        if let Some(panel) = self.gpu.as_mut() {
+            panel.refresh();
+        }
+    }
+
+    /// 记住这次成功切换用的名字：下次打开窗口默认就是它。
+    fn remember_gpu_target(&mut self) {
+        let Some(target) = self
+            .gpu
+            .as_ref()
+            .map(|panel| panel.target.trim().to_owned())
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let Some(path) = self.preferences_path.clone() else {
+            return;
+        };
+        let Ok(mut preferences) = launcher_core::preferences::load(&path) else {
+            return;
+        };
+        preferences.gpu = Some(launcher_core::preferences::GpuPreference {
+            target_name: target,
+        });
+        let _ = launcher_core::preferences::save(&path, &preferences);
+    }
+
+    /// 把一次显卡名称动作交给提权子进程（界面本身没有写权限）。
+    fn start_gpu_action(&mut self, action: crate::gpu::Action) {
+        let Some(target) = self.gpu.as_ref().map(|panel| panel.target.clone()) else {
+            return;
+        };
+        if self.gpu.as_ref().map(|panel| panel.busy).unwrap_or(false) {
+            return;
+        }
+        let name = if action == crate::gpu::Action::Apply {
+            match launcher_core::gpu::validate_target_name(&target) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    if let Some(panel) = self.gpu.as_mut() {
+                        panel.error = error.to_string();
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let report = self.report_path(action.report_name());
+        let _ = std::fs::remove_file(&report);
+        let executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.error = format!("取自身路径失败：{error}");
+                }
+                return;
+            }
+        };
+        let arguments = crate::gpu::arguments(action, name.as_deref(), &report);
+        // 记下"改之前"的名字：还原成功后再比一次，改回原样就不提示重启。
+        if matches!(
+            action,
+            crate::gpu::Action::Apply | crate::gpu::Action::Restore
+        ) {
+            if let Some(current) = self
+                .gpu
+                .as_ref()
+                .and_then(|panel| panel.situation.as_ref().ok())
+                .map(|situation| situation.current_name.clone())
+            {
+                self.gpu_changes.remember_baseline(&current);
+            }
+        }
+        if let Some(panel) = self.gpu.as_mut() {
+            panel.error.clear();
+            panel.confirm_restart = false;
+        }
+        match launcher_win::elevate::spawn_elevated(&executable, &arguments) {
+            Ok(()) => {
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.busy = true;
+                }
+                self.gpu_busy_since = Some(Instant::now());
+                self.notice = "已请求管理员权限…".to_owned();
+            }
+            Err(error) => {
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.error = error.to_string();
+                }
+            }
+        }
+    }
+
+    /// 轮询提权子进程报告：成功就刷新状态并记下"本次改过什么"。
+    fn poll_gpu(&mut self) {
+        let busy = self.gpu.as_ref().map(|panel| panel.busy).unwrap_or(false);
+        if !busy {
+            return;
+        }
+        // 写入不是原子的：解析失败就等下一帧，别把半截文件当错误。
+        let report =
+            std::fs::read_to_string(self.report_path(crate::gpu::Action::Status.report_name()))
+                .ok()
+                .and_then(|text| crate::gpu::Report::parse(&text));
+        match report {
+            Some(report) => {
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.busy = false;
+                }
+                self.gpu_busy_since = None;
+                let action = crate::gpu::Action::parse(&report.action);
+                if report.ok {
+                    self.notice = report.message.clone();
+                    self.refresh_gpu_panel();
+                    // 只有"和本次运行开始时的名字不同"才提示重启；又改回去就不提示。
+                    if let Some(
+                        action @ (crate::gpu::Action::Apply | crate::gpu::Action::Restore),
+                    ) = action
+                    {
+                        let current = self
+                            .gpu
+                            .as_ref()
+                            .and_then(|panel| panel.situation.as_ref().ok())
+                            .map(|situation| situation.current_name.clone())
+                            .unwrap_or_default();
+                        self.gpu_change = self.gpu_changes.settle(&current, action);
+                    }
+                    if action == Some(crate::gpu::Action::Apply) {
+                        self.remember_gpu_target();
+                    }
+                } else {
+                    if let Some(panel) = self.gpu.as_mut() {
+                        panel.error = report.error.clone();
+                    }
+                    self.notice = report.error;
+                }
+            }
+            None => {
+                // 子进程可能被拒绝或崩了：等太久就报出来，不能让窗口永远"正在写入"。
+                let timed_out = self
+                    .gpu_busy_since
+                    .map(|started| {
+                        started.elapsed() >= std::time::Duration::from_secs(GPU_TIMEOUT_SECONDS)
+                    })
+                    .unwrap_or(false);
+                if timed_out {
+                    self.gpu_busy_since = None;
+                    if let Some(panel) = self.gpu.as_mut() {
+                        panel.busy = false;
+                        panel.error =
+                            "提权子进程没有回报告（可能被取消或失败），可以再试一次".to_owned();
+                    }
+                }
+            }
+        }
+    }
+
+    /// 重启电脑（10 秒倒计时；不做任何重启状态检测）。
+    fn gpu_restart(&mut self) {
+        if self.pending.is_some() || launcher_win::session_active() {
+            self.notice = "引擎正在跑，先结束游戏并恢复再重启".to_owned();
+            return;
+        }
+        match crate::gpu::restart(10) {
+            Ok(message) => {
+                self.notice = message;
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.confirm_restart = false;
+                    panel.restart_sent = true;
+                    panel.error.clear();
+                }
+            }
+            Err(error) => {
+                if let Some(panel) = self.gpu.as_mut() {
+                    panel.error = error;
+                }
+            }
+        }
+    }
+
     /// 起一次后台平台扫描（注册表 + 平台清单 + 每个游戏的渲染 EXE 确认）。
     fn start_scan(&mut self) {
         if self.scan_job.is_some() {
@@ -1350,10 +1756,10 @@ impl LauncherApp {
                         .map(|(index, candidate)| {
                             (
                                 index,
+                                // 置信度/分数只在内部用于排序与自动预选，不在界面上显示。
                                 format!(
-                                    "{}  ·  {} 分  ·  {}",
+                                    "{}  ·  {}",
                                     candidate.relative,
-                                    candidate.score,
                                     candidate.reasons.join("；")
                                 ),
                                 state.selected == Some(index),
@@ -1891,22 +2297,31 @@ impl eframe::App for LauncherApp {
                     let _ = launcher_win::open_path(&logs);
                 }
                 crate::tray::Action::Quit => {
-                    self.allow_close = true;
-                    root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    // 直接结束进程。eframe 0.37 的 `ViewportCommand::Close` 只是往 viewport
+                    // 里塞一个 `ViewportEvent::Close`，没有任何人处理它——窗口不会关、
+                    // 进程也不会退（真机 2026-11-23：托盘"退出"点了没反应）。
+                    // 界面没有未落盘的状态（偏好改完即写），直接退出最省事也最可靠。
+                    std::process::exit(0);
                 }
             }
         }
-        // 关闭按钮 = 最小化到托盘：取消关闭并隐藏窗口，只有托盘"退出"才结束进程。
-        if !self.allow_close && root.ctx().input(|input| input.viewport().close_requested()) {
+        // 关闭按钮 = 收进托盘（进程继续活着，托盘左键能再打开）；真退出走托盘「退出」。
+        if root.ctx().input(|input| input.viewport().close_requested()) {
             root.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             root.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.hide_after_handoff = true;
         }
-        // 后台平台扫描：跑着就持续重绘，结束后把能确定的直接加进来。
+        // 背景扫描：跑着就持续重绘，结束后把能确定的直接加进来。
         self.poll_scan();
         if self.scan_job.is_some() {
+            root.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        // 显卡名称切换：等提权子进程的报告。
+        self.poll_gpu();
+        if self.gpu.as_ref().map(|panel| panel.busy).unwrap_or(false) {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -1948,10 +2363,7 @@ impl eframe::App for LauncherApp {
         }
         self.draw_remove_confirm(root);
         self.draw_popup(root);
-        if self.quit_after_frame {
-            root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
+
         if self.first_frame_ms.is_none() {
             self.first_frame_ms = Some(self.started.elapsed().as_millis());
         }
@@ -1968,8 +2380,8 @@ impl eframe::App for LauncherApp {
                 .map(|deadline| Instant::now() >= deadline)
                 .unwrap_or(false)
             {
-                self.allow_close = true;
-                root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                // 与托盘"退出"同理：程序化关窗在 eframe 0.37 里不生效，直接结束进程。
+                std::process::exit(0);
             }
         }
     }
