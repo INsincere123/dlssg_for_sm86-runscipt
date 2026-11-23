@@ -100,9 +100,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 主窗口一行一个游戏：`[启动] 名称 [帧生成] [画质] 状态 引擎 … [恢复原状] [移除]`，
 底栏是 `[扫描游戏] 添加游戏 日志 关于`。
 
+- **改名**：双击列表里的游戏标题进入编辑，输入框会全选原名，回车保存；Esc 放弃，
+  点别处也算保存。只改偏好里的 `name`——id、目录、部署记录都不动，所以引擎在跑或有未完成
+  部署时也能改；名字只影响 `<根>\配置\<游戏名>\Engine.ini` 这条兜底配置源（显式写过
+  `config_source` 的档案不受影响），空白名字或超过 60 字会被拒绝并保留原名。
+
 - **扫描游戏**：只扫 Steam / GOG / Epic 的平台记录与注册表（不翻全盘）。有证据的
   （UE 打包本体或同目录自带 DLSS-G 组件、或鸣潮/异环的内置模板）直接加进列表，
   其余进「扫描结果」等确认；每行一个「选择渲染程序」入口。
+  鸣潮这类"注册表只登记启动器、游戏本体装在别的盘"的情况（真机：启动器在
+  `C:\Program Files\Wuthering Waves`，游戏在 `C:\Games\Wuthering Waves Game`）另有一层
+  **浅层兜底**：在固定磁盘前 3 层里按模板的文件夹名找，且必须 `<目录>\<渲染 EXE>` 真的存在
+  才算，找到多个只报歧义；实测 3 个固定磁盘只读 317 个目录、16 毫秒左右，有目录上限并跳过系统目录。
 - **帧生成**：12 个组件键（常用 5 + 高级 7）+ 自定义 INI + 代理文件（6 选一，
   异环建议 `winmm.dll`，有遗留部署时代理整块灰掉）。
 - **画质**：引擎版本（可重新识别 / 手动校准）+ 4 档画质 + `05-自定义`；
@@ -130,7 +139,7 @@ DlssgLauncher.exe --ui-preview restore-ok|restore-fail|framegen|quality|scan
 cd rust
 # 引擎识别：需要 DLSSG_UE_PROBE=<游戏目录>、DLSSG_UE_PROBE_EXE=<渲染 EXE>
 cargo test -p launcher-core --lib unreal -- --ignored --nocapture probe_real_game
-# 平台扫描：读本机 Steam/GOG/Epic 记录与注册表，打印可添加/待确认清单
+# 平台扫描：读本机 Steam/GOG/Epic 记录与注册表（内置游戏带浅层兜底），打印可添加/待确认清单
 cargo test -p launcher --bin DlssgLauncher scan -- --ignored --nocapture probe_real_scan
 ```
 

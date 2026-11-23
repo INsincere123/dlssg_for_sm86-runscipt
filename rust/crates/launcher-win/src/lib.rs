@@ -9,6 +9,7 @@
 //!    判断依据是**目标**是否为目录。
 //! 3. 互斥是线程所有的：`ReleaseMutex` 必须由获取它的线程调用（引擎是单线程，够用）。
 
+pub mod drives;
 pub mod elevate;
 pub mod gpu;
 pub mod ipc;

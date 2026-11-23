@@ -27,6 +27,19 @@ enum RowAction {
     Quality(String),
 }
 
+/// 标题改名（双击进入）触发的动作。
+///
+/// 收在这里统一处理，是因为行渲染时只借得到 `view` 与 `rename` 两个字段：
+/// 真正写偏好要 `&mut self`，得等循环结束。
+enum NameAction {
+    Start(crate::rename::RenameState),
+    Commit(String),
+    Cancel(String),
+}
+
+/// 改名输入框的宽度：足够放下常见游戏名，又不把同一行的按钮挤出去。
+const RENAME_WIDTH: f32 = 170.0;
+
 /// 恢复类动作最多等多久：超时按失败弹窗，不把界面挂成"进行中"。
 const RESTORE_TIMEOUT_SECONDS: u64 = 180;
 /// 启动交出去后先等这么久：引擎在规划/预检阶段失败会立刻写报告，界面要能看到原因。
@@ -140,6 +153,8 @@ pub struct LauncherApp {
     allow_close: bool,
     /// 添加游戏对话框（M4-05）。
     add_game: Option<crate::add_game::AddGameState>,
+    /// 正在改名的行（双击标题进入；回车保存、Esc 放弃）。
+    rename: Option<crate::rename::RenameState>,
     /// 关于对话框（M4-06）。
     show_about: bool,
     /// 启动器根目录（日志与记录都在它下面）。
@@ -210,6 +225,7 @@ impl LauncherApp {
             scan_job: None,
             scan_report: None,
             add_game: None,
+            rename: None,
             show_about: false,
             root: std::path::PathBuf::new(),
         }
@@ -401,6 +417,7 @@ impl LauncherApp {
             }
             let mut select = None;
             let mut action: Option<RowAction> = None;
+            let mut name_actions: Vec<NameAction> = Vec::new();
             // 引擎正跑着哪个游戏：那一行的「恢复原状」要置灰（手动恢复会和引擎抢记录）。
             let engine_owner = self.engine_owner();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -433,12 +450,54 @@ impl LauncherApp {
                                 action = Some(RowAction::Launch(id.clone()));
                             }
                         }
-                        if ui
-                            .selectable_label(selected, &entry.name)
-                            .on_hover_text(entry.summary())
-                            .clicked()
-                        {
-                            select = Some(index);
+                        // 标题：双击进入改名；编辑时回车保存、Esc 放弃（点别处也算保存）。
+                        if let Some(rename) = self.rename.as_mut().filter(|state| state.id == id) {
+                            let widget = egui::Id::unique(("game-title", id.as_str()));
+                            let fresh = rename.fresh;
+                            rename.fresh = false;
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut rename.text)
+                                    .id(widget)
+                                    .desired_width(RENAME_WIDTH)
+                                    .hint_text("游戏名称"),
+                            );
+                            if fresh {
+                                response.request_focus();
+                            }
+                            if response.gained_focus() {
+                                // 全选旧名字：直接输入就是覆盖，不用先删。
+                                if let Some(mut state) =
+                                    egui::TextEdit::load_state(ui.ctx(), widget)
+                                {
+                                    let end = egui::text::CCursor::new(rename.text.chars().count());
+                                    state.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::two(
+                                            egui::text::CCursor::new(0),
+                                            end,
+                                        ),
+                                    ));
+                                    state.store(ui.ctx(), widget);
+                                }
+                            }
+                            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                                name_actions.push(NameAction::Cancel(id.clone()));
+                            } else if response.lost_focus() {
+                                name_actions.push(NameAction::Commit(id.clone()));
+                            }
+                        } else {
+                            let response = ui
+                                .selectable_label(selected, &entry.name)
+                                .on_hover_text(format!(
+                                    "{}\n双击标题可改名（回车保存，Esc 放弃）",
+                                    entry.summary()
+                                ));
+                            if response.double_clicked() {
+                                name_actions.push(NameAction::Start(
+                                    crate::rename::RenameState::start(&id, &entry.name),
+                                ));
+                            } else if response.clicked() {
+                                select = Some(index);
+                            }
                         }
                         if ui
                             .button("帧生成")
@@ -496,6 +555,13 @@ impl LauncherApp {
             });
             if let Some(index) = select {
                 self.view.select(index);
+            }
+            for pending in name_actions {
+                match pending {
+                    NameAction::Start(state) => self.begin_rename(state),
+                    NameAction::Commit(id) => self.commit_rename(&id),
+                    NameAction::Cancel(id) => self.cancel_rename(&id),
+                }
             }
             if let Some(pending) = action {
                 self.run_row_action(pending);
@@ -950,6 +1016,75 @@ impl LauncherApp {
             form.dirty = true;
         }
         self.notice = format!("引擎识别：{host}（{}）", detection.source);
+    }
+
+    /// 双击标题：开始编辑这一行（同一时间只编辑一行，先落盘上一行的改动）。
+    fn begin_rename(&mut self, state: crate::rename::RenameState) {
+        if let Some(previous) = self.rename.as_ref().map(|current| current.id.clone()) {
+            self.commit_rename(&previous);
+        }
+        self.rename = Some(state);
+    }
+
+    /// 回车（或点别处）：名字有实质变化就写进偏好，否则什么都不做。
+    ///
+    /// 改的只是 `name`：id、目录、部署记录都不动，所以引擎在跑、有未完成的部署时改名也安全。
+    fn commit_rename(&mut self, id: &str) {
+        if self.rename.as_ref().map(|state| state.id.as_str()) != Some(id) {
+            return;
+        }
+        let Some(state) = self.rename.take() else {
+            return;
+        };
+        let name = match state.normalized() {
+            Ok(name) => name,
+            Err(message) => {
+                self.notice = message;
+                // 名字不合法：输入框留着让用户接着改，别把他刚打的字丢掉。
+                self.rename = Some(crate::rename::RenameState {
+                    fresh: true,
+                    ..state
+                });
+                return;
+            }
+        };
+        if name == state.original {
+            return;
+        }
+        let Some(path) = self.preferences_path.clone() else {
+            self.notice = "偏好路径不可用，改名没有保存".to_owned();
+            return;
+        };
+        let mut preferences = match launcher_core::preferences::load(&path) {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                self.notice = format!("偏好读不出来，改名没有保存：{error}");
+                return;
+            }
+        };
+        let Some(profile) = preferences.find(id).cloned() else {
+            self.notice = format!("偏好里没有这条记录，改名没有保存：{id}");
+            return;
+        };
+        let mut updated = profile;
+        updated.name = name.clone();
+        preferences.upsert(updated);
+        match launcher_core::preferences::save(&path, &preferences) {
+            Ok(()) => {
+                if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
+                    entry.name = name.clone();
+                }
+                self.notice = format!("已重命名为「{name}」");
+            }
+            Err(error) => self.notice = format!("改名保存失败：{error}"),
+        }
+    }
+
+    /// Esc：放弃这一行的编辑，原名不动。
+    fn cancel_rename(&mut self, id: &str) {
+        if self.rename.as_ref().map(|state| state.id.as_str()) == Some(id) {
+            self.rename = None;
+        }
     }
 
     /// 把引擎宿主写进偏好并刷新该行（识别与手动校准共用）。

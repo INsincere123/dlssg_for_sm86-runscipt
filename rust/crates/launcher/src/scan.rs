@@ -4,9 +4,13 @@
 //! 少让用户点。所以顺序是：
 //!
 //! 1. 内置定位（鸣潮 / 异环）：注册表卸载项 + 已知相对路径，命中即用模板
-//! 2. Steam：每个库的 `appmanifest_*.acf`（AppID / 名称 / installdir）
-//! 3. GOG：注册表逐游戏子键
-//! 4. Epic：`LauncherInstalled.dat` + `.item` 里的显示名
+//! 2. 内置游戏的浅层兜底：真机鸣潮的卸载项只有启动器（`C:\Program Files\Wuthering Waves`），
+//!    游戏本体在 `C:\Games\Wuthering Waves Game`——平台记录里没有这一行。于是按"目录名对上
+//!    模板里的文件夹名 + 那个目录里真的有渲染 EXE"在固定磁盘前几层再找一遍（有上限、
+//!    跳过系统目录）；找到多个就报歧义，绝不替用户挑
+//! 3. Steam：每个库的 `appmanifest_*.acf`（AppID / 名称 / installdir）
+//! 4. GOG：注册表逐游戏子键
+//! 5. Epic：`LauncherInstalled.dat` + `.item` 里的显示名
 //!
 //! 对平台给出的每个目录，再用 `discovery` 打分找渲染 EXE：**唯一可信（≥60 分且领先）**
 //! 就直接成为可添加的配置，否则进"需要确认"，绝不在多个候选里随便挑一个。
@@ -24,6 +28,13 @@ use launcher_core::preferences::GameProfile;
 const LIMITS: DiscoveryLimits = DiscoveryLimits {
     max_directories: 4_000,
     max_depth: 10,
+};
+
+/// 内置游戏浅层查找的预算：真机（C/D/E 三个固定磁盘）只读到 317 个目录、16 毫秒左右；
+/// 上限只是防止别人的机器上目录特别多时把扫描拖住。
+const SEARCH_LIMITS: builtin::SearchLimits = builtin::SearchLimits {
+    max_depth: 3,
+    max_directories: 4_000,
 };
 
 /// 可以直接添加的游戏。
@@ -85,16 +96,64 @@ pub fn scan(launcher_root: &Path, existing: &[(String, PathBuf)]) -> ScanResult 
         })
     };
 
-    // 1) 内置定位：注册表卸载项
+    // 1) 内置定位：注册表卸载项；注册表只登记启动器时，再按目录名浅层找一遍
     let entries = launcher_win::registry::uninstall_entries();
-    let located = builtin::locate(&entries);
+    let mut located = builtin::locate(&entries);
+    let drives = launcher_win::drives::fixed_drive_roots();
     for game in builtin::known_games() {
-        if !located.iter().any(|item| item.game.id == game.id) {
-            result.notes.push(format!(
+        if located.iter().any(|item| item.game.id == game.id) {
+            continue;
+        }
+        let entry = entries
+            .iter()
+            .find(|entry| builtin::entry_matches(game, entry));
+        let outcome = builtin::search_game_directory(game, &drives, SEARCH_LIMITS);
+        if let Some(directory) = outcome.unique_directory() {
+            located.push(Located {
+                game,
+                directory: directory.to_path_buf(),
+                launcher: builtin::launcher_path(game, entry, directory),
+                source: "浅层查找：目录名 + 渲染程序核对".to_owned(),
+            });
+            continue;
+        }
+        if outcome.directories.len() > 1 {
+            result.ambiguous.push(AmbiguousGame {
+                name: game.name.to_owned(),
+                directory: outcome.directories[0].clone(),
+                source: "浅层查找".to_owned(),
+                reason: format!(
+                    "找到 {} 个同名游戏目录，需要手动确认用哪个：{}",
+                    outcome.directories.len(),
+                    outcome
+                        .directories
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("；")
+                ),
+            });
+            continue;
+        }
+        // 没找到：把现状写清楚，让用户手动「添加游戏」。
+        let mut note = if entry.is_some() {
+            format!(
+                "注册表里的「{}」没给出能核对通过的安装目录（多半只登记了启动器）；浅层查找也没找到 {}，需要手动「添加游戏」",
+                game.name, game.render_executable
+            )
+        } else {
+            format!(
                 "没在注册表里认出「{}」的安装目录，需要的话手动「添加游戏」",
                 game.name
-            ));
+            )
+        };
+        if let Some(rejected) = outcome.rejected.first() {
+            note.push_str(&format!("；同名目录里没有渲染程序：{}", rejected.display()));
         }
+        if outcome.truncated {
+            note.push_str("；浅层查找达到目录上限，可能没找全");
+        }
+        result.notes.push(note);
     }
     for item in located {
         // 同目录的旧记录（例如以前以 direct-… 加过的鸣潮）也算已存在，避免加出两份。
@@ -402,11 +461,18 @@ mod tests {
         println!("{}", result.summary());
         for ready in &result.ready {
             println!(
-                "可添加：{} → {}（{}；渲染 {}；代理 {}）",
+                "可添加：{} → {}（{}；渲染 {}；启动器 {}；配置目录 {}；会话 {}；代理 {}）",
                 ready.profile.name,
                 ready.profile.directory.display(),
                 ready.source,
                 ready.profile.render_executable.as_deref().unwrap_or("?"),
+                ready
+                    .profile
+                    .launch_executable
+                    .as_deref()
+                    .unwrap_or("（未识别）"),
+                ready.profile.config_dir.as_deref().unwrap_or("（空）"),
+                ready.profile.session_policy.as_deref().unwrap_or("（空）"),
                 ready.profile.proxy_index
             );
         }
@@ -422,6 +488,24 @@ mod tests {
         for note in &result.notes {
             println!("说明：{note}");
         }
+        // 顺便量一下浅层兜底的代价：它是注册表认不出内置游戏时唯一会读到磁盘外层的步骤。
+        let drives = launcher_win::drives::fixed_drive_roots();
+        let started = std::time::Instant::now();
+        let outcome = builtin::search_game_directory(&builtin::WUTHERING, &drives, SEARCH_LIMITS);
+        println!(
+            "浅层查找：固定磁盘 {} 个（{}），读过 {} 个目录，用时 {:?}，截断 {}，命中 {:?}，排除 {:?}",
+            drives.len(),
+            drives
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、"),
+            outcome.visited,
+            started.elapsed(),
+            outcome.truncated,
+            outcome.directories,
+            outcome.rejected
+        );
     }
 
     #[test]

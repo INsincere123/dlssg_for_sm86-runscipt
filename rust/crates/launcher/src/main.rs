@@ -11,6 +11,7 @@ mod about;
 mod add_game;
 mod engine;
 mod handoff;
+mod rename;
 mod restore_result;
 mod scan;
 mod settings_form;
