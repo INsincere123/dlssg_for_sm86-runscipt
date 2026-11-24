@@ -594,8 +594,14 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
         launcher_win::acquire_named_session("Local\\DlssgLauncherUi", std::time::Duration::ZERO)
             .map_err(|error| Failure::Usage(format!("界面单实例不可用：{error}")))?;
     let Some(_single) = single else {
+        // 已经有界面在跑：常规做法是把它的窗口叫到最前面，然后本进程安静退出。
+        // 命名事件让运行中的界面走"托盘里点显示窗口"的同一套恢复路径（隐藏到托盘、
+        // 交接后隐藏、最小化都能还原），直接找窗口只是兜底。
+        launcher_win::activate::request_activation(ui::WINDOW_TITLE);
         return Ok(EXIT_OK);
     };
+    // 界面拿到锁之后再建激活事件：后来者能可靠找到它。
+    let activation = launcher_win::activate::ActivationEvent::create().ok();
 
     let root = std::env::current_exe()
         .ok()
@@ -653,13 +659,14 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
 
     let mut app = ui::LauncherApp::new(view, (self_test.hold_ms > 0).then_some(self_test))
         .with_preferences(launcher_core::prefs::preferences_path(&root).ok())
-        .with_root(run_root.clone());
+        .with_root(run_root.clone())
+        .with_activation(activation);
     if let Some(preview) = preview {
         app = app.with_preview(preview);
     }
     let result = eframe::run_native(
-        "DLSSG 启动器",
-        ui::native_options("DLSSG 启动器"),
+        ui::WINDOW_TITLE,
+        ui::native_options(ui::WINDOW_TITLE),
         Box::new(move |cc| {
             if let Some(bytes) = ui::font_bytes() {
                 let mut fonts = egui::FontDefinitions::default();

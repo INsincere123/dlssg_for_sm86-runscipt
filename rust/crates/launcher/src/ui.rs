@@ -40,6 +40,9 @@ enum NameAction {
 /// 改名输入框的宽度：足够放下常见游戏名，又不把同一行的按钮挤出去。
 const RENAME_WIDTH: f32 = 170.0;
 
+/// 主窗口标题：窗口标题、托盘悬停与"再次运行程序"的窗口查找共用这一份。
+pub const WINDOW_TITLE: &str = "DLSSG 启动器";
+
 /// 恢复类动作最多等多久：超时按失败弹窗，不把界面挂成"进行中"。
 const RESTORE_TIMEOUT_SECONDS: u64 = 180;
 /// 启动交出去后先等这么久：引擎在规划/预检阶段失败会立刻写报告，界面要能看到原因。
@@ -124,6 +127,12 @@ pub struct LauncherApp {
     settings: Option<crate::settings_form::SettingsForm>,
     /// 偏好文件路径，保存时用。
     preferences_path: Option<std::path::PathBuf>,
+    /// 单实例"再来一次"的激活事件：收到信号就把窗口叫到最前。
+    activation: Option<launcher_win::activate::ActivationEvent>,
+    /// 激活等待线程是否已经起来（需要 `egui::Context`，第一帧才有）。
+    activation_started: bool,
+    /// 等待线程收到过激活信号（在 `ui()` 里消费）。
+    activate_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 底部提示（保存结果等）。
     notice: String,
     /// 托盘图标（常驻，窗口隐藏后仍可操作）。
@@ -176,6 +185,15 @@ impl LauncherApp {
         self
     }
 
+    /// 单实例"再来一次"的激活事件（`main` 拿到界面锁之后创建）。
+    pub fn with_activation(
+        mut self,
+        event: Option<launcher_win::activate::ActivationEvent>,
+    ) -> Self {
+        self.activation = event;
+        self
+    }
+
     /// 直接打开"添加游戏"对话框（`--open-add-game` 与测试用）。
     #[allow(dead_code)]
     pub fn open_add_game(&mut self) {
@@ -220,6 +238,9 @@ impl LauncherApp {
             first_frame_ms: None,
             settings: None,
             preferences_path: None,
+            activation: None,
+            activation_started: false,
+            activate_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             notice: String::new(),
 
             tray: None,
@@ -2278,19 +2299,54 @@ impl LauncherApp {
     }
 }
 
+impl LauncherApp {
+    /// 第一帧才起等待线程：线程里要 `egui::Context` 来唤醒重绘。
+    fn start_activation_waiter(&mut self, ctx: &egui::Context) {
+        if self.activation_started {
+            return;
+        }
+        self.activation_started = true;
+        let Some(event) = self.activation.take() else {
+            return;
+        };
+        let pending = self.activate_pending.clone();
+        let ctx = ctx.clone();
+        launcher_win::activate::spawn_waiter(event, move || {
+            pending.store(true, std::sync::atomic::Ordering::SeqCst);
+            // 窗口隐藏时 Windows 不发 RedrawRequested；eframe 会给不可见窗口直接跑帧，
+            // 这里主动要一帧，让 `Visible(true)` 尽快生效。
+            ctx.request_repaint();
+        });
+    }
+
+    /// 把窗口叫回前台（托盘「显示窗口」与"再次运行程序"共用这一条路径）。
+    ///
+    /// 三件事缺一不可：清掉"交接后隐藏"（否则下一帧又会把自己藏回去）、`Visible(true)`
+    /// （从托盘恢复）、`Minimized(false)` + `Focus`（最小化或压在别的窗口后面时回到最前）。
+    fn show_main_window(&mut self, ctx: &egui::Context) {
+        self.hide_after_handoff = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
 impl eframe::App for LauncherApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.tray.is_none() {
-            self.tray = crate::tray::Tray::new("DLSSG 启动器");
+            self.tray = crate::tray::Tray::new(WINDOW_TITLE);
+        }
+        // 再次运行程序：等待线程已经收到信号 → 走和托盘「显示窗口」同一条路径。
+        self.start_activation_waiter(root.ctx());
+        if self
+            .activate_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.show_main_window(root.ctx());
         }
         if let Some(action) = self.tray.as_ref().and_then(|tray| tray.poll()) {
             match action {
-                crate::tray::Action::Show => {
-                    self.hide_after_handoff = false;
-                    root.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    root.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
+                crate::tray::Action::Show => self.show_main_window(root.ctx()),
                 crate::tray::Action::Logs => {
                     let logs = crate::about::logs_directory(&self.root);
                     let _ = std::fs::create_dir_all(&logs);

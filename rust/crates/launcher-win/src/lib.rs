@@ -9,6 +9,7 @@
 //!    判断依据是**目标**是否为目录。
 //! 3. 互斥是线程所有的：`ReleaseMutex` 必须由获取它的线程调用（引擎是单线程，够用）。
 
+pub mod activate;
 pub mod drives;
 pub mod elevate;
 pub mod gpu;
@@ -747,7 +748,7 @@ fn process_name(entry: &ProcessEntry32W) -> String {
         .to_owned()
 }
 
-fn executable_path(pid: u32) -> Option<PathBuf> {
+pub(crate) fn executable_path(pid: u32) -> Option<PathBuf> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle == 0 {
         return None;

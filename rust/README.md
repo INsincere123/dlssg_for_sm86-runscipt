@@ -139,6 +139,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 - **托盘**：左键单击图标 = 打开窗口，右键 = 菜单（显示窗口 / 打开日志目录 / 退出）。
   窗口的关闭按钮只是**收进托盘**（进程留着，左键能再打开）；托盘菜单的「退出」是**直接结束进程**
   （界面没有未落盘的状态，偏好改完即写）。启动游戏交接后窗口自动收进托盘，托盘悬停提示当前状态。
+- **单实例 / 再次运行程序**：界面拿着 `Local\DlssgLauncherUi` 锁。再次双击 `DlssgLauncher.exe`
+  （无论窗口是在后台、最小化、还是收进了托盘）都会把已有窗口**还原并放到最前**，新进程自己退出；
+  不会出现"再点一次像没反应"或开出第二个窗口。实现见 `launcher-win/src/activate.rs`：一个命名事件
+  `Local\DlssgLauncherUiActivate` + `AllowSetForegroundWindow` 借前台权限，界面收到信号后走
+  **和托盘「显示窗口」同一条路径**（清掉交接后隐藏、`Visible(true)`、`Minimized(false)`、`Focus`），
+  另有一次 `EnumWindows` 找窗口 `ShowWindow`/`SetForegroundWindow` 的兜底。
 
 ## 调试与验收入口
 
