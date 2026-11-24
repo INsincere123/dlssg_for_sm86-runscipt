@@ -668,12 +668,11 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
         ui::WINDOW_TITLE,
         ui::native_options(ui::WINDOW_TITLE),
         Box::new(move |cc| {
-            if let Some(bytes) = ui::font_bytes() {
+            if let Some(font) = ui::font_data() {
                 let mut fonts = egui::FontDefinitions::default();
-                fonts.font_data.insert(
-                    "msyh".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-                );
+                fonts
+                    .font_data
+                    .insert("msyh".to_owned(), std::sync::Arc::new(font));
                 for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                     fonts
                         .families

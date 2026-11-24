@@ -1,4 +1,4 @@
-﻿# M0 / Phase 0 门禁报告
+# M0 / Phase 0 门禁报告
 
 - 日期：2026-11-22
 - 状态：**规格与样本完成；spike 4 项达标、1 项未达标（GUI 常驻内存）→ 需决策后再进 M1**
@@ -54,6 +54,7 @@
 | `--no-font` | — | 138.5 ms | 58.1 MB | **65.2 MB** | — |
 
 - 字体开销 ≈ 字体文件大小（18.8 MB → +18.7 MB；9.3 MB → +9.1 MB），因为 egui 在 `FontDefinitions` 里持有整份字节以支持重建图集。
+  > 2026-11-24 后续：字体改为**只读内存映射**（`launcher-win/src/fontmap.rs`），这笔开销不再计入专用内存，见 [M4-REPORT §6](M4-REPORT.md)。
 - 去掉字体后仍有 **65.2 MB**：这部分是 egui + glow + NVIDIA OpenGL 驱动（已确认加载 `nvoglv64.dll`，**不是**软件渲染）+ 1350×870 物理像素的双缓冲交换链。
 - 现有基线（旧实测）：空 PowerShell 63.0 MB、PowerShell + WinForms **75.9 MB**。
 

@@ -12,6 +12,7 @@
 pub mod activate;
 pub mod drives;
 pub mod elevate;
+pub mod fontmap;
 pub mod gpu;
 pub mod ipc;
 pub mod registry;

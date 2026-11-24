@@ -145,6 +145,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
   `Local\DlssgLauncherUiActivate` + `AllowSetForegroundWindow` 借前台权限，界面收到信号后走
   **和托盘「显示窗口」同一条路径**（清掉交接后隐藏、`Visible(true)`、`Minimized(false)`、`Focus`），
   另有一次 `EnumWindows` 找窗口 `ShowWindow`/`SetForegroundWindow` 的兜底。
+- **中文字体**：用系统 `msyh.ttc`（18.8 MB），先只读**内存映射**再交给 egui（`FontData::from_blob`），
+  不整块读进堆；映射不可用（字体缺失、无权限、空文件）时回退 `fs::read`。专用内存因此少约 18.9 MB，
+  见 `docs/M4-REPORT.md` §6，实现见 `launcher-win/src/fontmap.rs`。
 
 ## 调试与验收入口
 

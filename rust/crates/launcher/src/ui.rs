@@ -2444,10 +2444,17 @@ impl eframe::App for LauncherApp {
 }
 
 /// 载入系统字体（微软雅黑），离开时用内置字体。
-pub fn font_bytes() -> Option<Vec<u8>> {
+///
+/// 优先只读内存映射：`msyh.ttc` 有 18.8 MB，整块读进堆会变成常驻专用内存（epaint 的
+/// `FontData` 一直持有这份字节）；映射成文件页后只有用到的字形被换入，内存吃紧时系统能直接
+/// 回收。映射不可用（字体缺失、权限不足、空文件）时回退整读，行为与旧版完全一致。
+pub fn font_data() -> Option<egui::FontData> {
     let windir = std::env::var_os("WINDIR")?;
     let path = PathBuf::from(windir).join("Fonts").join("msyh.ttc");
-    std::fs::read(path).ok()
+    if let Some(blob) = launcher_win::fontmap::font_blob(&path) {
+        return Some(egui::FontData::from_blob(blob, 0));
+    }
+    std::fs::read(&path).ok().map(egui::FontData::from_owned)
 }
 
 /// 构建窗口选项：PerMonitorV2 由 eframe 默认处理，150% 缩放下不做额外缩放。
