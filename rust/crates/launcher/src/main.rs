@@ -13,7 +13,6 @@ mod engine;
 mod gpu;
 mod handoff;
 mod rename;
-mod restore_result;
 mod scan;
 mod settings_form;
 mod tray;
@@ -41,9 +40,7 @@ fn main() -> ExitCode {
                 Failure::NotImplemented(message) => (EXIT_NOT_IMPLEMENTED, message),
             };
             eprintln!("{message}");
-            if let Some(path) = report_path_from_env() {
-                write_report(Some(&path), &error_report(message));
-            }
+            report_failure(message);
             ExitCode::from(code)
         }
     }
@@ -85,17 +82,14 @@ impl Preview {
     }
 
     /// 恢复结果窗的内容（示例文本，只用于核对排版）。
-    pub fn restore_outcome(self) -> Option<restore_result::RestoreOutcome> {
+    pub fn restore_outcome(self) -> Option<(bool, &'static str, &'static str)> {
         match self {
-            Self::RestoreOk => Some(restore_result::RestoreOutcome::Restored {
-                message: "已恢复 5 项：engineLink、backup、runtime、storage、link（示例）"
-                    .to_owned(),
-            }),
-            Self::RestoreFail => Some(restore_result::RestoreOutcome::Failed {
-                error:
-                    "恢复失败：备份校验失败（示例）。\n原始文件保留在 .state 下，未删除任何内容。"
-                        .to_owned(),
-            }),
+            Self::RestoreOk => Some((true, "恢复原状完成", "已恢复 5 项（示例）。")),
+            Self::RestoreFail => Some((
+                false,
+                "恢复原状失败",
+                "备份校验失败（示例）。部署记录与备份已保留。",
+            )),
             _ => None,
         }
     }
@@ -170,6 +164,7 @@ struct Arguments {
     engine: Option<String>,
     report: Option<PathBuf>,
     game: Option<String>,
+    ui_request_id: Option<String>,
     elevate: bool,
     hold_ms: u64,
     launcher_name: Option<String>,
@@ -185,6 +180,16 @@ struct Arguments {
     sleep_ms: u64,
 }
 
+impl Arguments {
+    fn ui_request(&self) -> Option<handoff::Request> {
+        Some(handoff::Request {
+            id: self.ui_request_id.clone()?,
+            game: self.game.clone()?,
+            command: handoff::Command::parse(self.engine.as_deref()?)?,
+        })
+    }
+}
+
 fn next_value(arguments: &[String], index: usize, flag: &str) -> Result<String, Failure> {
     arguments
         .get(index + 1)
@@ -197,6 +202,7 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
         engine: None,
         report: None,
         game: None,
+        ui_request_id: None,
         elevate: false,
         hold_ms: 0,
         launcher_name: None,
@@ -229,6 +235,15 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
             }
             "--game" => {
                 parsed.game = Some(next_value(arguments, index, "--game")?);
+                index += 2;
+            }
+            "--ui-request" => {
+                let id = next_value(arguments, index, "--ui-request")?;
+                if !launcher_core::journal::is_valid_session(&id) || parsed.ui_request_id.is_some()
+                {
+                    return Err(Failure::Usage("交接请求 ID 无效。".to_owned()));
+                }
+                parsed.ui_request_id = Some(id);
                 index += 2;
             }
             "--root" => {
@@ -277,6 +292,18 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
             }
             other => return Err(Failure::Usage(format!("未知参数：{other}"))),
         }
+    }
+    if parsed.ui_request_id.is_some()
+        && (parsed.ui_request().is_none() || parsed.report.is_none() || parsed.gpu.is_some())
+    {
+        return Err(Failure::Usage(
+            "交接请求需要引擎操作、游戏 ID 与报告路径。".to_owned(),
+        ));
+    }
+    if parsed.ui_request_id.is_some() && (parsed.dry_run || parsed.skip_launch) {
+        return Err(Failure::Usage(
+            "正式交接请求不能使用模拟运行参数。".to_owned(),
+        ));
     }
     Ok(parsed)
 }
@@ -360,7 +387,7 @@ fn run() -> Result<u8, Failure> {
             });
             let report = serde_json::to_string_pretty(&report)
                 .map_err(|error| Failure::Usage(format!("生成恢复报告失败：{error}")))?;
-            write_report(parsed.report.as_deref(), &report);
+            write_engine_result(&parsed, handoff::Outcome::Completed { message }, &report)?;
             Ok(EXIT_OK)
         }
         other => Err(Failure::Usage(format!("未知子命令：--engine {other}"))),
@@ -409,7 +436,14 @@ fn engine_stop(parsed: &Arguments) -> Result<u8, Failure> {
 
     let summary = engine::stop(&root, profile, std::time::Duration::from_secs(8))
         .map_err(|error| Failure::Usage(format!("结束并恢复失败：{error}")))?;
-    write_report(parsed.report.as_deref(), &summary.to_json());
+    let report = summary.to_json();
+    write_engine_result(
+        parsed,
+        handoff::Outcome::Completed {
+            message: summary.message,
+        },
+        &report,
+    )?;
     Ok(EXIT_OK)
 }
 
@@ -487,10 +521,13 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
     let guard = match launcher_win::acquire_single_session(std::time::Duration::ZERO) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
-            write_report(
-                parsed.report.as_deref(),
+            write_engine_result(
+                parsed,
+                handoff::Outcome::SessionBusy {
+                    message: "另一个游戏会话正在运行。".to_owned(),
+                },
                 "{\n  \"code\": \"session-busy\",\n  \"message\": \"另一个游戏会话正在运行\"\n}\n",
-            );
+            )?;
             return Ok(EXIT_SESSION_BUSY);
         }
         Err(error) => return Err(Failure::Usage(format!("单会话互斥不可用：{error}"))),
@@ -503,7 +540,7 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
             .unwrap_or_default()
     });
 
-    // 状态先发布：界面/父进程能立刻看到"引擎已接管"或"复用官方启动器"。
+    // 共享状态供重新打开窗口时查找会话。启动接管使用独立的请求报告。
     if let Some(path) = parsed
         .report
         .as_ref()
@@ -527,6 +564,8 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
             .unwrap_or(false);
         let message = if launcher_running {
             "检测到官方启动器已在运行，复用"
+        } else if parsed.ui_request_id.is_some() {
+            "正在准备游戏部署"
         } else {
             "引擎已接管"
         };
@@ -568,9 +607,21 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
         dry_run: parsed.dry_run,
         skip_launch: parsed.skip_launch,
     };
-    let summary = engine::execute(&plan, &root, &options)
-        .map_err(|error| Failure::Usage(format!("执行失败：{error}")))?;
-    write_report(parsed.report.as_deref(), &summary.to_json());
+    let summary = engine::execute(&plan, &root, &options, || {
+        if let (Some(request), Some(report)) = (parsed.ui_request(), parsed.report.as_deref()) {
+            if let Err(error) = handoff::publish(&request, report, handoff::Outcome::Accepted) {
+                eprintln!("无法写入接管确认：{error}");
+            }
+        }
+    })
+    .map_err(|error| Failure::Usage(format!("执行失败：{error}")))?;
+    write_engine_result(
+        parsed,
+        handoff::Outcome::Completed {
+            message: "会话已结束，部署已恢复。".to_owned(),
+        },
+        &summary.to_json(),
+    )?;
     drop(guard);
     Ok(EXIT_OK)
 }
@@ -729,11 +780,43 @@ fn error_report(message: &str) -> String {
     text
 }
 
-/// 失败路径也要能落盘：从命令行里再找一次 `--report`。
-fn report_path_from_env() -> Option<PathBuf> {
+fn write_engine_result(
+    parsed: &Arguments,
+    outcome: handoff::Outcome,
+    legacy: &str,
+) -> Result<(), Failure> {
+    if let (Some(request), Some(path)) = (parsed.ui_request(), parsed.report.as_deref()) {
+        return handoff::publish(&request, path, outcome)
+            .map_err(|error| Failure::Usage(format!("写入本次交接结果失败：{error}")));
+    }
+    write_report(parsed.report.as_deref(), legacy);
+    Ok(())
+}
+
+/// 失败路径也要落盘。保留普通 CLI 结果格式，并给 UI 请求绑定身份。
+fn report_failure(message: &str) {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let index = arguments.iter().position(|value| value == "--report")?;
-    arguments.get(index + 1).map(PathBuf::from)
+    let Some(path) = arguments
+        .windows(2)
+        .find(|pair| pair[0] == "--report")
+        .map(|pair| PathBuf::from(&pair[1]))
+    else {
+        return;
+    };
+    if let Some((request, path)) = parse(&arguments)
+        .ok()
+        .and_then(|parsed| Some((parsed.ui_request()?, parsed.report?)))
+    {
+        let _ = handoff::publish(
+            &request,
+            &path,
+            handoff::Outcome::Failed {
+                message: message.to_owned(),
+            },
+        );
+    } else {
+        write_report(Some(&path), &error_report(message));
+    }
 }
 
 fn write_report(path: Option<&std::path::Path>, text: &str) {

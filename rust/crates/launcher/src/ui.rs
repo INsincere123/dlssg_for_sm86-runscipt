@@ -7,6 +7,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::handoff::{self, Command, Event, Outcome, Pending, Request};
 use crate::view_model::{GameStatus, LauncherView};
 
 /// 自检参数。
@@ -43,70 +44,10 @@ const RENAME_WIDTH: f32 = 170.0;
 /// 主窗口标题：窗口标题、托盘悬停与"再次运行程序"的窗口查找共用这一份。
 pub const WINDOW_TITLE: &str = "DLSSG 启动器";
 
-/// 恢复类动作最多等多久：超时按失败弹窗，不把界面挂成"进行中"。
-const RESTORE_TIMEOUT_SECONDS: u64 = 180;
-/// 启动交出去后先等这么久：引擎在规划/预检阶段失败会立刻写报告，界面要能看到原因。
-const RUN_GRACE_SECONDS: u64 = 6;
 /// 行状态轮询间隔（游戏进程、部署记录、会话锁都可能被引擎或用户改动）。
 const REFRESH_INTERVAL_MS: u64 = 900;
 /// 等提权子进程回报告的上限：超时就不再多等，提示重试。
 const GPU_TIMEOUT_SECONDS: u64 = 60;
-
-/// 正在等结果的动作。
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Pending {
-    Run { game: String, started: Instant },
-    Restore { game: String, started: Instant },
-    Stop { game: String, started: Instant },
-}
-
-impl Pending {
-    fn game(&self) -> &str {
-        match self {
-            Self::Run { game, .. } | Self::Restore { game, .. } | Self::Stop { game, .. } => game,
-        }
-    }
-
-    fn report_name(&self) -> &'static str {
-        match self {
-            Self::Run { .. } => "ui-run.json",
-            Self::Restore { .. } => "ui-restore.json",
-            Self::Stop { .. } => "ui-stop.json",
-        }
-    }
-
-    fn success_title(&self) -> &'static str {
-        match self {
-            Self::Run { .. } => "启动失败",
-            Self::Restore { .. } => "恢复原状完成",
-            Self::Stop { .. } => "已结束并恢复",
-        }
-    }
-
-    fn failure_title(&self) -> &'static str {
-        match self {
-            Self::Run { .. } => "启动失败",
-            Self::Restore { .. } => "恢复原状失败",
-            Self::Stop { .. } => "结束并恢复失败",
-        }
-    }
-
-    fn timeout(&self) -> std::time::Duration {
-        match self {
-            // 启动只看开头几秒：引擎接管后的会话可能持续很久，不该等着弹窗。
-            Self::Run { .. } => std::time::Duration::from_secs(RUN_GRACE_SECONDS),
-            _ => std::time::Duration::from_secs(RESTORE_TIMEOUT_SECONDS),
-        }
-    }
-
-    fn started(&self) -> Instant {
-        match self {
-            Self::Run { started, .. }
-            | Self::Restore { started, .. }
-            | Self::Stop { started, .. } => *started,
-        }
-    }
-}
 
 /// 结果弹窗的内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,8 +74,6 @@ pub struct LauncherApp {
     activation_started: bool,
     /// 等待线程收到过激活信号（在 `ui()` 里消费）。
     activate_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// 底部提示（保存结果等）。
-    notice: String,
     /// 托盘图标（常驻，窗口隐藏后仍可操作）。
     tray: Option<crate::tray::Tray>,
     /// 待确认移除的游戏 id。
@@ -142,7 +81,8 @@ pub struct LauncherApp {
     /// 交接后隐藏窗口（不退出进程）。
     hide_after_handoff: bool,
     /// 正在等结果的动作（启动/恢复/结束并恢复）。
-    pending: Option<Pending>,
+    pending: Vec<Pending>,
+    handoff_popups: std::collections::VecDeque<Popup>,
     /// 结果弹窗（有值时显示，用户点「确定」才消失）。
     popup: Option<Popup>,
     /// 上次刷新行状态的时刻。
@@ -207,12 +147,11 @@ impl LauncherApp {
 
     /// 调试用：开窗后直接摆出某个界面，便于截图核对（`--ui-preview`）。
     pub fn with_preview(mut self, preview: crate::Preview) -> Self {
-        if let Some(outcome) = preview.restore_outcome() {
-            let ok = outcome.is_ok();
+        if let Some((ok, title, detail)) = preview.restore_outcome() {
             self.popup = Some(Popup {
                 ok,
-                title: outcome.title().to_owned(),
-                detail: outcome.detail(),
+                title: title.to_owned(),
+                detail: detail.to_owned(),
             });
         }
         if let Some(view) = preview.settings_view() {
@@ -241,12 +180,12 @@ impl LauncherApp {
             activation: None,
             activation_started: false,
             activate_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            notice: String::new(),
 
             tray: None,
             remove_pending: None,
             hide_after_handoff: false,
-            pending: None,
+            pending: Vec::new(),
+            handoff_popups: std::collections::VecDeque::new(),
             popup: None,
             last_refresh: None,
             detect_job: None,
@@ -296,7 +235,7 @@ impl LauncherApp {
     /// 保存设置到偏好文件；返回是否真的写成功（失败时表单保持打开）。
     fn save_settings(&mut self) -> bool {
         let Some(path) = self.preferences_path.clone() else {
-            self.notice = "偏好路径不可用，无法保存".to_owned();
+            self.view.notice = "偏好路径不可用，无法保存".to_owned();
             return false;
         };
         let Some(entry) = self.view.selected_game().cloned() else {
@@ -306,7 +245,7 @@ impl LauncherApp {
             return false;
         };
         let Some(settings) = form.take_for_save() else {
-            self.notice = form
+            self.view.notice = form
                 .error
                 .clone()
                 .unwrap_or_else(|| "校验未通过".to_owned());
@@ -324,17 +263,17 @@ impl LauncherApp {
         });
         profile.settings = Some(settings);
         if let Err(message) = form.apply_to_profile(&mut profile, &self.root) {
-            self.notice = message;
+            self.view.notice = message;
             return false;
         }
         preferences.upsert(profile);
         match launcher_core::preferences::save(&path, &preferences) {
             Ok(()) => {
-                self.notice = "设置已保存".to_owned();
+                self.view.notice = "设置已保存".to_owned();
                 true
             }
             Err(error) => {
-                self.notice = format!("保存失败：{error}");
+                self.view.notice = format!("保存失败：{error}");
                 false
             }
         }
@@ -381,23 +320,6 @@ impl LauncherApp {
 
         egui::Panel::bottom("actions").show(ui, |ui| {
             ui.horizontal(|ui| {
-                // 启动/恢复/移除已移到每一行；顶栏只保留全局入口。
-                if let Some(entry) = self.view.selected_game() {
-                    match self.last_restore_outcome() {
-                        Some(true) => {
-                            ui.label(egui::RichText::new("上次恢复成功").small().weak());
-                        }
-                        Some(false) => {
-                            ui.label(
-                                egui::RichText::new("上次恢复失败，可在该行点「恢复原状」重试")
-                                    .small()
-                                    .weak(),
-                            );
-                        }
-                        None => {}
-                    }
-                    let _ = entry;
-                }
                 // 扫描放第一个（用户要求）：平台记录里能认出来的直接加，少让用户点。
                 let scanning = self.scan_job.is_some();
                 let scan_label = if scanning { "扫描中…" } else { "扫描游戏" };
@@ -426,7 +348,7 @@ impl LauncherApp {
                 if ui.button("日志").clicked() {
                     let logs = crate::about::logs_directory(&self.root);
                     let _ = std::fs::create_dir_all(&logs);
-                    self.notice = match launcher_win::open_path(&logs) {
+                    self.view.notice = match launcher_win::open_path(&logs) {
                         Ok(()) => format!("已打开日志目录：{}", logs.display()),
                         Err(error) => format!("打开日志目录失败：{error}"),
                     };
@@ -468,37 +390,54 @@ impl LauncherApp {
                     let selected = self.view.selected == Some(index);
                     let id = entry.id.clone();
                     let engine_is_ue = !entry.engine_host.is_empty() && entry.engine_host != "none";
-                    let engine_busy_here = engine_owner.as_deref() == Some(id.as_str());
+                    let engine_busy_here =
+                        engine_owner.as_ref().is_some_and(|(owner, _)| owner == &id);
+                    let allow_stop = self.can_dispatch(Command::Stop, &id, engine_owner.as_ref());
+                    let allow_run = self.can_dispatch(Command::Run, &id, engine_owner.as_ref());
+                    let allow_restore =
+                        self.can_dispatch(Command::Restore, &id, engine_owner.as_ref());
                     ui.horizontal(|ui| {
                         // 行内操作：启动/结束并恢复在最前，恢复原状只在有遗留部署时出现，移除在最后。
                         let running = self.view.row_running(index);
-                        let can_cancel = engine_busy_here && entry.status.can_restore();
+                        let can_cancel = engine_busy_here;
                         if running || can_cancel {
                             // 检测到游戏进程：按钮变成"结束并恢复"，即使游戏是手动启动的。
                             if ui
-                                .button(
-                                    egui::RichText::new(if running {
-                                        "结束并恢复"
-                                    } else {
-                                        "中止并恢复"
-                                    })
-                                    .strong(),
+                                .add_enabled(
+                                    allow_stop,
+                                    egui::Button::new(
+                                        egui::RichText::new(if running {
+                                            "结束并恢复"
+                                        } else {
+                                            "中止并恢复"
+                                        })
+                                        .strong(),
+                                    ),
                                 )
                                 .on_hover_text(if running {
                                     "结束已核验的游戏和官方启动器进程，然后恢复原状"
                                 } else {
                                     "中止当前启动等待并恢复部署"
                                 })
+                                .on_disabled_hover_text("正在处理前一次引擎请求")
                                 .clicked()
                             {
                                 action = Some(RowAction::Stop(id.clone()));
                             }
                         } else {
-                            let can_launch =
-                                entry.status.can_launch() && !self.view.session_running();
+                            let can_launch = entry.status.can_launch()
+                                && !self.view.session_running()
+                                && allow_run;
                             if ui
                                 .add_enabled(can_launch, egui::Button::new("启动"))
                                 .on_hover_text("部署资源并启动（二游会先拉起官方启动器）")
+                                .on_disabled_hover_text(if !self.pending.is_empty() {
+                                    "正在处理前一次引擎请求"
+                                } else if self.view.session_running() {
+                                    "已有游戏会话正在运行"
+                                } else {
+                                    entry.status.text()
+                                })
                                 .clicked()
                             {
                                 action = Some(RowAction::Launch(id.clone()));
@@ -580,7 +519,8 @@ impl LauncherApp {
                             && !running
                             && !can_cancel
                             && ui
-                                .button("恢复原状")
+                                .add_enabled(allow_restore, egui::Button::new("恢复原状"))
+                                .on_disabled_hover_text("正在处理前一次引擎请求")
                                 .on_hover_text("有未清理的部署：按记录恢复游戏目录与配置")
                                 .clicked()
                         {
@@ -655,12 +595,12 @@ impl LauncherApp {
     /// 把一份游戏配置写进偏好并刷新列表。
     fn persist_profile(&mut self, profile: launcher_core::preferences::GameProfile) {
         let Some(path) = self.preferences_path.clone() else {
-            self.notice = "偏好路径不可用，无法保存".to_owned();
+            self.view.notice = "偏好路径不可用，无法保存".to_owned();
             return;
         };
         let mut preferences = launcher_core::preferences::load(&path).unwrap_or_default();
         preferences.upsert(profile.clone());
-        self.notice = match launcher_core::preferences::save(&path, &preferences) {
+        self.view.notice = match launcher_core::preferences::save(&path, &preferences) {
             Ok(()) => format!("已添加：{}", profile.name),
             Err(error) => format!("保存失败：{error}"),
         };
@@ -709,15 +649,15 @@ impl LauncherApp {
         match action {
             RowAction::Launch(id) => {
                 self.view.select_by_id(&id);
-                self.hand_off(crate::handoff::Command::Run);
+                self.hand_off(Command::Run, &id);
             }
             RowAction::Stop(id) => {
                 self.view.select_by_id(&id);
-                self.hand_off(crate::handoff::Command::Stop);
+                self.hand_off(Command::Stop, &id);
             }
             RowAction::Restore(id) => {
                 self.view.select_by_id(&id);
-                self.hand_off(crate::handoff::Command::Restore);
+                self.hand_off(Command::Restore, &id);
             }
             RowAction::Remove(id) => self.remove_pending = Some(id),
             RowAction::FrameGen(id) => {
@@ -769,7 +709,7 @@ impl LauncherApp {
                 }
             }
             self.view.games.retain(|entry| entry.id != id);
-            self.notice = format!("已移除 {name}");
+            self.view.notice = format!("已移除 {name}");
             self.remove_pending = None;
         } else if !open || cancelled {
             self.remove_pending = None;
@@ -834,7 +774,7 @@ impl LauncherApp {
             return;
         }
         // 引擎在用（部署/恢复/游戏在跑）时不许改名、不许重启：改名要重启，重启会打断恢复。
-        let engine_busy = self.pending.is_some() || launcher_win::session_active();
+        let engine_busy = !self.pending.is_empty() || launcher_win::session_active();
         let mut open = true;
         let mut close = false;
         let mut action: Option<crate::gpu::Action> = None;
@@ -1112,7 +1052,7 @@ impl LauncherApp {
                     panel.busy = true;
                 }
                 self.gpu_busy_since = Some(Instant::now());
-                self.notice = "已请求管理员权限…".to_owned();
+                self.view.notice = "已请求管理员权限…".to_owned();
             }
             Err(error) => {
                 if let Some(panel) = self.gpu.as_mut() {
@@ -1141,7 +1081,7 @@ impl LauncherApp {
                 self.gpu_busy_since = None;
                 let action = crate::gpu::Action::parse(&report.action);
                 if report.ok {
-                    self.notice = report.message.clone();
+                    self.view.notice = report.message.clone();
                     self.refresh_gpu_panel();
                     // 只有"和本次运行开始时的名字不同"才提示重启；又改回去就不提示。
                     if let Some(
@@ -1163,7 +1103,7 @@ impl LauncherApp {
                     if let Some(panel) = self.gpu.as_mut() {
                         panel.error = report.error.clone();
                     }
-                    self.notice = report.error;
+                    self.view.notice = report.error;
                 }
             }
             None => {
@@ -1188,13 +1128,13 @@ impl LauncherApp {
 
     /// 重启电脑（10 秒倒计时；不做任何重启状态检测）。
     fn gpu_restart(&mut self) {
-        if self.pending.is_some() || launcher_win::session_active() {
-            self.notice = "引擎正在跑，先结束游戏并恢复再重启".to_owned();
+        if !self.pending.is_empty() || launcher_win::session_active() {
+            self.view.notice = "引擎正在跑，先结束游戏并恢复再重启".to_owned();
             return;
         }
         match crate::gpu::restart(10) {
             Ok(message) => {
-                self.notice = message;
+                self.view.notice = message;
                 if let Some(panel) = self.gpu.as_mut() {
                     panel.confirm_restart = false;
                     panel.restart_sent = true;
@@ -1212,12 +1152,12 @@ impl LauncherApp {
     /// 起一次后台平台扫描（注册表 + 平台清单 + 每个游戏的渲染 EXE 确认）。
     fn start_scan(&mut self) {
         if self.scan_job.is_some() {
-            self.notice = "扫描已经在进行".to_owned();
+            self.view.notice = "扫描已经在进行".to_owned();
             return;
         }
         let root = self.root.clone();
         let existing = self.existing_games();
-        self.notice = "正在扫描平台记录…".to_owned();
+        self.view.notice = "正在扫描平台记录…".to_owned();
         self.scan_job = Some(std::thread::spawn(move || {
             crate::scan::scan(&root, &existing)
         }));
@@ -1259,7 +1199,7 @@ impl LauncherApp {
         let result = match handle.join() {
             Ok(result) => result,
             Err(_) => {
-                self.notice = "扫描线程异常结束".to_owned();
+                self.view.notice = "扫描线程异常结束".to_owned();
                 return;
             }
         };
@@ -1269,9 +1209,9 @@ impl LauncherApp {
             added.push(ready.profile.name.clone());
         }
         if !added.is_empty() {
-            self.notice = format!("扫描添加 {} 个：{}", added.len(), added.join("、"));
+            self.view.notice = format!("扫描添加 {} 个：{}", added.len(), added.join("、"));
         } else {
-            self.notice = result.summary();
+            self.view.notice = result.summary();
         }
         if !result.ready.is_empty() || !result.ambiguous.is_empty() || !result.notes.is_empty() {
             self.scan_report = Some(result);
@@ -1394,7 +1334,7 @@ impl LauncherApp {
             .unwrap_or_else(|| game_id.to_owned());
         let handle =
             std::thread::spawn(move || launcher_core::unreal::detect(&directory, &executable));
-        self.notice = format!("正在识别「{name}」的引擎版本（要扫渲染 EXE，可能需要几秒）…");
+        self.view.notice = format!("正在识别「{name}」的引擎版本（要扫渲染 EXE，可能需要几秒）…");
         self.detect_job = Some((game_id.to_owned(), handle));
     }
 
@@ -1418,7 +1358,7 @@ impl LauncherApp {
         };
         match handle.join() {
             Ok(detection) => self.apply_detection(&id, &detection),
-            Err(_) => self.notice = "引擎识别线程异常结束，请重试".to_owned(),
+            Err(_) => self.view.notice = "引擎识别线程异常结束，请重试".to_owned(),
         }
         if let Some((id, directory, executable)) = self.detect_queue.first().cloned() {
             self.detect_queue.remove(0);
@@ -1432,7 +1372,7 @@ impl LauncherApp {
             Some(4) => "UE4",
             Some(5) => "UE5",
             _ => {
-                self.notice = format!(
+                self.view.notice = format!(
                     "引擎识别：{}（{}）；可手动校准",
                     detection.text(),
                     detection.source
@@ -1446,7 +1386,7 @@ impl LauncherApp {
             form.engine_host_is_ue = true;
             form.dirty = true;
         }
-        self.notice = format!("引擎识别：{host}（{}）", detection.source);
+        self.view.notice = format!("引擎识别：{host}（{}）", detection.source);
     }
 
     /// 双击标题：开始编辑这一行（同一时间只编辑一行，先落盘上一行的改动）。
@@ -1470,7 +1410,7 @@ impl LauncherApp {
         let name = match state.normalized() {
             Ok(name) => name,
             Err(message) => {
-                self.notice = message;
+                self.view.notice = message;
                 // 名字不合法：输入框留着让用户接着改，别把他刚打的字丢掉。
                 self.rename = Some(crate::rename::RenameState {
                     fresh: true,
@@ -1483,18 +1423,18 @@ impl LauncherApp {
             return;
         }
         let Some(path) = self.preferences_path.clone() else {
-            self.notice = "偏好路径不可用，改名没有保存".to_owned();
+            self.view.notice = "偏好路径不可用，改名没有保存".to_owned();
             return;
         };
         let mut preferences = match launcher_core::preferences::load(&path) {
             Ok(preferences) => preferences,
             Err(error) => {
-                self.notice = format!("偏好读不出来，改名没有保存：{error}");
+                self.view.notice = format!("偏好读不出来，改名没有保存：{error}");
                 return;
             }
         };
         let Some(profile) = preferences.find(id).cloned() else {
-            self.notice = format!("偏好里没有这条记录，改名没有保存：{id}");
+            self.view.notice = format!("偏好里没有这条记录，改名没有保存：{id}");
             return;
         };
         let mut updated = profile;
@@ -1505,9 +1445,9 @@ impl LauncherApp {
                 if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
                     entry.name = name.clone();
                 }
-                self.notice = format!("已重命名为「{name}」");
+                self.view.notice = format!("已重命名为「{name}」");
             }
-            Err(error) => self.notice = format!("改名保存失败：{error}"),
+            Err(error) => self.view.notice = format!("改名保存失败：{error}"),
         }
     }
 
@@ -1538,18 +1478,6 @@ impl LauncherApp {
         let _ = launcher_core::preferences::save(&path, &preferences);
     }
 
-    /// 读最近一次"恢复原状"的报告：`Some(true)` 成功、`Some(false)` 失败、`None` 未跑过。
-    fn last_restore_outcome(&self) -> Option<bool> {
-        let text = std::fs::read_to_string(self.report_path("ui-restore.json")).ok()?;
-        if text.contains("\"code\": \"restored\"") {
-            Some(true)
-        } else if text.contains("\"error\"") {
-            Some(false)
-        } else {
-            None
-        }
-    }
-
     /// 引擎报告路径（引擎子进程写、界面读）。
     fn report_path(&self, name: &str) -> std::path::PathBuf {
         crate::about::logs_directory(&self.root).join(name)
@@ -1562,38 +1490,32 @@ impl LauncherApp {
             .is_file()
     }
 
-    /// 引擎当前占着会话、并且在跑哪个游戏（读 `logs\status.json`，并核对它的 pid 还活着）。    ///
-    /// 用来把「恢复原状」在"引擎正跑着这个游戏"时置灰：这时手动恢复会和引擎抢同一份
-    /// 部署记录，既容易失败，也会把游戏留在半个部署状态。该走「结束并恢复」。
-    fn engine_owner(&self) -> Option<String> {
+    /// 核对持有活动部署记录的引擎。状态文件只用于重新打开窗口后的会话提示。
+    fn engine_owner(&self) -> Option<(String, u32)> {
+        let owns_record = |game, pid| {
+            launcher_core::journal_store::load_for_game(&self.root, game)
+                .ok()
+                .flatten()
+                .is_some_and(|(_, record)| record.script_pid == pid)
+        };
+        for pending in &self.pending {
+            if pending.request.command != Command::Run {
+                continue;
+            }
+            if let Some(pid) = pending
+                .child_pid()
+                .filter(|pid| owns_record(&pending.request.game, *pid))
+            {
+                return Some((pending.request.game.clone(), pid));
+            }
+        }
         if !launcher_win::session_active() {
             return None;
         }
-        let text = std::fs::read_to_string(self.report_path("status.json")).ok()?;
-        let game_id = json_text(&text, "game_id")?;
-        let pid: u32 = json_text(&text, "pid")?.parse().ok()?;
-        launcher_win::process_running(pid).then_some(game_id)
+        let status = launcher_win::ipc::read_status(&self.report_path("status.json"))?;
+        (launcher_win::process_running(status.pid) && owns_record(&status.game_id, status.pid))
+            .then_some((status.game_id, status.pid))
     }
-
-    /// 按当前磁盘事实重算一行状态。
-    fn refresh_status(&mut self, id: &str) {
-        let pending = launcher_core::journal_store::load_for_game(&self.root, id)
-            .ok()
-            .flatten()
-            .is_some();
-        let (exists, running) = self
-            .view
-            .games
-            .iter()
-            .find(|entry| entry.id == id)
-            .map(|entry| (entry.directory.is_dir(), entry.running))
-            .unwrap_or((false, false));
-        let status = crate::view_model::derive_status(exists, pending, running);
-        if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
-            entry.status = status;
-        }
-    }
-
     /// 周期性刷新所有行：状态（部署记录 + **本行**游戏进程）与全局会话占用。
     ///
     /// 以前把"全局会话在跑"写进每一行的状态，结果一款游戏在跑会让所有行都显示"运行中"，
@@ -1635,93 +1557,125 @@ impl LauncherApp {
         }
     }
 
-    /// 把「启动 / 恢复原状 / 结束并恢复」交给提权后的引擎子进程。
-    fn hand_off(&mut self, command: crate::handoff::Command) {
-        let Some(game) = self.view.selected_game().map(|entry| entry.id.clone()) else {
-            self.notice = "先选择一个游戏".to_owned();
+    /// 只有当前游戏对应的引擎可以与一个中止请求并行。
+    fn can_dispatch(&self, command: Command, game: &str, owner: Option<&(String, u32)>) -> bool {
+        handoff::can_start(
+            self.pending.iter().map(|pending| {
+                let same_engine = pending.request.game == game
+                    && owner
+                        .is_some_and(|(id, pid)| id == game && pending.child_pid() == Some(*pid));
+                (pending.request.command, same_engine)
+            }),
+            command,
+        )
+    }
+
+    fn hand_off(&mut self, command: Command, game: &str) {
+        let engine_owner = self.engine_owner();
+        if !self.can_dispatch(command, game, engine_owner.as_ref()) {
+            self.view.notice = "正在处理前一次引擎请求，请等它结束。".to_owned();
             return;
-        };
+        }
+
+        let request = Request::new(game, command);
         let logs = crate::about::logs_directory(&self.root);
-        let _ = std::fs::create_dir_all(&logs);
-        let report = logs.join(command.report_name());
-        // 上一轮的报告会让界面误判成本轮结果，先清掉。
-        let _ = std::fs::remove_file(&report);
-        match crate::handoff::hand_off(command, &game, &self.root, &report) {
-            Ok(()) => {
-                let started = Instant::now();
-                self.pending = Some(match command {
-                    crate::handoff::Command::Run => Pending::Run {
-                        game: game.clone(),
-                        started,
-                    },
-                    crate::handoff::Command::Restore => Pending::Restore {
-                        game: game.clone(),
-                        started,
-                    },
-                    crate::handoff::Command::Stop => Pending::Stop {
-                        game: game.clone(),
-                        started,
-                    },
-                });
-                self.notice = match command {
-                    crate::handoff::Command::Run => "已交给引擎，正在等它接管…".to_owned(),
-                    crate::handoff::Command::Restore => "正在恢复原状…".to_owned(),
-                    crate::handoff::Command::Stop => "正在结束进程并恢复…".to_owned(),
-                };
+        match Pending::start(request, &self.root, &logs) {
+            Ok(pending) => {
+                if command == Command::Stop {
+                    for request in &mut self.pending {
+                        request.keep_visible();
+                    }
+                }
+                self.pending.push(pending);
+                self.view.notice = format!(
+                    "等待管理员授权以{}「{}」…",
+                    command.label(),
+                    self.game_name(game)
+                );
             }
-            Err(error) => self.notice = format!("交接失败：{error}"),
+            Err(error) => self.view.notice = format!("无法发起{}请求：{error}", command.label()),
         }
     }
 
-    /// 每帧看一眼正在等的动作有没有结果。
-    fn poll_pending(&mut self) {
-        let Some(pending) = self.pending.clone() else {
-            return;
-        };
-        let report = self.report_path(pending.report_name());
-        match crate::restore_result::read(&report) {
-            Some(outcome) => {
-                self.pending = None;
-                // 启动成功的报告要等整局结束才写，这里通常只在失败时命中。
-                if pending.report_name() == "ui-run.json" && outcome.is_ok() {
-                    return;
+    fn game_name<'a>(&'a self, game: &'a str) -> &'a str {
+        self.view
+            .games
+            .iter()
+            .find(|entry| entry.id == game)
+            .map_or(game, |entry| &entry.name)
+    }
+
+    fn poll_pending(&mut self, ctx: &egui::Context) {
+        let mut events = Vec::new();
+        self.pending.retain_mut(|pending| {
+            let Some(event) = pending.poll() else {
+                return true;
+            };
+            let terminal = matches!(event, Event::Cancelled | Event::Finished(_));
+            events.push((pending.request.clone(), event));
+            !terminal
+        });
+        for (request, event) in events {
+            let game = self.game_name(&request.game).to_owned();
+            let action = request.command.label();
+            match event {
+                Event::ChildCreated => {
+                    self.view.notice = format!("「{game}」的提权子进程已创建，正在等待{action}。");
                 }
-                self.popup = Some(Popup {
-                    ok: outcome.is_ok(),
-                    title: if outcome.is_ok() {
-                        pending.success_title().to_owned()
+                Event::Accepted { auto_hide } => {
+                    self.view.notice = format!("引擎已接管「{game}」。");
+                    if auto_hide && self.tray.is_some() {
+                        self.hide_after_handoff = true;
+                    }
+                }
+                Event::Overdue => {
+                    let waiting_for = if request.command == Command::Run {
+                        "接管确认"
                     } else {
-                        pending.failure_title().to_owned()
-                    },
-                    detail: outcome.detail(),
-                });
-                self.refresh_status(pending.game());
-            }
-            None => {
-                if pending.started().elapsed() >= pending.timeout() {
-                    self.pending = None;
-                    match pending {
-                        // 启动：引擎接管后就该把界面藏起来；失败的话上面已经弹窗了。
-                        Pending::Run { .. } => {
-                            self.hide_after_handoff = true;
-                            self.notice = "引擎已接管，界面已隐藏（托盘图标可恢复）".to_owned();
+                        "操作结果"
+                    };
+                    self.view.notice = format!("「{game}」等待{waiting_for}超时，子进程仍在运行。");
+                }
+                Event::OverdueWithReason(reason) => {
+                    self.view.notice =
+                        format!("无法核验「{game}」子进程状态：{reason}。仍跟踪本次请求。");
+                }
+                Event::Cancelled => self.view.notice = format!("已取消「{game}」的{action}授权。"),
+                Event::Finished(outcome) => {
+                    let (ok, title, detail) = match outcome {
+                        Outcome::Completed { message } => {
+                            let title = if request.command == Command::Run {
+                                "启动会话结束".to_owned()
+                            } else {
+                                format!("{action}完成")
+                            };
+                            (true, title, message)
                         }
-                        _ => {
-                            self.popup = Some(Popup {
-                                ok: false,
-                                title: pending.failure_title().to_owned(),
-                                detail: format!(
-                                    "等待 {} 秒仍没有结果。\n引擎可能还在结束游戏进程，或提权被拒绝。请查看日志后再试。",
-                                    pending.timeout().as_secs()
-                                ),
-                            });
+                        Outcome::SessionBusy { message } => {
+                            (false, "引擎会话占用".to_owned(), message)
                         }
+                        Outcome::Failed { message } => (false, format!("{action}失败"), message),
+                        Outcome::Accepted => unreachable!("接管确认由独立事件处理"),
+                    };
+                    self.view.notice = format!("「{game}」{title}。{detail}");
+                    self.last_refresh = None;
+                    if !ok || request.command != Command::Run {
+                        self.handoff_popups.push_back(Popup {
+                            ok,
+                            title: format!("「{game}」{title}"),
+                            detail,
+                        });
+                    }
+                    if !ok && request.command == Command::Run && self.hide_after_handoff {
+                        self.show_main_window(ctx);
                     }
                 }
             }
         }
+        if self.popup.is_none() {
+            self.popup = self.handoff_popups.pop_front();
+        }
     }
-
     /// 添加游戏对话框（M4-05）。
     fn draw_add_game(&mut self, root: &mut egui::Ui) {
         use crate::add_game::{AddGameState, HostChoice};
@@ -2226,7 +2180,7 @@ impl LauncherApp {
                             self.start_detection(&game.id, game.directory.clone(), executable);
                         }
                         _ => {
-                            self.notice =
+                            self.view.notice =
                                 "这条记录没有可用的渲染程序，识别不了；先在「添加游戏」里扫描确认目录"
                                     .to_owned();
                         }
@@ -2332,6 +2286,9 @@ impl LauncherApp {
     /// （从托盘恢复）、`Minimized(false)` + `Focus`（最小化或压在别的窗口后面时回到最前）。
     fn show_main_window(&mut self, ctx: &egui::Context) {
         self.hide_after_handoff = false;
+        for request in &mut self.pending {
+            request.keep_visible();
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -2369,7 +2326,7 @@ impl eframe::App for LauncherApp {
             }
         }
         // 关闭按钮 = 收进托盘（进程继续活着，托盘左键能再打开）；真退出走托盘「退出」。
-        if root.ctx().input(|input| input.viewport().close_requested()) {
+        if self.tray.is_some() && root.ctx().input(|input| input.viewport().close_requested()) {
             root.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             root.ctx()
@@ -2400,8 +2357,8 @@ impl eframe::App for LauncherApp {
         root.ctx()
             .request_repaint_after(std::time::Duration::from_millis(REFRESH_INTERVAL_MS));
         // 正在等结果的动作（启动/恢复/结束并恢复）。
-        self.poll_pending();
-        if self.pending.is_some() {
+        self.poll_pending(root.ctx());
+        if !self.pending.is_empty() {
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(300));
         }
@@ -2419,7 +2376,7 @@ impl eframe::App for LauncherApp {
             root.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             if let Some(tray) = self.tray.as_ref() {
-                tray.set_tooltip("DLSSG 启动器：引擎已接管（双击托盘图标恢复窗口）");
+                tray.set_tooltip(&format!("{} · 单击托盘图标打开窗口", self.view.headline()));
             }
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(500));
@@ -2485,23 +2442,6 @@ pub fn status_color(status: GameStatus) -> egui::Color32 {
     }
 }
 
-/// 从一段紧凑 JSON 里取一个字符串/数字字段的原文（`{"game_id":"x","pid":1}`）。
-fn json_text(text: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let start = text.find(&needle)? + needle.len();
-    let rest = &text[start..];
-    let colon = rest.find(':')?;
-    let rest = rest[colon + 1..].trim_start();
-    if let Some(after) = rest.strip_prefix('"') {
-        let end = after.find('"')?;
-        return Some(after[..end].to_owned());
-    }
-    let end = rest
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(rest.len());
-    (end > 0).then(|| rest[..end].to_owned())
-}
-
 /// 状态胶囊：圆角底色 + 白字，用于列表行。
 pub fn status_pill(ui: &mut egui::Ui, status: GameStatus) {
     let color = status_color(status);
@@ -2516,23 +2456,4 @@ pub fn status_pill(ui: &mut egui::Ui, status: GameStatus) {
                     .small(),
             );
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compact_status_json_is_parsed() {
-        // 与 `ipc::StatusSnapshot::to_json` 的真实形状一致
-        let text = r#"{"game_id":"direct-790c6651f94e333f0469a56d9c5faab5","phase":"starting","pid":14672,"updated_at":1795414816,"message":"引擎已接管"}"#;
-        assert_eq!(
-            json_text(text, "game_id").as_deref(),
-            Some("direct-790c6651f94e333f0469a56d9c5faab5")
-        );
-        assert_eq!(json_text(text, "pid").as_deref(), Some("14672"));
-        assert_eq!(json_text(text, "message").as_deref(), Some("引擎已接管"));
-        assert!(json_text(text, "nope").is_none());
-        assert!(json_text("not json", "game_id").is_none());
-    }
 }

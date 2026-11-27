@@ -47,12 +47,14 @@ unsafe extern "system" {
 #[link(name = "ole32")]
 unsafe extern "system" {
     fn CoInitializeEx(reserved: *mut c_void, co_init: u32) -> i32;
+    fn CoUninitialize();
 }
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
+    fn GetProcessId(process: isize) -> u32;
     fn CloseHandle(handle: isize) -> i32;
 }
 
@@ -123,7 +125,18 @@ pub fn run_elevated(exe: &Path, arguments: &str, wait: Duration) -> Result<Eleva
 ///
 /// 与 `run_elevated` 的区别是不读退出码、不阻塞；句柄立刻关闭不会影响子进程。
 pub fn spawn_elevated(exe: &Path, arguments: &str) -> Result<()> {
-    unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+    match start_elevated(exe, arguments)? {
+        Some(child) => {
+            child.forget();
+            Ok(())
+        }
+        None => Err(Error::unavailable("用户取消了提权")),
+    }
+}
+
+/// 拉起独立提权子进程，保留其句柄。取消 UAC 返回 `Ok(None)`。
+pub fn start_elevated(exe: &Path, arguments: &str) -> Result<Option<crate::Spawned>> {
+    let com = unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED) };
 
     let verb = wide(std::ffi::OsStr::new("runas"));
     let file = wide(exe.as_os_str());
@@ -137,20 +150,25 @@ pub fn spawn_elevated(exe: &Path, arguments: &str) -> Result<()> {
     info.n_show = SW_HIDE;
 
     let started = unsafe { ShellExecuteExW(&mut info) };
-    if started == 0 {
-        let error = io::Error::last_os_error();
-        if let Some(outcome) = classify_shell_error(&error) {
-            return Err(Error::unavailable(match outcome {
-                ElevationOutcome::Cancelled => "用户取消了提权".to_owned(),
-                _ => "提权启动失败".to_owned(),
-            }));
+    let error = (started == 0).then(io::Error::last_os_error);
+    if com >= 0 {
+        unsafe { CoUninitialize() };
+    }
+    if let Some(error) = error {
+        if classify_shell_error(&error).is_some() {
+            return Ok(None);
         }
         return Err(Error::io(exe, error));
     }
-    if info.h_process != 0 {
-        unsafe { CloseHandle(info.h_process) };
+    if info.h_process == 0 {
+        return Err(Error::unavailable("提权启动未返回可跟踪的子进程句柄。"));
     }
-    Ok(())
+    // 某些提权环境可能不允许查询 PID。UI 仍会等待句柄，PID 不可核验时不会自动隐藏。
+    let pid = unsafe { GetProcessId(info.h_process) };
+    Ok(Some(crate::Spawned {
+        pid,
+        handle: info.h_process,
+    }))
 }
 fn last_error(path: &Path) -> Error {
     Error::io(path, io::Error::last_os_error())

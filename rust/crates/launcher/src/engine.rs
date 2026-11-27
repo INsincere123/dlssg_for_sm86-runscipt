@@ -952,7 +952,12 @@ impl RunSummary {
 }
 
 /// 按计划执行（`dry_run` 只模拟，不落盘），随后恢复。
-pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Result<RunSummary> {
+pub fn execute(
+    plan: &RunPlan,
+    launcher_root: &Path,
+    options: &RunOptions,
+    on_accepted: impl FnOnce(),
+) -> Result<RunSummary> {
     use launcher_core::{diagnostic, engine_config, journal, journal_store, resources};
 
     let mut summary = RunSummary {
@@ -1307,6 +1312,9 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
                 error,
             ));
         }
+        if summary.launched && !cancellation.requested() {
+            on_accepted();
+        }
 
         let mut machine =
             launcher_core::session::SessionMachine::new(spec.clone(), std::time::SystemTime::now());
@@ -1473,6 +1481,7 @@ mod tests {
                 dry_run: true,
                 ..RunOptions::default()
             },
+            || panic!("预览不得确认接管"),
         )
         .expect("预览旧根记录");
         assert!(

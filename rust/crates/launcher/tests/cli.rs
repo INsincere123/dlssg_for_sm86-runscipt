@@ -246,6 +246,81 @@ fn stop_signals_a_waiting_session_before_reporting_recovery() {
 }
 
 #[test]
+fn ui_restore_carries_the_request_identity_on_success_and_failure() {
+    let (root, preferences) = engine_fixture("ui-restore");
+    let render = root.join("game/Project/Binaries/Win64/Game-Win64-Shipping.exe");
+    let journal = process_fixture_journal(&root, render, "11111111111111111111111111111111");
+    for (request, expected) in [
+        ("22222222222222222222222222222222", "completed"),
+        ("33333333333333333333333333333333", "failed"),
+    ] {
+        let report = root.join(format!("ui-restore-{request}.json"));
+        let child = Command::new(binary())
+            .args([
+                "--engine",
+                "restore",
+                "--game",
+                "fixture",
+                "--ui-request",
+                request,
+                "--root",
+                root.to_str().unwrap(),
+                "--preferences",
+                preferences.to_str().unwrap(),
+                "--report",
+                report.to_str().unwrap(),
+            ])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let status = child.wait_with_output().unwrap().status;
+        let result: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(status.success(), expected == "completed");
+        assert_eq!(result["request"]["id"], request);
+        assert_eq!(result["request"]["game"], "fixture");
+        assert_eq!(result["request"]["command"], "restore");
+        assert_eq!(result["pid"], pid);
+        assert_eq!(result["outcome"]["status"], expected);
+        assert!(!report.with_extension("accepted.json").exists());
+    }
+    assert!(!journal.exists());
+}
+
+#[test]
+fn busy_ui_run_emits_only_a_bound_terminal_result() {
+    let _tests = SESSION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    wait_for_free_session();
+    let _session = launcher_win::acquire_single_session(Duration::ZERO)
+        .unwrap()
+        .expect("预占会话锁");
+    let root = scratch("ui-busy");
+    let report = root.join("ui-run.json");
+    let request = "44444444444444444444444444444444";
+    let status = run(&[
+        "--engine",
+        "run",
+        "--game",
+        "fixture",
+        "--ui-request",
+        request,
+        "--root",
+        root.to_str().unwrap(),
+        "--report",
+        report.to_str().unwrap(),
+    ]);
+    let result: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    assert_eq!(status.code(), Some(6));
+    assert_eq!(result["request"]["id"], request);
+    assert_eq!(result["outcome"]["status"], "session-busy");
+    assert!(!report.with_extension("accepted.json").exists());
+    assert!(!root.join(".state").exists());
+}
+
+#[test]
 fn unknown_arguments_exit_with_usage_code() {
     assert_eq!(run(&["--nope"]).code(), Some(2));
     assert_eq!(run(&["--engine"]).code(), Some(2));

@@ -250,9 +250,24 @@ impl Spawned {
         Some(code)
     }
 
-    /// 放弃等待（不终止子进程）；句柄由 `Drop` 关闭。
-    pub fn forget(mut self) {
-        self.handle = 0;
+    /// 查询子进程是否已退出。句柄查询失败与子进程仍在运行是不同结果。
+    pub fn try_wait(&self) -> Result<Option<u32>> {
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(self.handle, &mut code) } == 0 {
+                    return Err(last_error());
+                }
+                Ok(Some(code))
+            }
+            _ => Err(last_error()),
+        }
+    }
+
+    /// 放弃等待（仅关闭本进程持有的句柄）。
+    pub fn forget(self) {
+        drop(self);
     }
 }
 

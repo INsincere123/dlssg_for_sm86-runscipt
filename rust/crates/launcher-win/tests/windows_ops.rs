@@ -182,6 +182,7 @@ fn spawn_process_runs_a_hidden_child_and_reports_its_exit_code() {
     assert!(child.pid > 0, "应拿到 pid");
     let code = child.wait(Duration::from_secs(20)).expect("应正常退出");
     assert_eq!(code, 7, "退出码必须原样传回");
+    assert_eq!(child.try_wait().expect("轮询退出状态"), Some(7));
 }
 
 #[test]
