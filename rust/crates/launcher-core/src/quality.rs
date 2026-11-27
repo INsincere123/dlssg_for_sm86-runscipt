@@ -5,10 +5,7 @@
 //! - 档位 `Tier1`..`Tier5`，缺省 `Tier2`，非法值报"画质档位无效。"
 //! - 分档目录固定：`01-高性能均衡`、`02-主流均衡`、`03-性能优先`、`04-入门流畅`、`05-自定义`
 //! - 配置源 `<根>\配置\虚幻通用分类\UE<4|5>\<分档目录>\Engine.ini`
-//! - 未确定 UE4/UE5 时报"尚未确定UE4/UE5，请等待识别或在高级设置校准引擎版本。"
-//!
-//! 与现有实现的差异（PARITY 决策 3.6）：新程序**不做自动识别**，`EngineHost` 由用户声明
-//! （`none` / `UE4` / `UE5`）；`none` 就是"尚未确定"，处理方式与 PS 相同。
+//! - 画质配置只接受由识别或手动校准确认的 UE4/UE5。
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +66,13 @@ pub enum EngineHost {
 }
 
 impl EngineHost {
+    /// 只接受已经确认的虚幻主版本。
+    pub fn confirmed(value: &str) -> Option<Self> {
+        Self::from_text(value)
+            .ok()
+            .filter(|host| host.major().is_some())
+    }
+
     pub fn from_text(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "none" | "" => Ok(Self::None),
@@ -110,7 +114,7 @@ pub struct QualitySelection {
 pub fn resolve(host: EngineHost, tier: QualityTier, root: &Path) -> Result<QualitySelection> {
     let major = host
         .major()
-        .ok_or_else(|| Error::invalid("尚未确定UE4/UE5，请等待识别或在高级设置校准引擎版本。"))?;
+        .ok_or_else(|| Error::invalid("尚未确定UE4/UE5，请在「引擎」中识别或校准引擎版本。"))?;
     let path = root
         .join("配置")
         .join("虚幻通用分类")

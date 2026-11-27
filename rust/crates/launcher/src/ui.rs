@@ -4,10 +4,13 @@
 //! 供验收脚本测量内存与冷启动。
 
 use eframe::egui;
+use launcher_core::preferences::{GameProfile, Preferences};
+use launcher_core::quality::EngineHost;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::handoff::{self, Command, Event, Outcome, Pending, Request};
+use crate::settings_form::{SettingsForm, SettingsView};
 use crate::view_model::{GameStatus, LauncherView};
 
 /// 自检参数。
@@ -26,6 +29,7 @@ enum RowAction {
     Remove(String),
     FrameGen(String),
     Quality(String),
+    Engine(String),
 }
 
 /// 标题改名（双击进入）触发的动作。
@@ -55,6 +59,39 @@ struct Popup {
     ok: bool,
     title: String,
     detail: String,
+}
+
+struct DetectionTarget {
+    id: String,
+    directory: PathBuf,
+    executable: PathBuf,
+    engine_host: String,
+}
+
+impl DetectionTarget {
+    fn from_profile(profile: &GameProfile) -> Result<Self, String> {
+        let executable = crate::engine::render_path(profile)
+            .filter(|path| path.is_file())
+            .ok_or_else(|| "该游戏没有可用于识别的渲染程序。".to_owned())?;
+        Ok(Self {
+            id: profile.id.clone(),
+            directory: profile.directory.clone(),
+            executable,
+            engine_host: profile.engine_host.clone(),
+        })
+    }
+
+    fn still_matches(&self, profile: &GameProfile) -> bool {
+        self.id == profile.id
+            && self.directory == profile.directory
+            && crate::engine::render_path(profile).as_ref() == Some(&self.executable)
+            && self.engine_host == profile.engine_host
+    }
+}
+
+struct DetectionJob {
+    target: Option<DetectionTarget>,
+    handle: std::thread::JoinHandle<launcher_core::unreal::Detection>,
 }
 
 pub struct LauncherApp {
@@ -88,12 +125,10 @@ pub struct LauncherApp {
     /// 上次刷新行状态的时刻。
     last_refresh: Option<Instant>,
     /// 后台识别引擎主版本：大 EXE 要扫几秒，不能卡界面。
-    detect_job: Option<(
-        String,
-        std::thread::JoinHandle<launcher_core::unreal::Detection>,
-    )>,
+    detect_job: Option<DetectionJob>,
     /// 等着识别的游戏（一次只跑一个，剩下的排队）。
-    detect_queue: Vec<(String, std::path::PathBuf, std::path::PathBuf)>,
+    detect_queue: std::collections::VecDeque<DetectionTarget>,
+    engine_dialog: Option<String>,
     /// 后台平台扫描（注册表 + 平台清单，可能要几秒）。
     scan_job: Option<std::thread::JoinHandle<crate::scan::ScanResult>>,
     /// 扫描结果窗口（有值时显示）。
@@ -155,7 +190,9 @@ impl LauncherApp {
             });
         }
         if let Some(view) = preview.settings_view() {
-            self.open_settings(view);
+            if let Some(id) = self.view.selected_game().map(|entry| entry.id.clone()) {
+                self.open_settings(&id, view);
+            }
         }
         if let Some(report) = preview.scan_sample() {
             self.scan_report = Some(report);
@@ -189,7 +226,8 @@ impl LauncherApp {
             popup: None,
             last_refresh: None,
             detect_job: None,
-            detect_queue: Vec::new(),
+            detect_queue: std::collections::VecDeque::new(),
+            engine_dialog: None,
             scan_job: None,
             scan_report: None,
             add_game: None,
@@ -203,82 +241,100 @@ impl LauncherApp {
         }
     }
 
-    /// 打开某个视图（帧生成 / 画质）：按偏好里的记录填表，缺记录就用默认值。
-    fn open_settings(&mut self, view: crate::settings_form::SettingsView) {
-        let Some(entry) = self.view.selected_game().cloned() else {
-            return;
-        };
-        let stored = self
-            .preferences_path
+    fn preference_path(&self) -> Result<&std::path::Path, String> {
+        self.preferences_path
             .as_deref()
-            .and_then(|path| launcher_core::preferences::load(path).ok())
-            .and_then(|preferences| preferences.find(&entry.id).cloned());
-        let profile = stored.unwrap_or_else(|| {
-            let mut profile = launcher_core::preferences::GameProfile::new(
-                &entry.id,
-                &entry.name,
-                entry.directory.clone(),
-            );
-            profile.engine_host = entry.engine_host.clone();
-            profile
-        });
-        // 有未清理的部署时不允许换代理：旧记录里的代理必须先按原样恢复。
-        let pending = launcher_core::journal_store::load_for_game(&self.root, &entry.id)
-            .ok()
-            .flatten()
-            .is_some();
-        self.settings = Some(crate::settings_form::SettingsForm::from_profile(
-            view, &profile, pending,
+            .ok_or_else(|| "本机偏好路径不可用。".to_owned())
+    }
+
+    fn preferences(&self) -> Result<Preferences, String> {
+        launcher_core::preferences::load(self.preference_path()?)
+            .map_err(|error| format!("读取本机偏好失败：{error}"))
+    }
+
+    fn update_preferences<T>(
+        &self,
+        edit: impl FnOnce(&mut Preferences) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let path = self.preference_path()?;
+        let mut preferences = self.preferences()?;
+        let result = edit(&mut preferences)?;
+        launcher_core::preferences::save(path, &preferences)
+            .map_err(|error| format!("保存本机偏好失败：{error}"))?;
+        Ok(result)
+    }
+
+    fn load_profile(&self, id: &str) -> Result<GameProfile, String> {
+        self.preferences()?
+            .find(id)
+            .cloned()
+            .ok_or_else(|| format!("本机偏好中找不到游戏档案：{id}"))
+    }
+
+    fn proxy_lock(&self, game: &str) -> Option<String> {
+        if self
+            .pending
+            .iter()
+            .any(|request| request.request.game == game)
+        {
+            return Some("该游戏正在处理启动或恢复请求，请等请求结束后再切换代理。".to_owned());
+        }
+        match launcher_core::journal_store::load_for_game(&self.root, game) {
+            Ok(Some(_)) => Some("该游戏还有未清理的部署，请先恢复原状再切换代理。".to_owned()),
+            Ok(None) => None,
+            Err(error) => Some(format!("无法核验该游戏的部署记录，代理已锁定：{error}")),
+        }
+    }
+
+    fn open_settings(&mut self, id: &str, view: SettingsView) {
+        let profile = match self.load_profile(id) {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.view.notice = error;
+                return;
+            }
+        };
+        if view == SettingsView::Quality && EngineHost::confirmed(&profile.engine_host).is_none() {
+            self.view.notice =
+                "「画质」仅适用于已确认的 UE4/UE5。请通过「引擎」识别或校准。".to_owned();
+            return;
+        }
+        self.settings = Some(SettingsForm::from_profile(
+            view,
+            &profile,
+            self.proxy_lock(id),
         ));
     }
 
-    /// 保存设置到偏好文件；返回是否真的写成功（失败时表单保持打开）。
-    fn save_settings(&mut self) -> bool {
-        let Some(path) = self.preferences_path.clone() else {
-            self.view.notice = "偏好路径不可用，无法保存".to_owned();
-            return false;
-        };
-        let Some(entry) = self.view.selected_game().cloned() else {
-            return false;
-        };
-        let Some(form) = self.settings.as_mut() else {
-            return false;
-        };
-        let Some(settings) = form.take_for_save() else {
-            self.view.notice = form
-                .error
-                .clone()
-                .unwrap_or_else(|| "校验未通过".to_owned());
-            return false;
-        };
-        let mut preferences = launcher_core::preferences::load(&path).unwrap_or_default();
-        let mut profile = preferences.find(&entry.id).cloned().unwrap_or_else(|| {
-            let mut profile = launcher_core::preferences::GameProfile::new(
-                &entry.id,
-                &entry.name,
-                entry.directory.clone(),
-            );
-            profile.engine_host = entry.engine_host.clone();
-            profile
+    fn save_settings(&mut self, form: &mut SettingsForm) -> bool {
+        form.proxy_lock = self.proxy_lock(&form.game_id);
+        let result = self.update_preferences(|preferences| {
+            let mut profile = preferences
+                .find(&form.game_id)
+                .cloned()
+                .ok_or_else(|| format!("无法保存，游戏档案已移除：{}", form.game_id))?;
+            form.apply_to_profile(&mut profile, &self.root)?;
+            preferences.upsert(profile);
+            Ok(())
         });
-        profile.settings = Some(settings);
-        if let Err(message) = form.apply_to_profile(&mut profile, &self.root) {
-            self.view.notice = message;
-            return false;
-        }
-        preferences.upsert(profile);
-        match launcher_core::preferences::save(&path, &preferences) {
+        match result {
             Ok(()) => {
-                self.view.notice = "设置已保存".to_owned();
+                form.error = None;
+                form.dirty = false;
+                self.view.notice = format!(
+                    "「{}」的{}已保存",
+                    self.game_name(&form.game_id),
+                    form.view.title()
+                );
                 true
             }
             Err(error) => {
-                self.view.notice = format!("保存失败：{error}");
+                self.view.notice = error.clone();
+                form.error = Some(error);
                 false
             }
         }
     }
-
     fn write_report(&mut self, pixels_per_point: f32) {
         let Some(test) = self.self_test.as_ref() else {
             return;
@@ -369,6 +425,7 @@ impl LauncherApp {
 
         self.draw_about(ui);
         self.draw_add_game(ui);
+        self.draw_engine_dialog(ui);
         self.draw_settings(ui);
         self.draw_gpu(ui);
 
@@ -389,7 +446,7 @@ impl LauncherApp {
                 for (index, entry) in self.view.games.iter().enumerate() {
                     let selected = self.view.selected == Some(index);
                     let id = entry.id.clone();
-                    let engine_is_ue = !entry.engine_host.is_empty() && entry.engine_host != "none";
+                    let engine_host = EngineHost::confirmed(&entry.engine_host);
                     let engine_busy_here =
                         engine_owner.as_ref().is_some_and(|(owner, _)| owner == &id);
                     let allow_stop = self.can_dispatch(Command::Stop, &id, engine_owner.as_ref());
@@ -500,19 +557,25 @@ impl LauncherApp {
                             action = Some(RowAction::FrameGen(id.clone()));
                         }
                         if ui
-                            .add_enabled(engine_is_ue, egui::Button::new("画质"))
-                            .on_hover_text(if engine_is_ue {
-                                "画质档位与自定义 INI"
-                            } else {
-                                "未识别为虚幻引擎，画质档位不适用"
-                            })
+                            .add_enabled(engine_host.is_some(), egui::Button::new("画质"))
+                            .on_hover_text("画质档位与自定义 INI")
+                            .on_disabled_hover_text(
+                                "仅已确认的 UE4/UE5 可调画质，请用「引擎」识别或校准",
+                            )
                             .clicked()
                         {
                             action = Some(RowAction::Quality(id.clone()));
                         }
+                        if ui
+                            .button("引擎")
+                            .on_hover_text("识别引擎或手动校准虚幻主版本")
+                            .clicked()
+                        {
+                            action = Some(RowAction::Engine(id.clone()));
+                        }
                         status_pill(ui, entry.status);
-                        if engine_is_ue {
-                            ui.label(egui::RichText::new(&entry.engine_host).small().weak());
+                        if let Some(host) = engine_host {
+                            ui.label(egui::RichText::new(host.as_text()).small().weak());
                         }
                         // 只在引擎和游戏都已退出时提供手动恢复。
                         if entry.status.can_restore()
@@ -592,22 +655,29 @@ impl LauncherApp {
         }
     }
 
-    /// 把一份游戏配置写进偏好并刷新列表。
-    fn persist_profile(&mut self, profile: launcher_core::preferences::GameProfile) {
-        let Some(path) = self.preferences_path.clone() else {
-            self.view.notice = "偏好路径不可用，无法保存".to_owned();
-            return;
-        };
-        let mut preferences = launcher_core::preferences::load(&path).unwrap_or_default();
-        preferences.upsert(profile.clone());
-        self.view.notice = match launcher_core::preferences::save(&path, &preferences) {
-            Ok(()) => format!("已添加：{}", profile.name),
-            Err(error) => format!("保存失败：{error}"),
-        };
+    /// 先保存偏好，成功后再把条目加到界面。
+    fn persist_profile(&mut self, profile: GameProfile) -> Result<(), String> {
+        self.update_preferences(|preferences| {
+            if preferences.find(&profile.id).is_some() {
+                return Err(format!("「{}」已有游戏档案。", profile.name));
+            }
+            preferences.upsert(profile.clone());
+            Ok(())
+        })?;
+        use launcher_core::ops::ProcessProbe;
+        let processes = launcher_win::WinProcessProbe.list().unwrap_or_default();
+        let journal = launcher_core::journal_store::load_for_game(&self.root, &profile.id)
+            .ok()
+            .flatten();
+        let running = crate::engine::is_game_running(
+            Some(&profile),
+            journal.as_ref().map(|(_, journal)| journal),
+            &processes,
+        );
         let status = crate::view_model::derive_status(
             profile.directory.is_dir(),
-            false,
-            launcher_win::session_active(),
+            journal.is_some(),
+            running,
         );
         self.view.upsert(crate::view_model::GameEntry {
             id: profile.id.clone(),
@@ -615,35 +685,16 @@ impl LauncherApp {
             directory: profile.directory.clone(),
             status,
             engine_host: profile.engine_host.clone(),
-            running: false,
+            running,
         });
-        if let Some(index) = self
-            .view
-            .games
-            .iter()
-            .position(|item| item.id == profile.id)
-        {
-            self.view.select(index);
-        }
-        // 添加后立刻后台识别引擎版本：识别得出来就有画质档位，识别不出来等用户手动校准。
-        if profile.engine_host == "none" {
-            if let Some(relative) = profile.render_executable.as_deref() {
-                let relative = relative.trim();
-                if !relative.is_empty() {
-                    let executable = std::path::PathBuf::from(relative);
-                    let executable = if executable.is_absolute() {
-                        executable
-                    } else {
-                        profile.directory.join(executable)
-                    };
-                    if executable.is_file() {
-                        self.start_detection(&profile.id, profile.directory.clone(), executable);
-                    }
-                }
+        self.view.select_by_id(&profile.id);
+        if EngineHost::confirmed(&profile.engine_host).is_none() {
+            if let Ok(target) = DetectionTarget::from_profile(&profile) {
+                self.start_detection(target);
             }
         }
+        Ok(())
     }
-
     /// 处理行内按钮：按动作分派到启动/结束并恢复/恢复/移除/配置。
     fn run_row_action(&mut self, action: RowAction) {
         match action {
@@ -662,12 +713,13 @@ impl LauncherApp {
             RowAction::Remove(id) => self.remove_pending = Some(id),
             RowAction::FrameGen(id) => {
                 self.view.select_by_id(&id);
-                self.open_settings(crate::settings_form::SettingsView::FrameGen);
+                self.open_settings(&id, SettingsView::FrameGen);
             }
             RowAction::Quality(id) => {
                 self.view.select_by_id(&id);
-                self.open_settings(crate::settings_form::SettingsView::Quality);
+                self.open_settings(&id, SettingsView::Quality);
             }
+            RowAction::Engine(id) => self.engine_dialog = Some(id),
         }
     }
     /// 移除游戏前的确认框：只从偏好里删记录，不动磁盘。
@@ -702,18 +754,50 @@ impl LauncherApp {
                 });
             });
         if confirmed {
-            if let Some(path) = self.preferences_path.as_ref() {
-                if let Ok(mut preferences) = launcher_core::preferences::load(path) {
-                    preferences.games.retain(|game| game.id != id);
-                    let _ = launcher_core::preferences::save(path, &preferences);
+            match self.remove_profile(&id) {
+                Ok(()) => {
+                    self.view.notice = format!("已移除 {name}");
+                    self.remove_pending = None;
                 }
+                Err(error) => self.view.notice = error,
             }
-            self.view.games.retain(|entry| entry.id != id);
-            self.view.notice = format!("已移除 {name}");
-            self.remove_pending = None;
         } else if !open || cancelled {
             self.remove_pending = None;
         }
+    }
+
+    fn remove_profile(&mut self, id: &str) -> Result<(), String> {
+        self.update_preferences(|preferences| {
+            preferences.remove(id);
+            Ok(())
+        })?;
+        let selection = self.view.selected_game().map(|entry| entry.id.clone());
+        self.view.games.retain(|entry| entry.id != id);
+        self.view.selected = selection.and_then(|selected| {
+            self.view
+                .games
+                .iter()
+                .position(|entry| entry.id == selected)
+        });
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|form| form.game_id == id)
+        {
+            self.settings = None;
+        }
+        if self.engine_dialog.as_deref() == Some(id) {
+            self.engine_dialog = None;
+        }
+        self.detect_queue.retain(|target| target.id != id);
+        if let Some(job) = self
+            .detect_job
+            .as_mut()
+            .filter(|job| job.target.as_ref().is_some_and(|target| target.id == id))
+        {
+            job.target = None;
+        }
+        Ok(())
     }
     /// 结果弹窗（启动失败 / 恢复 / 结束并恢复共用）：点「确定」才消失。
     fn draw_popup(&mut self, root: &mut egui::Ui) {
@@ -983,16 +1067,14 @@ impl LauncherApp {
         else {
             return;
         };
-        let Some(path) = self.preferences_path.clone() else {
-            return;
-        };
-        let Ok(mut preferences) = launcher_core::preferences::load(&path) else {
-            return;
-        };
-        preferences.gpu = Some(launcher_core::preferences::GpuPreference {
-            target_name: target,
-        });
-        let _ = launcher_core::preferences::save(&path, &preferences);
+        if let Err(error) = self.update_preferences(|preferences| {
+            preferences.gpu = Some(launcher_core::preferences::GpuPreference {
+                target_name: target,
+            });
+            Ok(())
+        }) {
+            self.view.notice = format!("显卡名称已切换，未能保存名称偏好：{error}");
+        }
     }
 
     /// 把一次显卡名称动作交给提权子进程（界面本身没有写权限）。
@@ -1203,16 +1285,17 @@ impl LauncherApp {
                 return;
             }
         };
-        let mut added = Vec::new();
-        for ready in &result.ready {
-            self.persist_profile(ready.profile.clone());
-            added.push(ready.profile.name.clone());
+        let mut result = result;
+        let candidates = std::mem::take(&mut result.ready);
+        for ready in candidates {
+            match self.persist_profile(ready.profile.clone()) {
+                Ok(()) => result.ready.push(ready),
+                Err(error) => result
+                    .notes
+                    .push(format!("「{}」添加失败：{error}", ready.profile.name)),
+            }
         }
-        if !added.is_empty() {
-            self.view.notice = format!("扫描添加 {} 个：{}", added.len(), added.join("、"));
-        } else {
-            self.view.notice = result.summary();
-        }
+        self.view.notice = result.summary();
         if !result.ready.is_empty() || !result.ambiguous.is_empty() || !result.notes.is_empty() {
             self.scan_report = Some(result);
         }
@@ -1297,98 +1380,93 @@ impl LauncherApp {
 
     /// 渲染 EXE 的绝对路径（偏好里存的是相对游戏目录的路径）。
     fn render_executable_of(&self, id: &str) -> Option<std::path::PathBuf> {
-        let path = self.preferences_path.as_deref()?;
-        let preferences = launcher_core::preferences::load(path).ok()?;
-        let profile = preferences.find(id)?;
-        let relative = profile.render_executable.as_deref()?;
-        if relative.trim().is_empty() {
-            return None;
-        }
-        let candidate = std::path::PathBuf::from(relative);
-        Some(if candidate.is_absolute() {
-            candidate
-        } else {
-            profile.directory.join(candidate)
-        })
+        crate::engine::render_path(&self.load_profile(id).ok()?)
     }
 
-    /// 起一次后台引擎识别（同一时间只跑一个，避免抢磁盘）。
-    fn start_detection(
-        &mut self,
-        game_id: &str,
-        directory: std::path::PathBuf,
-        executable: std::path::PathBuf,
-    ) {
+    fn start_detection(&mut self, target: DetectionTarget) {
         if self.detect_job.is_some() {
-            // 排队：扫描可能一次加好几个游戏，等前面的跑完接着来。
-            self.detect_queue
-                .push((game_id.to_owned(), directory, executable));
+            if !self.detection_pending(&target.id) {
+                self.detect_queue.push_back(target);
+            }
             return;
         }
-        let name = self
-            .view
-            .games
-            .iter()
-            .find(|entry| entry.id == game_id)
-            .map(|entry| entry.name.clone())
-            .unwrap_or_else(|| game_id.to_owned());
-        let handle =
-            std::thread::spawn(move || launcher_core::unreal::detect(&directory, &executable));
-        self.view.notice = format!("正在识别「{name}」的引擎版本（要扫渲染 EXE，可能需要几秒）…");
-        self.detect_job = Some((game_id.to_owned(), handle));
+        let directory = target.directory.clone();
+        let executable = target.executable.clone();
+        match std::thread::Builder::new()
+            .name("engine-detection".to_owned())
+            .spawn(move || launcher_core::unreal::detect(&directory, &executable))
+        {
+            Ok(handle) => {
+                self.detect_job = Some(DetectionJob {
+                    target: Some(target),
+                    handle,
+                })
+            }
+            Err(error) => self.view.notice = format!("无法启动引擎识别：{error}"),
+        }
     }
 
-    /// 每帧看一眼后台识别是否结束。
+    fn detection_pending(&self, game: &str) -> bool {
+        self.detect_job
+            .as_ref()
+            .and_then(|job| job.target.as_ref())
+            .is_some_and(|target| target.id == game)
+            || self.detect_queue.iter().any(|target| target.id == game)
+    }
+
     fn poll_detection(&mut self) {
         if self
             .detect_job
             .as_ref()
-            .map(|(_, handle)| !handle.is_finished())
-            .unwrap_or(false)
+            .is_some_and(|job| !job.handle.is_finished())
         {
             return;
         }
-        let Some((id, handle)) = self.detect_job.take() else {
-            // 空闲时把排队的识别接上。
-            if let Some((id, directory, executable)) = self.detect_queue.first().cloned() {
-                self.detect_queue.remove(0);
-                self.start_detection(&id, directory, executable);
+        if let Some(job) = self.detect_job.take() {
+            if let Some(target) = job.target {
+                match job.handle.join() {
+                    Ok(detection) => self.apply_detection(&target, &detection),
+                    Err(_) => {
+                        self.view.notice =
+                            format!("「{}」的引擎识别线程异常结束", self.game_name(&target.id))
+                    }
+                }
             }
-            return;
-        };
-        match handle.join() {
-            Ok(detection) => self.apply_detection(&id, &detection),
-            Err(_) => self.view.notice = "引擎识别线程异常结束，请重试".to_owned(),
         }
-        if let Some((id, directory, executable)) = self.detect_queue.first().cloned() {
-            self.detect_queue.remove(0);
-            self.start_detection(&id, directory, executable);
+        if let Some(target) = self.detect_queue.pop_front() {
+            self.start_detection(target);
         }
     }
 
-    /// 识别结果写回偏好与界面；只有唯一主版本才写，冲突/未知一律保留原值。
-    fn apply_detection(&mut self, id: &str, detection: &launcher_core::unreal::Detection) {
+    /// 只有唯一主版本才写入，且结果仍需匹配开始识别时的档案。
+    fn apply_detection(
+        &mut self,
+        target: &DetectionTarget,
+        detection: &launcher_core::unreal::Detection,
+    ) {
         let host = match detection.major {
-            Some(4) => "UE4",
-            Some(5) => "UE5",
+            Some(4) => EngineHost::Ue4,
+            Some(5) => EngineHost::Ue5,
             _ => {
                 self.view.notice = format!(
-                    "引擎识别：{}（{}）；可手动校准",
+                    "「{}」引擎识别：{}（{}）。可在「引擎」里校准。",
+                    self.game_name(&target.id),
                     detection.text(),
-                    detection.source
+                    detection.source,
                 );
                 return;
             }
         };
-        self.write_engine_host(id, host);
-        if let Some(form) = self.settings.as_mut() {
-            form.engine_host = host.to_owned();
-            form.engine_host_is_ue = true;
-            form.dirty = true;
-        }
-        self.view.notice = format!("引擎识别：{host}（{}）", detection.source);
+        self.view.notice = match self.write_engine_host(&target.id, host, Some(target)) {
+            Ok(()) => format!(
+                "「{}」已识别为 {}（{}）",
+                self.game_name(&target.id),
+                host.as_text(),
+                detection.source
+            ),
+            Err(error) => error,
+        };
     }
-
     /// 双击标题：开始编辑这一行（同一时间只编辑一行，先落盘上一行的改动）。
     fn begin_rename(&mut self, state: crate::rename::RenameState) {
         if let Some(previous) = self.rename.as_ref().map(|current| current.id.clone()) {
@@ -1422,32 +1500,28 @@ impl LauncherApp {
         if name == state.original {
             return;
         }
-        let Some(path) = self.preferences_path.clone() else {
-            self.view.notice = "偏好路径不可用，改名没有保存".to_owned();
-            return;
-        };
-        let mut preferences = match launcher_core::preferences::load(&path) {
-            Ok(preferences) => preferences,
-            Err(error) => {
-                self.view.notice = format!("偏好读不出来，改名没有保存：{error}");
-                return;
-            }
-        };
-        let Some(profile) = preferences.find(id).cloned() else {
-            self.view.notice = format!("偏好里没有这条记录，改名没有保存：{id}");
-            return;
-        };
-        let mut updated = profile;
-        updated.name = name.clone();
-        preferences.upsert(updated);
-        match launcher_core::preferences::save(&path, &preferences) {
+        match self.update_preferences(|preferences| {
+            let mut profile = preferences
+                .find(id)
+                .cloned()
+                .ok_or_else(|| format!("本机偏好中找不到游戏档案：{id}"))?;
+            profile.name = name.clone();
+            preferences.upsert(profile);
+            Ok(())
+        }) {
             Ok(()) => {
                 if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
                     entry.name = name.clone();
                 }
                 self.view.notice = format!("已重命名为「{name}」");
             }
-            Err(error) => self.view.notice = format!("改名保存失败：{error}"),
+            Err(error) => {
+                self.view.notice = format!("改名保存失败：{error}");
+                self.rename = Some(crate::rename::RenameState {
+                    fresh: true,
+                    ..state
+                });
+            }
         }
     }
 
@@ -1458,26 +1532,41 @@ impl LauncherApp {
         }
     }
 
-    /// 把引擎宿主写进偏好并刷新该行（识别与手动校准共用）。
-    fn write_engine_host(&mut self, id: &str, host: &str) {
-        if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
-            entry.engine_host = host.to_owned();
+    /// 先保存档案，再更新对应游戏行和打开的表单。
+    fn write_engine_host(
+        &mut self,
+        id: &str,
+        host: EngineHost,
+        detection: Option<&DetectionTarget>,
+    ) -> Result<(), String> {
+        self.update_preferences(|preferences| {
+            let mut profile = preferences
+                .find(id)
+                .cloned()
+                .ok_or_else(|| format!("引擎档案已移除：{id}"))?;
+            if detection.is_some_and(|target| !target.still_matches(&profile)) {
+                return Err("识别期间游戏路径或引擎声明已变化，已丢弃这次识别。".to_owned());
+            }
+            profile.engine_host = host.as_text().to_owned();
+            preferences.upsert(profile);
+            Ok(())
+        })?;
+        if detection.is_none() {
+            self.detect_queue.retain(|target| target.id != id);
+            if let Some(job) = self.detect_job.as_mut() {
+                if job.target.as_ref().is_some_and(|target| target.id == id) {
+                    job.target = None;
+                }
+            }
         }
-        let Some(path) = self.preferences_path.clone() else {
-            return;
-        };
-        let Ok(mut preferences) = launcher_core::preferences::load(&path) else {
-            return;
-        };
-        let Some(profile) = preferences.find(id).cloned() else {
-            return;
-        };
-        let mut updated = profile;
-        updated.engine_host = host.to_owned();
-        preferences.upsert(updated);
-        let _ = launcher_core::preferences::save(&path, &preferences);
+        if let Some(entry) = self.view.games.iter_mut().find(|entry| entry.id == id) {
+            entry.engine_host = host.as_text().to_owned();
+        }
+        if let Some(form) = self.settings.as_mut().filter(|form| form.game_id == id) {
+            form.engine_host = host.as_text().to_owned();
+        }
+        Ok(())
     }
-
     /// 引擎报告路径（引擎子进程写、界面读）。
     fn report_path(&self, name: &str) -> std::path::PathBuf {
         crate::about::logs_directory(&self.root).join(name)
@@ -1530,6 +1619,16 @@ impl LauncherApp {
             return;
         }
         self.last_refresh = Some(Instant::now());
+        if let Some(form) = self
+            .settings
+            .as_ref()
+            .filter(|form| form.view == SettingsView::FrameGen)
+        {
+            let lock = self.proxy_lock(&form.game_id);
+            if let Some(form) = self.settings.as_mut() {
+                form.proxy_lock = lock;
+            }
+        }
         self.view.session_taken = launcher_win::session_active();
         use launcher_core::ops::ProcessProbe;
         let processes = launcher_win::WinProcessProbe.list().unwrap_or_default();
@@ -1545,12 +1644,16 @@ impl LauncherApp {
             let pending = launcher_core::journal_store::load_for_game(&self.root, &id)
                 .ok()
                 .flatten();
+            let profile = profiles.iter().find(|profile| profile.id == id);
             let running = crate::engine::is_game_running(
-                profiles.iter().find(|profile| profile.id == id),
+                profile,
                 pending.as_ref().map(|(_, journal)| journal),
                 &processes,
             );
             let entry = &mut self.view.games[index];
+            if let Some(profile) = profile {
+                entry.engine_host.clone_from(&profile.engine_host);
+            }
             entry.status =
                 crate::view_model::derive_status(directory.is_dir(), pending.is_some(), running);
             entry.running = running;
@@ -1783,8 +1886,15 @@ impl LauncherApp {
             });
 
         if let Some(profile) = confirmed {
-            self.persist_profile(profile);
-            self.add_game = None;
+            let name = profile.name.clone();
+            match self.persist_profile(profile) {
+                Ok(()) => self.view.notice = format!("已添加「{name}」"),
+                Err(error) => {
+                    state.message = error.clone();
+                    self.view.notice = error;
+                    self.add_game = Some(state);
+                }
+            }
         } else if open && !close_requested {
             self.add_game = Some(state);
         }
@@ -1798,7 +1908,9 @@ impl LauncherApp {
         };
         let mut open = true;
         let mut save = false;
-        egui::Window::new(form.view.title())
+        let title = format!("{} · {}", form.view.title(), self.game_name(&form.game_id));
+        egui::Window::new(title)
+            .id(egui::Id::unique((form.view.title(), &form.game_id)))
             .open(&mut open)
             .default_width(560.0)
             .resizable(true)
@@ -1811,11 +1923,24 @@ impl LauncherApp {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("保存").clicked() {
+                    let blocked = if form.view == SettingsView::Quality {
+                        if !form.field_states().quality_choice {
+                            Some("引擎尚未确认为 UE4/UE5。".to_owned())
+                        } else {
+                            form.quality_directory().err()
+                        }
+                    } else {
+                        None
+                    };
+                    if ui
+                        .add_enabled(blocked.is_none(), egui::Button::new("保存"))
+                        .on_disabled_hover_text(blocked.as_deref().unwrap_or_default())
+                        .clicked()
+                    {
                         save = true;
                     }
                     if ui.button("校验").clicked() {
-                        let _ = form.validate();
+                        let _ = form.validate(&self.root);
                     }
                     if let Some(error) = form.error.as_deref() {
                         ui.colored_label(egui::Color32::from_rgb(0xD0, 0x4A, 0x4A), error);
@@ -1823,12 +1948,7 @@ impl LauncherApp {
                 });
             });
 
-        if save {
-            self.settings = Some(form);
-            if self.save_settings() {
-                self.settings = None;
-            }
-        } else if open {
+        if open && (!save || !self.save_settings(&mut form)) {
             self.settings = Some(form);
         }
     }
@@ -2073,10 +2193,13 @@ impl LauncherApp {
             .default_open(true)
             .show(ui, |ui| {
                 let states = form.field_states();
-                let game = self.view.selected_game().cloned();
+                let game = self
+                    .view
+                    .games
+                    .iter()
+                    .find(|entry| entry.id == form.game_id);
                 // 渲染目录里已有的普通文件 = 别人的注入器占着这个位置，本程序不覆盖。
                 let occupied = game
-                    .as_ref()
                     .and_then(|entry| self.render_executable_of(&entry.id))
                     .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
                     .map(|directory| {
@@ -2133,11 +2256,8 @@ impl LauncherApp {
                         .small()
                         .weak(),
                 );
-                if !states.proxy_choice {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
-                        "该游戏还有未清理的部署：先点该行的「恢复原状」，才能换代理。",
-                    );
+                if let Some(reason) = &form.proxy_lock {
+                    ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x2E), reason);
                 }
                 if let Some(game) = game {
                     if let Some(hint) = form.proxy_hint(&game.id, &game.directory) {
@@ -2152,111 +2272,141 @@ impl LauncherApp {
             });
     }
 
-    /// 画质视图：引擎版本 + 4 档画质 + `05-自定义` + 配置源结论。
-    fn draw_quality(&mut self, ui: &mut egui::Ui, form: &mut crate::settings_form::SettingsForm) {
-        use crate::settings_form::SettingsForm;
+    /// 引擎识别与校准独立于画质入口，始终绑定打开该窗口的游戏。
+    fn draw_engine_dialog(&mut self, root: &mut egui::Ui) {
+        let Some(id) = self.engine_dialog.clone() else {
+            return;
+        };
+        let Some(entry) = self.view.games.iter().find(|entry| entry.id == id) else {
+            self.engine_dialog = None;
+            return;
+        };
+        let name = entry.name.clone();
+        let host = EngineHost::confirmed(&entry.engine_host);
+        let busy = self.detection_pending(&id);
+        let mut open = true;
+        let mut detect = false;
+        let mut manual = None;
+        egui::Window::new(format!("引擎 · {name}"))
+            .id(egui::Id::unique(("game-engine", &id)))
+            .open(&mut open)
+            .show(root.ctx(), |ui| {
+                ui.label(format!(
+                    "当前引擎：{}",
+                    host.map_or("未确认", EngineHost::as_text)
+                ));
+                detect = ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(if busy {
+                            "等待识别…"
+                        } else {
+                            "识别引擎"
+                        }),
+                    )
+                    .on_hover_text("检查引擎版本文件和渲染 EXE，证据不足或冲突时保留原值")
+                    .clicked();
+                ui.label("仅在已确认游戏使用虚幻引擎时选择 UE4 或 UE5。");
+                ui.horizontal(|ui| {
+                    for (choice, label) in [
+                        (EngineHost::Ue4, "UE4"),
+                        (EngineHost::Ue5, "UE5"),
+                        (EngineHost::None, "未确认"),
+                    ] {
+                        let selected = if choice == EngineHost::None {
+                            host.is_none()
+                        } else {
+                            host == Some(choice)
+                        };
+                        if ui.selectable_label(selected, label).clicked() {
+                            manual = Some(choice);
+                        }
+                    }
+                });
+            });
+        if !open {
+            self.engine_dialog = None;
+        }
+        if detect {
+            match self
+                .load_profile(&id)
+                .and_then(|profile| DetectionTarget::from_profile(&profile))
+            {
+                Ok(target) => self.start_detection(target),
+                Err(error) => self.view.notice = error,
+            }
+        }
+        if let Some(host) = manual {
+            self.view.notice = match self.write_engine_host(&id, host, None) {
+                Ok(()) if host == EngineHost::None => format!("「{name}」的引擎已设为未确认"),
+                Ok(()) => format!("「{name}」的引擎已校准为 {}", host.as_text()),
+                Err(error) => error,
+            };
+        }
+    }
 
+    fn draw_quality(&mut self, ui: &mut egui::Ui, form: &mut SettingsForm) {
+        let Some(host) = EngineHost::confirmed(&form.engine_host) else {
+            ui.label("仅已确认的 UE4/UE5 支持画质调整。请在游戏行的「引擎」里校准。");
+            return;
+        };
+        ui.label(format!("引擎版本：{}", host.as_text()));
+        if !form.deploy_engine_ini {
+            ui.label("该档案已关闭 Engine.ini 部署，画质设置无法应用。");
+            return;
+        }
         ui.horizontal(|ui| {
-            ui.label("引擎版本");
-            ui.label(
-                egui::RichText::new(if form.engine_host_is_ue {
-                    form.engine_host.clone()
-                } else {
-                    "尚未确定".to_owned()
-                })
-                .strong(),
-            );
-            let busy = self.detect_job.is_some();
-            let label = if busy { "识别中…" } else { "重新识别" };
+            ui.label("游戏配置目录");
             if ui
-                .add_enabled(!busy, egui::Button::new(label))
-                .on_hover_text("读 Engine\\Build\\Build.version、渲染 EXE 的标记与版本信息；冲突或缺失不猜")
+                .text_edit_singleline(&mut form.config_directory)
+                .changed()
+            {
+                form.dirty = true;
+            }
+            if ui
+                .button("选择目录…")
+                .on_hover_text("请选择该游戏实际读取 Engine.ini 的配置目录")
                 .clicked()
             {
-                let game = self.view.selected_game().cloned();
-                if let Some(game) = game {
-                    match self.render_executable_of(&game.id) {
-                        Some(executable) if executable.is_file() => {
-                            self.start_detection(&game.id, game.directory.clone(), executable);
-                        }
-                        _ => {
-                            self.view.notice =
-                                "这条记录没有可用的渲染程序，识别不了；先在「添加游戏」里扫描确认目录"
-                                    .to_owned();
-                        }
-                    }
-                }
-            }
-            ui.label(egui::RichText::new("手动校准：").small().weak());
-            for host in ["UE4", "UE5"] {
-                let selected = form.engine_host == host;
-                if ui.selectable_label(selected, host).clicked() {
-                    form.engine_host = host.to_owned();
-                    form.engine_host_is_ue = true;
+                if let Some(directory) = rfd::FileDialog::new().pick_folder() {
+                    form.config_directory = directory.display().to_string();
                     form.dirty = true;
-                    if let Some(game) = self.view.selected_game().cloned() {
-                        // 手动校准立即生效，不用等保存按钮（与 PS 的"手动校准"一致）。
-                        self.write_engine_host(&game.id, host);
-                    }
                 }
             }
         });
-        if !form.engine_host_is_ue {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
-                "未识别为虚幻引擎，画质档位不适用；确认识别结果后再来选档位。",
-            );
+        if let Err(error) = form.quality_directory() {
+            ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x2E), error);
         }
-
         ui.separator();
         ui.label("画质档位");
-        ui.add_enabled_ui(form.engine_host_is_ue, |ui| {
-            for tier in SettingsForm::quality_options() {
-                let selected = form.quality_tier == tier;
-                if ui
-                    .selectable_label(selected, tier.folder())
-                    .on_hover_text(match tier {
-                        launcher_core::quality::QualityTier::Tier5 => {
-                            "用你自己填的 Engine.ini；不做合并，原样部署"
-                        }
-                        _ => "仓库里的通用分类档位（源文件保持可编辑）",
-                    })
-                    .clicked()
-                {
-                    form.set_quality(tier);
-                }
+        for tier in SettingsForm::quality_options() {
+            if ui
+                .selectable_label(form.quality_tier == tier, tier.folder())
+                .clicked()
+            {
+                form.set_quality(tier);
             }
-        });
-
+        }
         if form.quality_tier == launcher_core::quality::QualityTier::Tier5 {
-            ui.separator();
             ui.horizontal(|ui| {
                 ui.label("自定义 INI");
-                ui.add_enabled_ui(form.engine_host_is_ue, |ui| {
-                    ui.text_edit_singleline(&mut form.custom_ini_path);
-                });
+                if ui.text_edit_singleline(&mut form.custom_ini_path).changed() {
+                    form.dirty = true;
+                }
                 if ui.button("浏览…").clicked() {
                     if let Some(file) = rfd::FileDialog::new()
                         .add_filter("Engine.ini", &["ini"])
                         .pick_file()
                     {
-                        form.custom_ini_path = file.to_string_lossy().into_owned();
+                        form.custom_ini_path = file.display().to_string();
                         form.dirty = true;
                     }
                 }
             });
         }
-
         ui.separator();
-        let summary = form.quality_summary(&self.root);
-        ui.label(summary);
-        ui.label(
-            egui::RichText::new(
-                "部署的是带标记的临时副本（只读），原件按字节备份后恢复；源文件不会被改动。",
-            )
-            .small()
-            .weak(),
-        );
+        ui.label(form.quality_summary(&self.root));
+        ui.label("部署只读临时副本，游戏原件按字节备份并在退出后恢复。");
     }
 }
 
@@ -2456,4 +2606,136 @@ pub fn status_pill(ui: &mut egui::Ui, status: GameStatus) {
                     .small(),
             );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture(case: &str) -> (Fixture, LauncherApp) {
+        let root =
+            std::env::temp_dir().join(format!("dlssg-settings-{}-{case}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = LauncherApp::new(LauncherView::new(), None)
+            .with_root(root.clone())
+            .with_preferences(Some(root.join("preferences.json")));
+        for id in ["a", "b"] {
+            let directory = root.join(id);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Game.exe"), b"fixture").unwrap();
+            let mut profile = GameProfile::new(id, id, directory);
+            profile.engine_host = "UE4".to_owned();
+            profile.render_executable = Some("Game.exe".to_owned());
+            app.persist_profile(profile).unwrap();
+        }
+        (Fixture(root), app)
+    }
+
+    #[test]
+    fn selection_and_other_games_detection_cannot_redirect_a_settings_form() {
+        let (_root, mut app) = fixture("bindings");
+        app.view.select_by_id("a");
+        app.open_settings("a", SettingsView::FrameGen);
+        app.view.select_by_id("b");
+
+        let target = DetectionTarget::from_profile(&app.load_profile("b").unwrap()).unwrap();
+        let detected = launcher_core::unreal::Detection {
+            major: Some(5),
+            conflict: false,
+            source: "fixture".to_owned(),
+            evidence: vec![],
+        };
+        app.apply_detection(&target, &detected);
+        assert_eq!(app.load_profile("b").unwrap().engine_host, "UE5");
+        let mut form = app.settings.take().unwrap();
+        assert_eq!(form.game_id, "a");
+        assert_eq!(form.engine_host, "UE4");
+        form.set_proxy(2);
+        assert!(app.save_settings(&mut form));
+        assert_eq!(app.load_profile("a").unwrap().proxy_index, 2);
+        assert_eq!(app.load_profile("b").unwrap().proxy_index, 1);
+        assert_eq!(app.load_profile("b").unwrap().settings, None);
+
+        app.write_engine_host("b", EngineHost::None, None).unwrap();
+        app.apply_detection(&target, &detected);
+        assert_eq!(app.load_profile("b").unwrap().engine_host, "none");
+        app.open_settings("b", SettingsView::Quality);
+        assert!(app.settings.is_none());
+        app.write_engine_host("b", EngineHost::Ue5, None).unwrap();
+        app.open_settings("b", SettingsView::Quality);
+        assert_eq!(app.settings.as_ref().unwrap().game_id, "b");
+    }
+
+    #[test]
+    fn proxy_lock_is_refreshed_and_save_rechecks_it() {
+        use launcher_core::journal::Journal;
+        use launcher_core::journal_store;
+
+        let (root, mut app) = fixture("proxy");
+        app.view.select_by_id("a");
+        app.open_settings("a", SettingsView::FrameGen);
+        app.settings.as_mut().unwrap().set_proxy(2);
+        let mut journal =
+            Journal::from_json(&launcher_core::fixtures::read_text("journal/01-new.json")).unwrap();
+        journal.game_id = "a".to_owned();
+        let path = root.0.join(journal_store::state_relative_path("a"));
+        journal_store::save_atomic(&path, &journal).unwrap();
+
+        // 在 UI 自动刷新前直接点保存，也必须拒绝过期的可编辑状态。
+        let mut form = app.settings.take().unwrap();
+        assert!(form.field_states().proxy_choice);
+        assert!(!app.save_settings(&mut form));
+        assert_eq!(app.load_profile("a").unwrap().proxy_index, 1);
+        assert!(form.dirty);
+        app.settings = Some(form);
+        app.view.select_by_id("b");
+        app.refresh_rows();
+        assert!(!app.settings.as_ref().unwrap().field_states().proxy_choice);
+
+        std::fs::remove_file(path).unwrap();
+        app.last_refresh = None;
+        app.refresh_rows();
+        assert!(app.settings.as_ref().unwrap().field_states().proxy_choice);
+        let mut form = app.settings.take().unwrap();
+        assert!(app.save_settings(&mut form));
+        assert_eq!(app.load_profile("a").unwrap().proxy_index, 2);
+    }
+
+    #[test]
+    fn mutation_failures_keep_disk_data_and_visible_rows() {
+        let (root, mut app) = fixture("failed-write");
+        let path = root.0.join("preferences.json");
+        let old = std::fs::read(&path).unwrap();
+        let temporary = path.with_extension("json.tmp");
+        std::fs::create_dir(&temporary).unwrap();
+        let other = GameProfile::new("c", "c", root.0.join("c"));
+        assert!(app.persist_profile(other.clone()).is_err());
+        assert!(app.remove_profile("a").is_err());
+        assert!(app.write_engine_host("a", EngineHost::None, None).is_err());
+        assert_eq!(app.view.games.len(), 2);
+        assert_eq!(app.view.games[0].engine_host, "UE4");
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        std::fs::remove_dir(temporary).unwrap();
+
+        app.view.select_by_id("a");
+        app.open_settings("a", SettingsView::FrameGen);
+        let mut form = app.settings.take().unwrap();
+        form.set_proxy(2);
+        let corrupt = b"{corrupt";
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(app.persist_profile(other).is_err());
+        assert!(app.remove_profile("a").is_err());
+        assert!(!app.save_settings(&mut form));
+        assert!(form.error.as_deref().unwrap().contains("读取本机偏好失败"));
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert_eq!(app.view.games.len(), 2);
+    }
 }

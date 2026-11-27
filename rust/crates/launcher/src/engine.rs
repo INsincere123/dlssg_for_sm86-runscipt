@@ -172,7 +172,9 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let deploy_engine = profile.deploy_engine_ini && engine_directory.is_some();
+    let deploy_engine = profile.deploy_engine_ini
+        && engine_directory.is_some()
+        && launcher_core::quality::EngineHost::confirmed(&profile.engine_host).is_some();
     let engine_source = match profile.config_source.as_deref() {
         Some(value) if !value.trim().is_empty() => {
             let candidate = PathBuf::from(value.trim());
@@ -1046,7 +1048,14 @@ pub fn execute(
         summary.diagnostic = true;
         summary.steps.push("diagnostic".to_owned());
         summary.engine_copy = !plan.engine_path.as_os_str().is_empty();
-        summary.steps.push("engine.ini".to_owned());
+        summary.steps.push(
+            if summary.engine_copy {
+                "engine.ini"
+            } else {
+                "engine.ini:skipped"
+            }
+            .to_owned(),
+        );
         summary.steps.push("dry-run:stop".to_owned());
         return Ok(summary);
     }
@@ -1408,6 +1417,7 @@ mod tests {
         // 二游走官方启动器，是 Direct；`GameProfile::new` 的缺省是 Steam（旧档案兼容），
         // 测试里必须写清楚，否则会撞上"Steam 档案缺 AppID"的拒绝。
         profile.launch_mode = "Direct".to_owned();
+        profile.engine_host = "UE4".to_owned();
         profile.config_dir = Some(
             game.join(r"Project\Saved\Config\Windows")
                 .to_string_lossy()
@@ -1416,6 +1426,32 @@ mod tests {
         profile.render_executable =
             Some(r"Project\Binaries\Win64\Game-Win64-Shipping.exe".to_owned());
         profile
+    }
+
+    #[test]
+    fn plans_engine_ini_only_for_confirmed_unreal_hosts() {
+        let (_sandbox, game, _, paths) = fixture("engine-eligibility");
+        let mut profile = profile(&game);
+        for unknown in ["none", "", "Unity"] {
+            profile.engine_host = unknown.to_owned();
+            assert!(
+                plan(&profile, &paths)
+                    .unwrap()
+                    .engine_path
+                    .as_os_str()
+                    .is_empty()
+            );
+        }
+        for confirmed in ["UE4", " ue5 "] {
+            profile.engine_host = confirmed.to_owned();
+            assert!(
+                !plan(&profile, &paths)
+                    .unwrap()
+                    .engine_path
+                    .as_os_str()
+                    .is_empty()
+            );
+        }
     }
 
     fn recovery_record(plan: &RunPlan) -> launcher_core::journal::Journal {

@@ -81,23 +81,23 @@ pub struct ProxyOption {
 /// 设置页状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsForm {
+    pub game_id: String,
     /// 当前视图；保存时按视图决定要不要写画质字段。
     pub view: SettingsView,
     pub settings: Settings,
     /// 代理编号 1..6。
     pub proxy_index: u8,
+    original_proxy_index: u8,
     /// 画质档位。
     pub quality_tier: QualityTier,
     /// `05-自定义` 的 INI 路径（绝对或相对启动器根）。
     pub custom_ini_path: String,
     /// 引擎宿主：`none` / `UE4` / `UE5`（只展示 + 校准结果来自偏好）。
     pub engine_host: String,
-    /// 是否已确定 UE4/UE5（画质档位的前提）。
-    pub engine_host_is_ue: bool,
-    /// 该游戏是否已有未清理的部署（有的话切换代理要先恢复）。
-    pub deployment_pending: bool,
-    /// 画质视图里显示的"当前配置源"。
-    pub config_source: Option<String>,
+    /// 有值时显示禁止更换代理的原因。
+    pub proxy_lock: Option<String>,
+    pub config_directory: String,
+    pub deploy_engine_ini: bool,
     /// 最近一次校验失败的原因；`None` 表示无错。
     pub error: Option<String>,
     /// 是否有未保存的修改。
@@ -107,37 +107,43 @@ pub struct SettingsForm {
 impl SettingsForm {
     pub fn new(settings: Settings) -> Self {
         Self {
+            game_id: String::new(),
             view: SettingsView::FrameGen,
             settings,
             proxy_index: 1,
+            original_proxy_index: 1,
             quality_tier: QualityTier::default(),
             custom_ini_path: String::new(),
             engine_host: "none".to_owned(),
-            engine_host_is_ue: false,
-            deployment_pending: false,
-            config_source: None,
+            proxy_lock: None,
+            config_directory: String::new(),
+            deploy_engine_ini: true,
             error: None,
             dirty: false,
         }
     }
 
     /// 按偏好里的一条记录填好表单（缺省值由 `GameProfile` 提供）。
-    pub fn from_profile(view: SettingsView, profile: &GameProfile, pending: bool) -> Self {
+    pub fn from_profile(
+        view: SettingsView,
+        profile: &GameProfile,
+        proxy_lock: Option<String>,
+    ) -> Self {
         let mut form = Self::new(profile.settings.clone().unwrap_or_default());
         form.view = view;
+        form.game_id = profile.id.clone();
         form.proxy_index = profile.proxy_index.clamp(1, PROXY_NAMES.len() as u8);
+        form.original_proxy_index = form.proxy_index;
         form.quality_tier = QualityTier::from_text(&profile.quality_tier).unwrap_or_default();
         form.engine_host = profile.engine_host.clone();
-        form.deployment_pending = pending;
-        form.config_source = profile.config_source.clone();
-        form.custom_ini_path = form
+        form.proxy_lock = proxy_lock;
+        form.config_directory = profile.config_dir.clone().unwrap_or_default();
+        form.deploy_engine_ini = profile.deploy_engine_ini;
+        form.custom_ini_path = profile
             .config_source
             .clone()
             .filter(|_| form.quality_tier == QualityTier::Tier5)
             .unwrap_or_default();
-        form.engine_host_is_ue = EngineHost::from_text(&profile.engine_host)
-            .map(|host| host != EngineHost::None)
-            .unwrap_or(false);
         form
     }
 
@@ -155,8 +161,8 @@ impl SettingsForm {
             super_resolution_tuning: super_resolution_on,
             runtime_path: enabled && self.settings.runtime_mode.needs_path(),
             preset_choice: enabled && self.settings.custom_ini.is_none(),
-            proxy_choice: !self.deployment_pending,
-            quality_choice: self.engine_host_is_ue,
+            proxy_choice: self.proxy_lock.is_none(),
+            quality_choice: EngineHost::confirmed(&self.engine_host).is_some(),
             custom_ini_path: self.quality_tier == QualityTier::Tier5,
         }
     }
@@ -193,29 +199,13 @@ impl SettingsForm {
     }
 
     /// 校验并记录错误；返回是否通过。
-    pub fn validate(&mut self) -> bool {
-        if let Err(error) = self.settings.validate() {
-            self.error = Some(error.to_string());
-            return false;
-        }
-        if self.view == SettingsView::Quality {
-            if let Err(message) = self.quality_source(Path::new(".")) {
-                self.error = Some(message);
-                return false;
-            }
-        }
-        self.error = None;
-        true
-    }
-
-    /// 保存前调用：只有校验通过才允许落盘。
-    pub fn take_for_save(&mut self) -> Option<Settings> {
-        if self.validate() {
-            self.dirty = false;
-            Some(self.settings.clone())
-        } else {
-            None
-        }
+    pub fn validate(&mut self, root: &Path) -> bool {
+        let result = match self.view {
+            SettingsView::FrameGen => self.settings.validate().map_err(|error| error.to_string()),
+            SettingsView::Quality => self.quality_paths(root).map(|_| ()),
+        };
+        self.error = result.err();
+        self.error.is_none()
     }
 }
 
@@ -302,13 +292,8 @@ impl SettingsForm {
 
     /// 画质配置源：`05-自定义` 用填的路径，其余按 UE 版本落到通用分类目录。
     pub fn quality_source(&self, root: &Path) -> Result<PathBuf, String> {
-        let host = EngineHost::from_text(&self.engine_host)
-            .map_err(|error| format!("引擎宿主无效：{error}"))?;
-        if host == EngineHost::None {
-            return Err(
-                "尚未确定 UE4/UE5，暂时无法定位画质配置源；先在上面确认引擎版本。".to_owned(),
-            );
-        }
+        let host = EngineHost::confirmed(&self.engine_host)
+            .ok_or_else(|| "尚未确认 UE4/UE5，请从游戏行的「引擎」入口校准。".to_owned())?;
         if self.quality_tier == QualityTier::Tier5 {
             let text = self.custom_ini_path.trim();
             if text.is_empty() {
@@ -341,13 +326,49 @@ impl SettingsForm {
         }
     }
 
-    /// 保存时把与档位相关的字段写回偏好；只有画质视图才动配置源，避免误改个人配置。
+    pub fn quality_directory(&self) -> Result<PathBuf, String> {
+        if !self.deploy_engine_ini {
+            return Err("该档案关闭了 Engine.ini 部署，画质设置无法应用。".to_owned());
+        }
+        let directory = PathBuf::from(self.config_directory.trim());
+        if !directory.is_absolute() || !directory.is_dir() {
+            return Err("请选择这个游戏实际读取 Engine.ini 的现有配置目录。".to_owned());
+        }
+        Ok(directory)
+    }
+
+    /// 只写当前视图拥有的字段。代理改动使用保存时复查的部署状态。
     pub fn apply_to_profile(&self, profile: &mut GameProfile, root: &Path) -> Result<(), String> {
-        profile.proxy_index = self.proxy_index;
-        profile.quality_tier = self.quality_tier.as_text().to_owned();
-        if self.view != SettingsView::Quality {
+        if profile.id != self.game_id {
+            return Err("表单与游戏档案不匹配。".to_owned());
+        }
+        if self.view == SettingsView::FrameGen {
+            self.settings
+                .validate()
+                .map_err(|error| error.to_string())?;
+            if self.proxy_index != self.original_proxy_index {
+                if let Some(reason) = &self.proxy_lock {
+                    return Err(reason.clone());
+                }
+                profile.proxy_index = self.proxy_index;
+            }
+            profile.settings = Some(self.settings.clone());
             return Ok(());
         }
+        if EngineHost::confirmed(&self.engine_host) != EngineHost::confirmed(&profile.engine_host) {
+            return Err("引擎版本已变化，请重新打开画质窗口。".to_owned());
+        }
+        if !profile.deploy_engine_ini {
+            return Err("该档案关闭了 Engine.ini 部署，画质设置无法应用。".to_owned());
+        }
+        let (path, directory) = self.quality_paths(root)?;
+        profile.quality_tier = self.quality_tier.as_text().to_owned();
+        profile.config_source = Some(path.display().to_string());
+        profile.config_dir = Some(directory.display().to_string());
+        Ok(())
+    }
+
+    fn quality_paths(&self, root: &Path) -> Result<(PathBuf, PathBuf), String> {
         let path = self.quality_source(root)?;
         if !path.is_file() {
             return Err(format!(
@@ -355,8 +376,24 @@ impl SettingsForm {
                 path.display()
             ));
         }
-        profile.config_source = Some(path.display().to_string());
-        Ok(())
+        let directory = self.quality_directory()?;
+        let target = directory.join("Engine.ini");
+        let context =
+            launcher_core::path::PathContext::current().map_err(|error| error.to_string())?;
+        if context
+            .normalize_path(&path)
+            .map_err(|error| error.to_string())?
+            == context
+                .normalize_path(&target)
+                .map_err(|error| error.to_string())?
+            || path
+                .canonicalize()
+                .ok()
+                .is_some_and(|source| target.canonicalize().ok() == Some(source))
+        {
+            return Err("配置源不能使用游戏原件 Engine.ini。".to_owned());
+        }
+        Ok((path, directory))
     }
 }
 
@@ -521,9 +558,8 @@ mod tests {
     #[test]
     fn defaults_pass_validation_and_are_not_dirty() {
         let mut form = form();
-        assert!(form.validate(), "{:?}", form.error);
+        assert!(form.validate(Path::new(".")), "{:?}", form.error);
         assert!(!form.dirty);
-        assert!(form.take_for_save().is_some());
     }
 
     #[test]
@@ -533,7 +569,7 @@ mod tests {
         form.set_engine(EngineKind::XeSs);
         assert_eq!(form.settings.max_generated_frames, 3);
         assert_eq!(form.field_states().max_generated_frames, 3);
-        assert!(form.validate(), "夹紧后应通过校验");
+        assert!(form.validate(Path::new(".")), "夹紧后应通过校验");
         // 回到 DLSS 不会自动放大，但允许用户再调高
         form.set_engine(EngineKind::Dlss);
         assert_eq!(form.settings.max_generated_frames, 3);
@@ -544,10 +580,9 @@ mod tests {
     fn invalid_frames_fail_validation_with_a_message() {
         let mut form = form();
         form.settings.max_generated_frames = 6;
-        assert!(!form.validate());
+        assert!(!form.validate(Path::new(".")));
         let message = form.error.clone().expect("应有错误");
         assert!(message.contains("MaxGeneratedFrames"), "{message}");
-        assert!(form.take_for_save().is_none(), "校验失败不能保存");
     }
 
     #[test]
@@ -567,16 +602,16 @@ mod tests {
         // 默认 Bundled：路径灰掉且不能有值
         assert!(!form.field_states().runtime_path);
         form.settings.runtime_path = Some(r"D:\rt".to_owned());
-        assert!(!form.validate(), "Bundled 带路径应失败");
+        assert!(!form.validate(Path::new(".")), "Bundled 带路径应失败");
         form.set_runtime_mode(RuntimeMode::Bundled);
         assert!(form.settings.runtime_path.is_none());
-        assert!(form.validate());
+        assert!(form.validate(Path::new(".")));
 
         form.set_runtime_mode(RuntimeMode::External);
         assert!(form.field_states().runtime_path);
-        assert!(!form.validate(), "需要路径的模式缺路径应失败");
+        assert!(!form.validate(Path::new(".")), "需要路径的模式缺路径应失败");
         form.settings.runtime_path = Some(r"D:\rt".to_owned());
-        assert!(form.validate());
+        assert!(form.validate(Path::new(".")));
     }
 
     #[test]
@@ -651,7 +686,7 @@ mod tests {
     fn proxy_choice_locks_while_a_deployment_is_pending() {
         let mut form = form();
         assert!(form.field_states().proxy_choice);
-        form.deployment_pending = true;
+        form.proxy_lock = Some("已有部署".to_owned());
         assert!(!form.field_states().proxy_choice, "先恢复才能换代理");
     }
 
@@ -670,7 +705,7 @@ mod tests {
 
         form.engine_host = "none".to_owned();
         let error = form.quality_source(root).expect_err("未确定引擎应报错");
-        assert!(error.contains("尚未确定 UE4/UE5"), "{error}");
+        assert!(error.contains("尚未确认 UE4/UE5"), "{error}");
         assert!(!form.field_states().quality_choice);
     }
 
@@ -707,8 +742,7 @@ mod tests {
             PathBuf::from(r"C:\Games\Wuthering Waves Game"),
         );
         profile.config_source = Some(r"D:\root\配置\鸣潮\Engine.ini".to_owned());
-        let mut form = form();
-        form.view = SettingsView::FrameGen;
+        let mut form = SettingsForm::from_profile(SettingsView::FrameGen, &profile, None);
         form.set_proxy(3);
         form.apply_to_profile(&mut profile, Path::new(r"D:\root"))
             .expect("保存");
@@ -735,12 +769,38 @@ mod tests {
 
         let mut profile = GameProfile::new("pbz", "PBZ", PathBuf::from(r"C:\PBZ"));
         profile.engine_host = "UE5".to_owned();
-        let mut form = SettingsForm::from_profile(SettingsView::Quality, &profile, false);
+        let mut form = SettingsForm::from_profile(SettingsView::Quality, &profile, None);
         form.set_quality(QualityTier::Tier1);
+        let original = profile.clone();
+        assert!(
+            form.apply_to_profile(&mut profile, &root)
+                .unwrap_err()
+                .contains("配置目录")
+        );
+        assert_eq!(profile, original);
+        form.config_directory = root.join("GameConfig").display().to_string();
+        std::fs::create_dir(&form.config_directory).unwrap();
         form.apply_to_profile(&mut profile, &root).expect("保存");
         assert_eq!(profile.quality_tier, "Tier1");
         let expected = tier.join("Engine.ini").to_string_lossy().into_owned();
         assert_eq!(profile.config_source.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            profile.config_dir.as_deref(),
+            Some(form.config_directory.as_str())
+        );
+        assert_eq!(profile.settings, None, "画质不覆盖帧生成设置");
+        let saved = profile.clone();
+        let game_engine = Path::new(&form.config_directory).join("Engine.ini");
+        std::fs::write(&game_engine, b"original").unwrap();
+        form.set_quality(QualityTier::Tier5);
+        form.custom_ini_path = game_engine.display().to_string();
+        assert!(!form.validate(&root));
+        assert!(
+            form.apply_to_profile(&mut profile, &root)
+                .unwrap_err()
+                .contains("游戏原件")
+        );
+        assert_eq!(profile, saved);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -753,7 +813,7 @@ mod tests {
         let mut profile = GameProfile::new("pbz", "PBZ", PathBuf::from(r"C:\PBZ"));
         profile.engine_host = "UE5".to_owned();
         profile.config_source = Some(r"D:\keep\Engine.ini".to_owned());
-        let mut form = SettingsForm::from_profile(SettingsView::Quality, &profile, false);
+        let mut form = SettingsForm::from_profile(SettingsView::Quality, &profile, None);
         form.set_quality(QualityTier::Tier2);
         let error = form
             .apply_to_profile(&mut profile, &root)
@@ -774,7 +834,8 @@ mod tests {
         profile.quality_tier = "Tier4".to_owned();
         profile.engine_host = "UE4".to_owned();
         profile.config_source = Some(r"D:\root\配置\异环\Engine.ini".to_owned());
-        let form = SettingsForm::from_profile(SettingsView::Quality, &profile, true);
+        let form =
+            SettingsForm::from_profile(SettingsView::Quality, &profile, Some("有遗留部署".into()));
         assert_eq!(form.view, SettingsView::Quality);
         assert_eq!(form.proxy_index, 2);
         assert_eq!(form.quality_tier, QualityTier::Tier4);
