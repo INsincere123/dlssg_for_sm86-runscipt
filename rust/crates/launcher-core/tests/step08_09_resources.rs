@@ -9,9 +9,10 @@ use launcher_core::journal::Journal;
 use launcher_core::journal_store::DeploymentSession;
 use launcher_core::ops::{LinkInfo, LinkKind};
 use launcher_core::resources::{
-    CORE_REQUIRED, Deployment, LinkOutcome, ProxyChoice, SUPER_RESOLUTION_REQUIRED, StorageClaim,
-    assert_deployment, assert_required_files, assert_resources_removed, claim_storage,
-    install_proxy_link, install_resources, required_files, scan_other_proxies, undo_resources,
+    CORE_REQUIRED, Deployment, LinkOutcome, ProxyChoice, StorageClaim, assert_deployment,
+    assert_required_files, assert_resources_removed, claim_storage, install_proxy_link,
+    install_resources, missing_super_resolution_files, required_files, scan_other_proxies,
+    super_resolution_required, undo_resources,
 };
 use launcher_core::testing::{FakeMutexOps, FakeSymlinkOps};
 use launcher_core::{Error, SymlinkOps};
@@ -98,7 +99,7 @@ fn fake_link(target: &Path, target_is_dir: bool) -> LinkInfo {
 fn required_resources_depend_on_super_resolution() {
     let fixture = setup("required");
     // 先按轻量版的样子把 sr 内核删掉：核心资源仍然齐全，只有开超分才该报错。
-    for relative in SUPER_RESOLUTION_REQUIRED {
+    for relative in super_resolution_required() {
         std::fs::remove_file(fixture.project.join(relative)).expect("删掉 sr 内核");
     }
     assert_eq!(required_files(false).len(), 5);
@@ -109,12 +110,30 @@ fn required_resources_depend_on_super_resolution() {
     assert!(text.contains("Missing DLSSG resource"), "实际：{text}");
     assert!(text.contains("sr_kernels.dll"), "实际：{text}");
 
-    for relative in SUPER_RESOLUTION_REQUIRED {
+    for relative in super_resolution_required() {
         let path = fixture.project.join(relative);
         std::fs::create_dir_all(path.parent().expect("父目录")).expect("sr 目录");
         std::fs::write(&path, "sr").expect("sr 文件");
     }
     assert_required_files(&fixture.project, true).expect("补齐后通过");
+    for relative in super_resolution_required() {
+        let path = fixture.project.join(relative);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            missing_super_resolution_files(&fixture.project),
+            std::slice::from_ref(&path)
+        );
+        assert_required_files(&fixture.project, false).unwrap();
+        let error = assert_required_files(&fixture.project, true).unwrap_err();
+        assert!(
+            error.to_string().contains(&*path.to_string_lossy()),
+            "{error}"
+        );
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, "sr").unwrap();
+    }
+    assert!(missing_super_resolution_files(&fixture.project).is_empty());
 }
 
 #[test]

@@ -41,11 +41,20 @@ pub const CORE_REQUIRED: [&str; 5] = [
     "dlssg_sm86\\xefg\\xefg_kernels.dll",
 ];
 
-/// 只有超分未关闭时才要求的资源。
-pub const SUPER_RESOLUTION_REQUIRED: [&str; 2] = [
-    "dlssg_sm86\\sr\\sr_kernels.dll",
-    "dlssg_sm86\\sr\\nvngx_dlss.dll",
-];
+/// 超分必需文件。打包脚本读取同一份相对路径清单，运行时使用编译进 EXE 的副本。
+pub fn super_resolution_required() -> impl Iterator<Item = &'static str> {
+    include_str!("resources/super-resolution-required.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
+pub fn missing_super_resolution_files(resource_root: &Path) -> Vec<PathBuf> {
+    super_resolution_required()
+        .map(|relative| resource_root.join(relative))
+        .filter(|path| !path.is_file())
+        .collect()
+}
 
 /// 代理选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,7 +199,7 @@ impl<'a> Deployment<'a> {
 pub fn required_files(super_resolution: bool) -> Vec<&'static str> {
     let mut required = CORE_REQUIRED.to_vec();
     if super_resolution {
-        required.extend(SUPER_RESOLUTION_REQUIRED);
+        required.extend(super_resolution_required());
     }
     required
 }

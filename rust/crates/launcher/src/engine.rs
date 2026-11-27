@@ -398,17 +398,13 @@ pub fn preflight(plan: &RunPlan) -> Vec<String> {
             missing.push(format!("资源缺失：{}", path.display()));
         }
     }
-    // 超分开着才要求 sr 内核；轻量版（没有 sr 目录）在这条路上给出明确出路。
+    // Off 不要求超分资源。非 Off 使用与界面相同的缺失检查。
     if plan.settings.requires_super_resolution_resources() {
-        for relative in launcher_core::resources::SUPER_RESOLUTION_REQUIRED {
-            let path = plan.resource_root.join(relative);
-            if !path.is_file() {
-                missing.push(format!(
-                    "缺超分内核：{}\n\
-                     （轻量版不带 sr；要用超分请换全量包，或把 SuperResolution.Mode 设为 Off）",
-                    path.display()
-                ));
-            }
+        for path in launcher_core::resources::missing_super_resolution_files(&plan.resource_root) {
+            missing.push(format!(
+                "缺少超分资源：{}。补齐资源，或把 SuperResolution.Mode 设为 Off。",
+                path.display()
+            ));
         }
     }
     if !plan.engine_path.as_os_str().is_empty() {
@@ -1426,6 +1422,46 @@ mod tests {
         profile.render_executable =
             Some(r"Project\Binaries\Win64\Game-Win64-Shipping.exe".to_owned());
         profile
+    }
+
+    #[test]
+    fn preflight_names_each_missing_sr_file_and_off_stays_usable() {
+        use launcher_core::{resources, settings::SuperResolutionMode};
+
+        let (_sandbox, game, root, paths) = fixture("preflight-sr");
+        let mut profile = profile(&game);
+        profile.config_dir = None;
+        std::fs::create_dir(root.join("bin")).unwrap();
+        let bin = root.join("bin");
+        write(&bin, "version.dll", b"proxy");
+        for relative in resources::CORE_REQUIRED
+            .into_iter()
+            .chain(resources::super_resolution_required())
+        {
+            write(&bin, relative, b"resource");
+        }
+        let mut plan = plan(&profile, &paths).unwrap();
+        for relative in resources::super_resolution_required() {
+            let path = bin.join(relative);
+            std::fs::remove_file(&path).unwrap();
+            plan.settings.super_resolution = SuperResolutionMode::MInt8;
+            let missing = preflight(&plan);
+            assert_eq!(missing.len(), 1, "{missing:?}");
+            assert!(missing[0].contains(&*path.to_string_lossy()), "{missing:?}");
+
+            plan.settings.super_resolution = SuperResolutionMode::Off;
+            assert!(preflight(&plan).is_empty());
+            write(&bin, relative, b"resource");
+        }
+        plan.settings.super_resolution = SuperResolutionMode::MInt8;
+        assert!(preflight(&plan).is_empty());
+
+        for relative in resources::super_resolution_required() {
+            std::fs::remove_file(bin.join(relative)).unwrap();
+        }
+        assert_eq!(preflight(&plan).len(), 2);
+        plan.settings.super_resolution = SuperResolutionMode::Off;
+        assert!(preflight(&plan).is_empty());
     }
 
     #[test]

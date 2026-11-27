@@ -12,6 +12,7 @@ mod add_game;
 mod engine;
 mod gpu;
 mod handoff;
+mod icon;
 mod rename;
 mod scan;
 mod settings_form;

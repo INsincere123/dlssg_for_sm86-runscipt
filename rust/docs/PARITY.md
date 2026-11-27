@@ -205,7 +205,7 @@ Rust 界面给每次引擎交接分配请求 ID，子进程报告同时携带请
 | N-2 | 复用已在运行的官方启动器，按完整 EXE 路径核对；游戏已在运行仍拒绝 | 新增（PS 只按进程名判断是否已启动） |
 | N-3 | 生成的运行时 INI 带身份标记行 `; dlssg-launcher-config=<uuid>` | 新增，用于无记录回收 |
 | N-4 | 档案字段 `engine_host ∈ {none, UE4, UE5}` | 仅已确认 UE4／UE5 可选画质和部署 `Engine.ini` |
-| N-5 | `sr` 分层断言：仅 `SuperResolution.Mode ≠ Off` 要求 `sr\*` | 放宽现有硬断言（D-5） |
+| N-5 | `SuperResolution.Mode ≠ Off` 时要求 `sr\sr_kernels.dll` 和 `sr\nvngx_dlss.dll`，界面、预检和打包共用同一份清单 | `Off` 允许缺少这两个文件（D-5） |
 | N-6 | 便携包 `PackageType` 取值改为 `1=基础包 / 2=sr 配件` | 旧 0–4 废弃 |
 | N-7 | 运行时 INI 生成**完整 12 键** | 现有模板只有 8 键（D-2） |
 | N-8 | 默认值 `MaxGeneratedFrames=3`、`Optimized=1`、`Level=1` | 现有模板是 5 / 2 / 2（D-2） |

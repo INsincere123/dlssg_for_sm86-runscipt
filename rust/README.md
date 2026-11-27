@@ -1,4 +1,4 @@
-# rust/ — Rust 单 EXE 启动器（v0.1，M1–M10 已完成）
+# rust/ — Rust 单 EXE 启动器（v0.2.0，M1–M10 已完成）
 
 界面 + 引擎都在一个 `DlssgLauncher.exe` 里：不带参数是单窗口界面，带 `--engine` 是引擎。
 计划与任务清单见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。版本号取自
@@ -58,7 +58,7 @@ bin\dlssg_sm86\sr\{sr_kernels,nvngx_dlss}.dll   ← 轻量版没有这一对
 新记录同时保存渲染 EXE 和独立官方启动器的完整路径。手动恢复会核验这些进程均已退出，
 无法读取同名候选的路径时会保留部署。旧记录需要原游戏偏好来补足路径。
 
-## 打包（全量 / 轻量）
+## 打包（全量 / 轻量 / 超分补丁）
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode full  -Force -Compress max
@@ -66,17 +66,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode light
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr    -Force -Compress max -ArchiveOnly
 ```
 
-同一个 exe，两个包；差别只有 `bin\dlssg_sm86\sr`（`sr_kernels.dll` + `nvngx_dlss.dll`，共 172 MB）。
+全量包和轻量包使用同一个 EXE。全量包含 `bin\dlssg_sm86\sr` 下的 `sr_kernels.dll` 和 `nvngx_dlss.dll`，也可以用超分补丁把这两个文件补到轻量包。
+
+界面、引擎预检和打包读取同一份必需文件清单。缺少任意一个 DLL 时，「帧生成」设置会列出缺失文件并只开放超分 `Off`。如果档案已保存其他模式，引擎预检会列出缺失路径并阻止启动。轻量包可以用 `Off` 运行，游戏自身超分仍由游戏设置控制。
 
 压缩方式三档（`-Compress`）：
 
 | 档 | 做法 | 校验 |
 |---|---|---|
-| `none`（默认） | 只出目录 | — |
+| `none`（默认） | 只出目录 | 全量和补丁的两个超分 DLL 都须存在，并各自在包清单出现一次 |
 | `zip` | Deflate（Optimal），等价旧参数 `-Zip` | 逐条目大小 + SHA256 与清单比对 |
-| `max`（极限） | **7z / LZMA2 等级 9**，走 `C:\Bandizip\bz.exe`（与旧脚本 `Export-PortableLauncher.ps1 -b` 同一套）；没有 Bandizip 时退 7z.exe → tar+xz → zip | `bz t` CRC 校验，先写 `.partial` 再改名 |
+| `max`（极限） | 优先用 `C:\Bandizip\bz.exe` 生成 **7z / LZMA2 等级 9**，依次回退到 7z.exe、tar+xz | 压缩工具完整性检查，提取全量和补丁内的两个超分 DLL 比对 SHA256 |
 
-三份产物（`-Mode full|light|sr`），两种压缩都出过：
+全量包和补丁在源文件缺失时停止打包并显示缺失路径。目录和压缩文件在临时目录内构建，校验通过后才发布。校验失败时保留已发布的旧产物。
+
+以下是 v0.1 的三种包体积记录。产物名称中的版本随构建版本更新。
 
 | 包 | 解压后 | zip | max（7z） |
 |---|---|---|---|
@@ -85,14 +89,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack.ps1 -Mode sr   
 | `DlssgLauncher-v0.1-sr-patch`（超分补丁） | 172.4 MB / 3 文件 | 63.2 MB | **38.2 MB**（22%） |
 
 **轻量 + 补丁 = 全量**：逐个文件比过 SHA256 完全一致；功能上也验过——合并后开
-`SuperResolution.Mode=M-Int8` 跑 `--engine run --dry-run` 得 `preflight:ok, resources:5`，
-没打补丁的轻量包同样条件会被预检拒绝（"缺超分内核"）。
+`SuperResolution.Mode=M-Int8` 跑 `--engine run --dry-run` 得 `preflight:ok, resources:5`。
 
 体积上拆分基本不亏：`18.8 + 38.2 = 57.0 MB` 与全量的 57.5 MB 几乎相同，
 但不需要超分的人只要下 18.8 MB。补丁的用法写在该包的 `README-超分补丁.txt` 里
 （把 `bin\` 覆盖到启动器根目录即可）。
 
-`-ArchiveOnly` 可在压缩成功后删掉解压目录，只留压缩包。
+`-ArchiveOnly` 只发布校验通过的压缩包。
 
 所有 7z 都做过解压后逐文件 SHA256 复核。
 

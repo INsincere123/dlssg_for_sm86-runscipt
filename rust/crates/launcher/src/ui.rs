@@ -1572,13 +1572,6 @@ impl LauncherApp {
         crate::about::logs_directory(&self.root).join(name)
     }
 
-    /// 负载里有没有超分内核（轻量版没有）：`<负载根>\dlssg_sm86\sr\sr_kernels.dll`。
-    fn super_resolution_available(&self) -> bool {
-        crate::engine::resource_root_of(&self.root)
-            .join(r"dlssg_sm86\sr\sr_kernels.dll")
-            .is_file()
-    }
-
     /// 核对持有活动部署记录的引擎。状态文件只用于重新打开窗口后的会话提示。
     fn engine_owner(&self) -> Option<(String, u32)> {
         let owns_record = |game, pid| {
@@ -1960,11 +1953,21 @@ impl LauncherApp {
             EngineKind, FlowResolution, RuntimeMode, SuperResolutionMode, UseHudless,
         };
         let states = form.field_states();
-        if !self.super_resolution_available() {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xD0, 0x8A, 0x2E),
-                "轻量版：没带超分内核（dlssg_sm86\\sr），SuperResolution.Mode 只能用 Off；要用超分请换全量包。",
-            );
+        let resource_root = crate::engine::resource_root_of(&self.root);
+        let missing = launcher_core::resources::missing_super_resolution_files(&resource_root);
+        let sr_unavailable = (!missing.is_empty()).then(|| {
+            let names: Vec<_> = missing
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|name| name.to_string_lossy())
+                .collect();
+            format!(
+                "缺少超分资源：{}。补齐后可选超分档位，当前可用 Off。",
+                names.join("、")
+            )
+        });
+        if let Some(reason) = &sr_unavailable {
+            ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x2E), reason);
         }
         ui.label(format!("常用（{} 项）", COMMON_KEYS.len()));
         ui.add_enabled_ui(true, |ui| {
@@ -2000,7 +2003,6 @@ impl LauncherApp {
                 ui.label(format!("上限 {}", states.max_generated_frames));
             });
             ui.horizontal(|ui| {
-                let sr_available = self.super_resolution_available();
                 ui.label("SuperResolution.Mode")
                     .on_hover_text(crate::settings_form::key_hint("SuperResolution.Mode"));
                 for (mode, text) in [
@@ -2010,17 +2012,13 @@ impl LauncherApp {
                     (SuperResolutionMode::MFp16, "M-Fp16"),
                     (SuperResolutionMode::LFp16, "L-Fp16"),
                 ] {
-                    // 轻量版没有 sr 内核：除 Off 之外的档位置灰，别让用户选了再失败。
-                    let enabled = sr_available || mode == SuperResolutionMode::Off;
+                    let enabled = sr_unavailable.is_none() || mode == SuperResolutionMode::Off;
                     let response = ui.add_enabled_ui(enabled, |ui| {
                         ui.selectable_value(&mut form.settings.super_resolution, mode, text)
                     });
-                    let response = if enabled {
-                        response.inner
-                    } else {
-                        response.inner.on_disabled_hover_text(
-                            "当前是轻量版，不含超分内核（sr_kernels.dll / nvngx_dlss.dll）",
-                        )
+                    let response = match &sr_unavailable {
+                        Some(reason) if !enabled => response.inner.on_disabled_hover_text(reason),
+                        _ => response.inner,
                     };
                     if response.clicked() {
                         form.set_super_resolution(mode);
@@ -2577,6 +2575,7 @@ pub fn native_options(title: &str) -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 580.0])
             .with_min_inner_size([720.0, 460.0])
+            .with_icon(crate::icon::app_icon())
             .with_title(title),
         ..Default::default()
     }
