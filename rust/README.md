@@ -1,4 +1,4 @@
-# rust/ — Rust 单 EXE 启动器（v0.2.0，M1–M10 已完成）
+# rust/ — Rust 单 EXE 启动器（v0.2.1，M1–M10 已完成）
 
 界面 + 引擎都在一个 `DlssgLauncher.exe` 里：不带参数是单窗口界面，带 `--engine` 是引擎。
 计划与任务清单见 [plan/plan.md](plan/plan.md)（源：`plan/plan.json`）。版本号取自

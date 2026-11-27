@@ -1,6 +1,6 @@
 [package]
 name = "launcher"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ rfd = "0.15"
 # 托盘图标及原生消息循环
 tray-icon = "0.19"
 windows-sys = { version = "0.61.2", features = ["Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 launcher-core = { path = "../launcher-core" }

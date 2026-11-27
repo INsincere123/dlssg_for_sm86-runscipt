@@ -14,6 +14,8 @@
 //! 遍历可随时取消：`cancel` 每进入一个目录、每个条目都会被调用一次。
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -448,26 +450,27 @@ fn stem(name: &str) -> String {
 
 /// `Test-GameX64Executable`：只认 x64、可执行、非 DLL 的 PE。
 pub fn is_x64_executable(path: &Path) -> bool {
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
-        Err(_) => return false,
+    let Ok(mut file) = File::open(path) else {
+        return false;
     };
-    if data.len() < 64 || data[0] != b'M' || data[1] != b'Z' {
+    let mut dos_header = [0u8; 64];
+    if file.read_exact(&mut dos_header).is_err() || &dos_header[..2] != b"MZ" {
         return false;
     }
-    let offset = i32::from_le_bytes([data[60], data[61], data[62], data[63]]);
-    if offset < 64 || offset as usize > data.len().saturating_sub(26) {
+    let offset = i32::from_le_bytes(dos_header[60..64].try_into().unwrap());
+    if offset < 64 || file.seek(SeekFrom::Start(offset as u64)).is_err() {
         return false;
     }
-    let offset = offset as usize;
-    if &data[offset..offset + 4] != b"PE\0\0" {
+    // 保留原来的最小长度：PE 签名、COFF 文件头和可选头的前两个字节。
+    let mut pe_header = [0u8; 26];
+    if file.read_exact(&mut pe_header).is_err() || &pe_header[..4] != b"PE\0\0" {
         return false;
     }
-    let machine = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+    let machine = u16::from_le_bytes([pe_header[4], pe_header[5]]);
     if machine != 0x8664 {
         return false;
     }
-    let flags = u16::from_le_bytes([data[offset + 22], data[offset + 23]]);
+    let flags = u16::from_le_bytes([pe_header[22], pe_header[23]]);
     flags & 0x0002 != 0 && flags & 0x2000 == 0
 }
 
