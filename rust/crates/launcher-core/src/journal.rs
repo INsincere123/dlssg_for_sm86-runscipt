@@ -200,6 +200,17 @@ pub struct Journal {
     pub deployment_mode: Option<DeploymentMode>,
     #[serde(rename = "ProxyName", default, skip_serializing_if = "Option::is_none")]
     pub proxy_name: Option<String>,
+    /// 完整目标路径，恢复不依赖后来编辑过的偏好。
+    #[serde(rename = "Processes", default, skip_serializing_if = "Option::is_none")]
+    pub processes: Option<DeploymentProcesses>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DeploymentProcesses {
+    pub render: std::path::PathBuf,
+    #[serde(default)]
+    pub launchers: Vec<std::path::PathBuf>,
 }
 
 impl Journal {
@@ -336,6 +347,7 @@ impl Journal {
             reused: Vec::new(),
             deployment_mode,
             proxy_name: Some(proxy_name.to_owned()),
+            processes: None,
         }
     }
 }

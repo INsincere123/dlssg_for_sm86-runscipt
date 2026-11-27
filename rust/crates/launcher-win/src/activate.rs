@@ -64,6 +64,49 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 仅在该部署引擎存活期间存在的取消事件。
+pub struct SessionCancellation(ActivationEvent);
+
+impl SessionCancellation {
+    pub fn create(session: &str) -> Result<Self> {
+        let name = Self::name(session)?;
+        let handle = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, name.as_ptr()) };
+        if handle == 0 {
+            return Err(Error::io_plain(std::io::Error::last_os_error()));
+        }
+        Ok(Self(ActivationEvent { handle }))
+    }
+
+    pub fn requested(&self) -> bool {
+        self.0.wait(Some(0))
+    }
+
+    /// 引擎已退出或使用旧版协议时返回 false。
+    pub fn request(session: &str) -> Result<bool> {
+        let name = Self::name(session)?;
+        let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+        if handle == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(2) {
+                return Ok(false);
+            }
+            return Err(Error::io_plain(error));
+        }
+        let event = ActivationEvent { handle };
+        if unsafe { SetEvent(event.handle) } == 0 {
+            return Err(Error::io_plain(std::io::Error::last_os_error()));
+        }
+        Ok(true)
+    }
+
+    fn name(session: &str) -> Result<Vec<u16>> {
+        if !launcher_core::journal::is_valid_session(session) {
+            return Err(Error::invalid("部署取消事件的会话标识无效。"));
+        }
+        Ok(wide(&format!("Local\\DlssgLauncherCancel-{session}")))
+    }
+}
+
 /// 界面进程持有的命名事件；起等待线程后一直活着。
 pub struct ActivationEvent {
     handle: Handle,
@@ -214,6 +257,20 @@ fn owned_by_current_exe(hwnd: Handle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_signal_is_scoped_to_a_single_deployment() {
+        let session = format!("{:032x}", std::process::id());
+        let other = format!("{:032x}", u64::from(std::process::id()) + (1 << 32));
+        let event = SessionCancellation::create(&session).unwrap();
+        assert!(!SessionCancellation::request(&other).unwrap());
+        assert!(!event.requested());
+        assert!(SessionCancellation::request(&session).unwrap());
+        assert!(event.requested());
+        assert!(event.requested(), "取消信号在会话内保持");
+        drop(event);
+        assert!(!SessionCancellation::request(&session).unwrap());
+    }
 
     #[test]
     fn a_signal_reaches_the_waiter() {

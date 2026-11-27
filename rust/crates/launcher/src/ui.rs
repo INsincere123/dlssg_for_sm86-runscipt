@@ -471,13 +471,24 @@ impl LauncherApp {
                     let engine_busy_here = engine_owner.as_deref() == Some(id.as_str());
                     ui.horizontal(|ui| {
                         // 行内操作：启动/结束并恢复在最前，恢复原状只在有遗留部署时出现，移除在最后。
-                        if self.view.row_running(index) {
+                        let running = self.view.row_running(index);
+                        let can_cancel = engine_busy_here && entry.status.can_restore();
+                        if running || can_cancel {
                             // 检测到游戏进程：按钮变成"结束并恢复"，即使游戏是手动启动的。
                             if ui
-                                .button(egui::RichText::new("结束并恢复").strong())
-                                .on_hover_text(
-                                    "游戏正在运行：强行结束它的进程（含官方启动器），然后恢复原状",
+                                .button(
+                                    egui::RichText::new(if running {
+                                        "结束并恢复"
+                                    } else {
+                                        "中止并恢复"
+                                    })
+                                    .strong(),
                                 )
+                                .on_hover_text(if running {
+                                    "结束已核验的游戏和官方启动器进程，然后恢复原状"
+                                } else {
+                                    "中止当前启动等待并恢复部署"
+                                })
                                 .clicked()
                             {
                                 action = Some(RowAction::Stop(id.clone()));
@@ -564,23 +575,16 @@ impl LauncherApp {
                         if engine_is_ue {
                             ui.label(egui::RichText::new(&entry.engine_host).small().weak());
                         }
-                        // 游戏在跑时不给「恢复原状」（该走「结束并恢复」）；
-                        // 引擎正在跑这个游戏时置灰：手动恢复会和引擎抢同一份部署记录。
-                        if entry.status.can_restore() && !self.view.row_running(index) {
-                            let clicked = if engine_busy_here {
-                                ui.add_enabled(false, egui::Button::new("恢复原状"))
-                                    .on_disabled_hover_text(
-                                        "引擎正在跑这个游戏；要中止请点「结束并恢复」",
-                                    )
-                                    .clicked()
-                            } else {
-                                ui.button("恢复原状")
-                                    .on_hover_text("有未清理的部署：按记录恢复游戏目录与配置")
-                                    .clicked()
-                            };
-                            if clicked {
-                                action = Some(RowAction::Restore(id.clone()));
-                            }
+                        // 只在引擎和游戏都已退出时提供手动恢复。
+                        if entry.status.can_restore()
+                            && !running
+                            && !can_cancel
+                            && ui
+                                .button("恢复原状")
+                                .on_hover_text("有未清理的部署：按记录恢复游戏目录与配置")
+                                .clicked()
+                        {
+                            action = Some(RowAction::Restore(id.clone()));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
@@ -1605,6 +1609,8 @@ impl LauncherApp {
         }
         self.last_refresh = Some(Instant::now());
         self.view.session_taken = launcher_win::session_active();
+        use launcher_core::ops::ProcessProbe;
+        let processes = launcher_win::WinProcessProbe.list().unwrap_or_default();
         let profiles = self
             .preferences_path
             .as_deref()
@@ -1616,14 +1622,15 @@ impl LauncherApp {
             let directory = self.view.games[index].directory.clone();
             let pending = launcher_core::journal_store::load_for_game(&self.root, &id)
                 .ok()
-                .flatten()
-                .is_some();
-            let running = match profiles.iter().find(|profile| profile.id == id) {
-                Some(profile) => crate::engine::is_game_running(profile),
-                None => false,
-            };
+                .flatten();
+            let running = crate::engine::is_game_running(
+                profiles.iter().find(|profile| profile.id == id),
+                pending.as_ref().map(|(_, journal)| journal),
+                &processes,
+            );
             let entry = &mut self.view.games[index];
-            entry.status = crate::view_model::derive_status(directory.is_dir(), pending, running);
+            entry.status =
+                crate::view_model::derive_status(directory.is_dir(), pending.is_some(), running);
             entry.running = running;
         }
     }

@@ -17,8 +17,10 @@
 use std::path::{Path, PathBuf};
 
 use launcher_core::error::{Error, Result};
+use launcher_core::journal::{DeploymentProcesses, Journal};
 use launcher_core::preferences::GameProfile;
 use launcher_core::resources::{Deployment, ProxyChoice};
+use launcher_core::session::ExecutableTargets;
 
 /// 一次运行需要的全部路径与信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,192 +503,179 @@ pub fn launcher_path(profile: &GameProfile) -> Option<PathBuf> {
     })
 }
 
-/// 该游戏"相关进程"的匹配条件：渲染 EXE、官方启动器入口、官方启动器进程名、
-/// 以及渲染目录里跑的任何进程（二游的启动器会再起别的进程名）。
-///
-/// **Steam 游戏不能把 steam.exe 算进去**：那是用户自己的客户端，结束它会把整个 Steam 关掉。
-pub fn game_processes(profile: &GameProfile) -> launcher_win::ProcessFilter {
-    let steam = profile.launch_mode.eq_ignore_ascii_case("Steam");
-    // Epic 也一样：EpicGamesLauncher.exe 是用户自己的客户端，不能算成游戏进程。
-    let platform_launched = steam || profile.launch_mode.eq_ignore_ascii_case("Epic");
-    let mut executables: Vec<PathBuf> = Vec::new();
-    if let Some(render) = render_path(profile) {
-        executables.push(render);
+/// 官方启动器与渲染程序分开核验，平台客户端从来不是游戏的结束目标。
+fn launcher_targets(
+    mode: &str,
+    render: &Path,
+    launcher: Option<&Path>,
+    launcher_name: Option<&str>,
+) -> Vec<PathBuf> {
+    if mode.eq_ignore_ascii_case("Steam") || mode.eq_ignore_ascii_case("Epic") {
+        return Vec::new();
     }
-    if !platform_launched {
-        if let Some(launcher) = launcher_path(profile) {
-            if !executables.iter().any(|path| path == &launcher) {
-                executables.push(launcher);
-            }
-        }
+    let Some(launcher) = launcher.filter(|launcher| *launcher != render) else {
+        return Vec::new();
+    };
+    let mut paths = vec![launcher.to_path_buf()];
+    if launcher
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("NTELauncher.exe"))
+        && launcher_name.is_some_and(|name| name.eq_ignore_ascii_case("NTEGame.exe"))
+    {
+        paths.push(launcher.with_file_name("NTELauncher").join("NTEGame.exe"));
     }
-    let mut names: Vec<String> = Vec::new();
-    if !platform_launched {
-        if let Some(name) = profile.launcher_process_name.as_deref() {
-            let index = name.to_ascii_lowercase().rfind(".exe");
-            let trimmed = index
-                .map(|index| name[..index].to_owned())
-                .unwrap_or_else(|| name.to_owned());
-            if !trimmed.trim().is_empty() {
-                names.push(trimmed);
-            }
-        }
-    }
-    // 目录条件：渲染 EXE 所在目录（部署与进程都在这里），退回游戏目录。
-    let directory = render_path(profile)
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .or_else(|| Some(profile.directory.clone()))
-        .filter(|path| path.is_dir());
-    launcher_win::ProcessFilter {
-        executables,
-        names,
-        directory,
-    }
+    paths
 }
 
-/// 该游戏是否有进程在跑（界面用它决定"启动"还是"结束并恢复"）。
-pub fn is_game_running(profile: &GameProfile) -> bool {
-    !launcher_win::matching_processes(&game_processes(profile)).is_empty()
+fn profile_processes(profile: &GameProfile) -> Result<DeploymentProcesses> {
+    let render =
+        render_path(profile).ok_or_else(|| Error::invalid("没有配置渲染程序完整路径。"))?;
+    let launchers = launcher_targets(
+        &profile.launch_mode,
+        &render,
+        launcher_path(profile).as_deref(),
+        profile.launcher_process_name.as_deref(),
+    );
+    Ok(DeploymentProcesses { render, launchers })
 }
 
-/// 强行结束该游戏的相关进程。
-pub fn terminate_game(profile: &GameProfile, wait: std::time::Duration) -> (Vec<u32>, Vec<u32>) {
-    launcher_win::terminate_matching(&game_processes(profile), wait)
+fn recorded_processes(
+    journal: &Journal,
+    profile: Option<&GameProfile>,
+) -> Result<DeploymentProcesses> {
+    journal.validate()?;
+    let paths = match &journal.processes {
+        Some(paths) => paths.clone(),
+        None => profile_processes(profile.ok_or_else(|| {
+            Error::unavailable(
+                "旧部署记录缺少渲染 EXE，无法核验进程。请保留记录并使用原配置或原启动入口恢复。",
+            )
+        })?)?,
+    };
+    verify_recorded_render(journal, &paths)?;
+    Ok(paths)
 }
 
-/// 杀完游戏后等引擎自己恢复的宽限时间：要盖住鸣潮 10 秒的热重启窗口，但别让用户干等。
-const ENGINE_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+fn verify_recorded_render(journal: &Journal, paths: &DeploymentProcesses) -> Result<()> {
+    let context = launcher_core::path::PathContext::current()?;
+    let directory = paths
+        .render
+        .parent()
+        .ok_or_else(|| Error::invalid("渲染 EXE 没有父目录。"))?;
+    if context.normalize_path(directory)? != context.normalize(&journal.render)? {
+        return Err(Error::invalid("渲染 EXE 不在记录的渲染目录，已保留部署。"));
+    }
+    Ok(())
+}
 
-/// 「结束并恢复」：先强行结束该游戏的进程，再按情况恢复。
-///
-/// 三种情况分别处理（都要先杀进程，否则恢复会撞上被占用/仍在写的文件）：
-///
-/// 1. **引擎还在跑**（它持着会话锁）：杀完进程它会自己走完会话并恢复，这里只等它把记录删掉
-/// 2. **没有引擎但记录还在**（例如引擎异常退出）：由本进程补做恢复
-/// 3. **没有记录**：杀进程就够了，不报错
-///
-/// 这个命令通常以管理员身份运行，因为游戏本身可能也是提权的。
+fn ensure_processes_stopped(paths: &DeploymentProcesses, automatic: bool) -> Result<()> {
+    use launcher_core::ops::ProcessProbe;
+    let entries = launcher_win::WinProcessProbe.list()?;
+    let mut targets = vec![paths.render.clone()];
+    if !automatic {
+        targets.extend(paths.launchers.iter().cloned());
+    }
+    if let Some(process) = ExecutableTargets::new(&targets)?
+        .matching(&entries)?
+        .first()
+    {
+        return Err(Error::invalid(format!(
+            "目标进程仍在运行（{}，PID {}），部署已保留。",
+            process.name, process.pid
+        )));
+    }
+    Ok(())
+}
+
+/// 界面只把确认匹配完整渲染路径的目标视为运行中。
+pub fn is_game_running(
+    profile: Option<&GameProfile>,
+    journal: Option<&Journal>,
+    entries: &[launcher_core::ops::ProcessEntry],
+) -> bool {
+    let render = journal
+        .and_then(|journal| journal.processes.as_ref())
+        .map(|processes| processes.render.clone())
+        .or_else(|| profile.and_then(render_path));
+    let Some(render) = render else {
+        return false;
+    };
+    let Ok(targets) = ExecutableTargets::new(&[render]) else {
+        return false;
+    };
+    targets
+        .matching(entries)
+        .is_ok_and(|matched| !matched.is_empty())
+}
+
+/// 结束已核验的渲染进程及官方启动器，并请求原会话正常恢复。
 pub fn stop(
     launcher_root: &Path,
     profile: &GameProfile,
     kill_wait: std::time::Duration,
 ) -> Result<StopSummary> {
+    use launcher_core::{journal_store, ops::ProcessProbe};
+    use launcher_win::activate::SessionCancellation;
+
+    let existing = journal_store::load_for_game(launcher_root, &profile.id)?;
+    let paths = match &existing {
+        Some((_, journal)) => recorded_processes(journal, Some(profile))?,
+        None => profile_processes(profile)?,
+    };
+
+    let mut executables = paths.launchers.clone();
+    executables.push(paths.render.clone());
+    let targets = ExecutableTargets::new(&executables)?;
+    let entries = launcher_win::WinProcessProbe.list()?;
     let mut summary = StopSummary {
         game_id: profile.id.clone(),
         ..StopSummary::default()
     };
-    let targets = game_processes(profile);
-    if !targets.is_empty() {
-        let (killed, failed) = terminate_game(profile, kill_wait);
-        summary.killed = killed;
-        summary.failed = failed;
+    for process in targets.matching(&entries)? {
+        launcher_win::terminate_verified(process.pid, &targets, kill_wait)?;
+        summary.killed.push(process.pid);
     }
+    ensure_processes_stopped(&paths, false)?;
 
-    let pending =
-        launcher_core::journal_store::load_for_game(launcher_root, &profile.id)?.is_some();
-    if !pending {
-        summary.message = format!(
-            "已结束 {} 个进程；没有未完成的部署，无需恢复",
-            summary.killed.len()
-        );
-        return Ok(summary);
-    }
-
-    if launcher_win::session_active() {
-        // 引擎还活着：正常情况下杀完游戏它会自己结束会话并恢复，这里先等它把记录删掉。
-        if wait_for_journal_removed(launcher_root, &profile.id, ENGINE_GRACE) {
-            summary.restored = true;
+    if let Some((path, journal)) = existing {
+        if SessionCancellation::request(&journal.session)? {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                match journal_store::load(&path)? {
+                    None => break,
+                    Some(current) if current.session != journal.session => {
+                        return Err(Error::invalid("部署会话已变化，停止等待并保留新记录。"));
+                    }
+                    Some(_) if std::time::Instant::now() >= deadline => {
+                        return Err(Error::unavailable(
+                            "已请求结束会话，但引擎尚未完成恢复。请保留部署记录并查看日志。",
+                        ));
+                    }
+                    Some(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
+                }
+            }
             summary.message = format!("已结束 {} 个进程；引擎已完成恢复", summary.killed.len());
-            return Ok(summary);
-        }
-        // 引擎自己卡住了（例如在等一个永远不会出现的启动器进程）：结束它再自己恢复。
-        if !recover_from_stuck_engine(launcher_root, &profile.id)? {
-            return Err(Error::invalid(
-                "已结束游戏进程，但引擎在预期时间内没有完成恢复，也找不到可以结束的引擎进程；请查看日志。",
-            ));
-        }
-        summary.engine_stopped = true;
-    }
-
-    let pending =
-        launcher_core::journal_store::load_for_game(launcher_root, &profile.id)?.is_some();
-    if !pending {
-        summary.restored = true;
-        summary.message = if summary.engine_stopped {
-            format!(
-                "已结束 {} 个进程，并结束了卡住的引擎；部署记录已不在，无需恢复",
-                summary.killed.len()
-            )
         } else {
-            format!(
-                "已结束 {} 个进程；部署记录已不在，无需恢复",
-                summary.killed.len()
-            )
-        };
-        return Ok(summary);
-    }
-    let message = restore_existing(launcher_root, &profile.id, false)?;
-    summary.restored = true;
-    summary.message = if summary.engine_stopped {
-        format!(
-            "已结束 {} 个进程，并结束了卡住的引擎；{message}",
-            summary.killed.len()
-        )
+            let result = restore_record(launcher_root, path, journal, &paths)?;
+            summary.message = format!("已结束 {} 个进程；{result}", summary.killed.len());
+        }
+        summary.restored = true;
     } else {
-        format!("已结束 {} 个进程；{message}", summary.killed.len())
-    };
+        summary.message = format!("已结束 {} 个进程；没有未完成的部署", summary.killed.len());
+    }
+
     Ok(summary)
-}
-
-/// 引擎自己卡住时：按部署记录里的 `ScriptPid` 结束它，等会话锁释放。
-///
-/// 返回是否真的结束了一个引擎进程。
-fn recover_from_stuck_engine(launcher_root: &Path, game_id: &str) -> Result<bool> {
-    let Some((_, journal)) = launcher_core::journal_store::load_for_game(launcher_root, game_id)?
-    else {
-        return Ok(false);
-    };
-    let pid = journal.script_pid;
-    if pid == 0 || pid == std::process::id() {
-        return Ok(false);
-    }
-    if !launcher_win::terminate_pid(pid, std::time::Duration::from_secs(5)) {
-        return Ok(false);
-    }
-    // 等它把 Global\DlssgSession 释放掉，否则下面的恢复打不开部署会话。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while launcher_win::session_active() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    Ok(true)
-}
-
-/// 等部署记录消失（= 恢复完成）；超时返回 `false`。
-fn wait_for_journal_removed(
-    launcher_root: &Path,
-    game_id: &str,
-    timeout: std::time::Duration,
-) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let pending = launcher_core::journal_store::load_for_game(launcher_root, game_id)
-            .ok()
-            .flatten()
-            .is_some();
-        if !pending {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
 }
 
 /// `--engine restore`：按已有部署记录手动恢复。
 ///
 /// 要求游戏已退出（与 PowerShell 版一致）；记录不存在时直接报错而不是静默成功。
-pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> Result<String> {
+pub fn restore_existing(
+    launcher_root: &Path,
+    game_id: &str,
+    dry_run: bool,
+    profile: Option<&GameProfile>,
+) -> Result<String> {
     use launcher_core::journal_store;
 
     let (path, journal) = journal_store::load_for_game(launcher_root, game_id)?
@@ -694,6 +683,18 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
     if dry_run {
         return Ok(format!("恢复计划：{}", path.display()));
     }
+    let processes = recorded_processes(&journal, profile)?;
+    restore_record(launcher_root, path, journal, &processes)
+}
+
+fn restore_record(
+    launcher_root: &Path,
+    path: PathBuf,
+    journal: Journal,
+    processes: &DeploymentProcesses,
+) -> Result<String> {
+    use launcher_core::journal_store;
+
     let render = std::path::PathBuf::from(&journal.render);
     // 残留检查必须用**记录里的那个代理**：以前写死成 1（version.dll），
     // 于是用 winmm 部署的游戏在恢复后会被"version.dll 残留"误报（那个文件其实是别人的）。
@@ -716,7 +717,7 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         journal,
     )?;
     let deployment = Deployment::new(&resource_root, &render, proxy);
-    let outcome = restore_deployment(state, &deployment, true)?;
+    let outcome = restore_deployment(state, &deployment, processes, false)?;
     Ok(format!(
         "恢复完成：{} 步，记录已删除（{}）",
         outcome.restored.len(),
@@ -728,6 +729,7 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
 fn restore_deployment(
     mut state: launcher_core::journal_store::DeploymentSession<'_>,
     deployment: &Deployment<'_>,
+    processes: &DeploymentProcesses,
     automatic: bool,
 ) -> Result<launcher_core::restore::RestoreOutcome> {
     use launcher_core::{resources, restore};
@@ -757,7 +759,7 @@ fn restore_deployment(
             automatic,
             ..restore::RestoreOptions::default()
         },
-        &|_| Ok(()),
+        &|automatic| ensure_processes_stopped(processes, automatic),
         &allowed_links,
     )?;
     let journal = state.journal();
@@ -774,11 +776,12 @@ fn restore_deployment(
 fn rollback_error(
     state: launcher_core::journal_store::DeploymentSession<'_>,
     deployment: &Deployment<'_>,
+    processes: &DeploymentProcesses,
     stage: &str,
     error: Error,
 ) -> Error {
     let record = state.path().to_path_buf();
-    match restore_deployment(state, deployment, true) {
+    match restore_deployment(state, deployment, processes, true) {
         Ok(_) => Error::invalid(format!("{stage}失败：{error}\n部署已回滚，残留检查通过。")),
         Err(rollback) => Error::invalid(format!(
             "{stage}失败：{error}\n部署回滚失败：{rollback}\n请保留部署记录并重试恢复：{}",
@@ -865,17 +868,20 @@ pub fn process_name(executable: &Path) -> String {
         .unwrap_or_else(|| executable.to_string_lossy().into_owned())
 }
 
-/// 由计划构造会话规格：按游戏 id 选策略，按渲染程序名等目标进程。
-pub fn session_spec(plan: &RunPlan) -> launcher_core::session::SessionSpec {
-    let spec = launcher_core::session::SessionSpec::new(policy_from_profile(
+/// 由计划构造会话规格，按完整渲染程序路径监控。
+pub fn session_spec(plan: &RunPlan) -> Result<launcher_core::session::SessionSpec> {
+    let mut spec = launcher_core::session::SessionSpec::new(policy_from_profile(
         &plan.game_id,
         plan.session_policy.as_deref(),
     ))
-    .with_game(process_name(&plan.render_executable));
-    match plan.launcher_process_name.as_deref() {
-        Some(name) => spec.with_launcher(name),
-        None => spec,
+    .with_game_executable(&plan.render_executable)?;
+    if !matches!(plan.game_id.as_str(), "wuthering" | "nte")
+        || plan.launch_mode.eq_ignore_ascii_case("Steam")
+        || plan.launch_mode.eq_ignore_ascii_case("Epic")
+    {
+        spec.tuning.startup_timeout = std::time::Duration::from_secs(120);
     }
+    Ok(spec)
 }
 /// 一次执行的可选项。
 #[derive(Debug, Clone, Copy, Default)]
@@ -999,20 +1005,21 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     }
 
     // 起始记录：会话号 32 位小写十六进制，脚本启动时间用 PS 的 7 位小数格式。
+    let now = std::time::SystemTime::now();
+    let started = journal_store::format_script_started(now);
     let seed = format!(
-        "{}-{}-{}",
+        "{}-{}-{}-{started}",
         plan.game_id,
         std::process::id(),
         journal_store::identity(&plan.render_directory)?
     );
     let session = launcher_core::path::sha256_upper(seed.as_bytes()).to_lowercase();
     let session = session[..32].to_owned();
-    let now = std::time::SystemTime::now();
     let record = journal::Journal::initialize(
         &plan.game_id,
         &session,
         std::process::id(),
-        journal_store::format_script_started(now),
+        started,
         &plan.render_directory,
         &plan.engine_path,
         &plan.engine_runtime_path,
@@ -1038,9 +1045,22 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         summary.steps.push("dry-run:stop".to_owned());
         return Ok(summary);
     }
+    let processes = DeploymentProcesses {
+        render: plan.render_executable.clone(),
+        launchers: launcher_targets(
+            &plan.launch_mode,
+            &plan.render_executable,
+            Some(&plan.launch_executable),
+            plan.launcher_process_name.as_deref(),
+        ),
+    };
+    let spec = session_spec(plan)?;
+    let official_targets = ExecutableTargets::new(&processes.launchers)?;
     // 先恢复上一轮，再按新配置记录磁盘初始状态。
-    if existing.is_some() {
-        restore_existing(launcher_root, &plan.game_id, false).map_err(|error| {
+    if let Some((path, journal)) = existing {
+        let original = journal.processes.as_ref().unwrap_or(&processes).clone();
+        verify_recorded_render(&journal, &original)?;
+        restore_record(launcher_root, path, journal, &original).map_err(|error| {
             Error::invalid(format!(
                 "发现上一轮的遗留部署，先恢复它时失败：{error}\n\
                  请先点该行的「恢复原状」处理完再来启动。"
@@ -1048,12 +1068,15 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         })?;
     }
 
+    let cancellation = launcher_win::activate::SessionCancellation::create(&record.session)?;
     let mut state = journal_store::DeploymentSession::begin(
         &mutex,
         launcher_root,
         &plan.render_directory,
         record,
         |record| {
+            ensure_processes_stopped(&processes, true)?;
+            record.processes = Some(processes.clone());
             resources::check_proxy_link(&deployment, &ops)?;
             if !plan.engine_path.as_os_str().is_empty() {
                 record.original_hash = launcher_core::path::file_hash_or_none(&plan.engine_path)?;
@@ -1099,62 +1122,49 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         }
     }
 
-    // 二游：先拉起官方启动器，等它出现后再部署（部署完成即注入生效）。
-    // Steam 不走这条：它的启动顺序是"先部署 → 再 steam -applaunch → 等游戏"。
-    if plan.launcher_process_name.is_some()
-        && !plan.launch_mode.eq_ignore_ascii_case("Steam")
-        && !options.dry_run
-        && !options.skip_launch
-    {
-        let child = match launcher_win::spawn_process(
-            &plan.launch_executable,
-            &plan.launch_arguments,
-            Some(&plan.game_directory),
-            false,
-        ) {
-            Ok(child) => child,
-            Err(error) => return Err(rollback_error(state, &deployment, "启动官方启动器", error)),
-        };
-        child.forget();
-        summary.launched = true;
-        let name = plan.launcher_process_name.clone().unwrap_or_default();
-        note(&mut log, &format!("已拉起官方启动器：{name}"));
-        summary.steps.push(format!("launcher:{name}"));
-        // 等启动器进程出现：先按名字认，再退一步按"游戏目录里有进程在跑"认
-        // （鸣潮的入口是 NTELauncher.exe，真正的启动器进程叫 NTEGame.exe）。
-        //
-        // 只等 10 秒：启动器要不要出现、什么时候出现由它自己决定（异环的启动器常常
-        // 起一下就退，更新器另起进程），而用户登录+点开始游戏至少要几十秒。等太久只会
-        // 让"点启动没反应"，反而错过注入窗口。超时照常部署，日志留一条说明。
-        let mut seen = false;
-        for _ in 0..50 {
-            let spec = launcher_core::session::SessionSpec::new(
-                launcher_core::session::SessionPolicy::FirstExit,
-            )
-            .with_launcher(name.clone());
-            let by_name = launcher_core::session::launcher_already_running(
-                &launcher_win::WinProcessProbe,
-                &spec,
-            )
-            .unwrap_or(false);
-            let by_path = !launcher_win::processes_in_directory(&plan.game_directory).is_empty();
-            if by_name || by_path {
-                summary.steps.push(if by_name {
-                    "launcher:seen".to_owned()
-                } else {
-                    "launcher:seen-in-dir".to_owned()
-                });
-                seen = true;
-                break;
+    // 有独立官方启动器时，按完整路径核对并复用。平台客户端在部署后调用。
+    if !processes.launchers.is_empty() && !options.skip_launch {
+        use launcher_core::ops::ProcessProbe;
+        let launch = (|| {
+            if cancellation.requested() {
+                return Ok(());
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        if !seen {
-            summary.steps.push("launcher:not-seen".to_owned());
-            note(
-                &mut log,
-                "10 秒内没看到官方启动器进程，直接部署（游戏启动前注入才有效）",
-            );
+            let entries = launcher_win::WinProcessProbe.list()?;
+            if official_targets.matching(&entries)?.is_empty() {
+                launcher_win::spawn_process(
+                    &plan.launch_executable,
+                    &plan.launch_arguments,
+                    Some(&plan.game_directory),
+                    false,
+                )?
+                .forget();
+                summary.steps.push(format!(
+                    "launcher:{}",
+                    process_name(&plan.launch_executable)
+                ));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !cancellation.requested() && std::time::Instant::now() < deadline {
+                    let entries = launcher_win::WinProcessProbe.list()?;
+                    if !official_targets.matching(&entries)?.is_empty() {
+                        summary.steps.push("launcher:seen".to_owned());
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            } else {
+                summary.steps.push("launcher:reused".to_owned());
+            }
+            summary.launched = true;
+            Ok(())
+        })();
+        if let Err(error) = launch {
+            return Err(rollback_error(
+                state,
+                &deployment,
+                &processes,
+                "启动官方启动器",
+                error,
+            ));
         }
     }
     // 部署四步：任何一步失败都要尽力回滚，避免把游戏留在半部署状态。
@@ -1247,11 +1257,18 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         Ok(())
     })();
     if let Err(error) = deployed {
-        return Err(rollback_error(state, &deployment, deployment_stage, error));
+        return Err(rollback_error(
+            state,
+            &deployment,
+            &processes,
+            deployment_stage,
+            error,
+        ));
     }
 
     // 5) 启动 + 会话等待
     // 二游：官方启动器已经在部署前拉起（见上面的 "launcher:" 步骤），这里只等会话。
+    let mut startup_timed_out = false;
     if options.skip_launch {
         summary.steps.push("launch:skipped".to_owned());
     } else {
@@ -1259,13 +1276,14 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         // 注入就错过窗口）；二游走的是"先起官方启动器再部署"那条路。
         // 启动失败必须把部署撤掉：否则游戏没起来、目录里却留着注入文件。
         let launched: Result<()> = (|| {
+            if cancellation.requested() {
+                return Ok(());
+            }
             if let Some(uri) = plan.launch_uri.as_deref() {
                 launcher_win::open_target(uri)?;
                 summary.launched = true;
                 summary.steps.push("launch:epic".to_owned());
-            } else if plan.launcher_process_name.is_none()
-                || plan.launch_mode.eq_ignore_ascii_case("Steam")
-            {
+            } else if processes.launchers.is_empty() {
                 let child = launcher_win::spawn_process(
                     &plan.launch_executable,
                     &plan.launch_arguments,
@@ -1281,18 +1299,24 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             Ok(())
         })();
         if let Err(error) = launched {
-            return Err(rollback_error(state, &deployment, "启动游戏", error));
+            return Err(rollback_error(
+                state,
+                &deployment,
+                &processes,
+                "启动游戏",
+                error,
+            ));
         }
 
-        let spec = session_spec(plan);
         let mut machine =
             launcher_core::session::SessionMachine::new(spec.clone(), std::time::SystemTime::now());
-        let outcome = launcher_core::session::run_session(
+        let outcome = launcher_core::session::run_session_until(
             &mut machine,
             &spec,
             &launcher_win::WinProcessProbe,
             &launcher_win::SystemClock,
             &|duration| std::thread::sleep(duration),
+            &|| Ok(cancellation.requested()),
         )
         .map_err(|error| {
             Error::invalid(format!(
@@ -1300,12 +1324,13 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
                 state.path().display(),
             ))
         })?;
+        startup_timed_out = outcome == launcher_core::session::SessionOutcome::StartupTimedOut;
         note(&mut log, &format!("会话结束：{outcome:?}"));
         summary.steps.push(format!("session:{outcome:?}"));
     }
 
     // 6) 恢复 + 残留检查
-    let outcome = restore_deployment(state, &deployment, false)?;
+    let outcome = restore_deployment(state, &deployment, &processes, true)?;
     summary.restored = outcome.is_complete();
     summary
         .steps
@@ -1314,6 +1339,9 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     note(&mut log, "恢复完成，残留检查通过");
     if let Some(log) = log.as_ref() {
         summary.steps.push(format!("log:{}", log.path().display()));
+    }
+    if startup_timed_out {
+        return Err(Error::unavailable("120 秒内未检测到目标游戏，部署已恢复。"));
     }
     Ok(summary)
 }
@@ -1401,6 +1429,29 @@ mod tests {
     }
 
     #[test]
+    fn platform_and_generic_direct_use_a_bounded_startup_wait() {
+        use launcher_core::session::SessionPolicy;
+        use std::time::Duration;
+
+        let (_sandbox, game, _, paths) = fixture("startup-policy");
+        let mut plan = plan(&profile(&game), &paths).unwrap();
+        let wuthering = session_spec(&plan).unwrap();
+        assert_eq!(wuthering.policy, SessionPolicy::wuthering());
+        assert!(wuthering.tuning.startup_timeout.is_zero());
+        plan.game_id = "nte".to_owned();
+        let nte = session_spec(&plan).unwrap();
+        assert_eq!(nte.policy, SessionPolicy::FirstExit);
+        assert!(nte.tuning.startup_timeout.is_zero());
+        plan.game_id = "generic".to_owned();
+        for mode in ["Direct", "Steam", "Epic"] {
+            plan.launch_mode = mode.to_owned();
+            let spec = session_spec(&plan).unwrap();
+            assert_eq!(spec.policy, SessionPolicy::WaitAllTargets);
+            assert_eq!(spec.tuning.startup_timeout, Duration::from_secs(120));
+        }
+    }
+
+    #[test]
     fn restore_finishes_at_the_legacy_record_path() {
         use launcher_core::journal_store;
 
@@ -1431,7 +1482,7 @@ mod tests {
                 .any(|step| step.starts_with("restore-required:"))
         );
         assert_eq!(std::fs::read(&legacy_record).unwrap(), saved);
-        restore_existing(&root, &initial.game_id, false).expect("恢复旧根");
+        restore_existing(&root, &initial.game_id, false, Some(&profile(&game))).expect("恢复旧根");
         assert!(!legacy_record.exists());
         assert!(!initial.journal_path.exists());
     }
@@ -1446,13 +1497,15 @@ mod tests {
         let proxy = plan.render_directory.join("version.dll");
         std::fs::write(&proxy, b"third-party").unwrap();
 
-        let error = restore_existing(&root, &plan.game_id, false).expect_err("存在残留");
+        let error = restore_existing(&root, &plan.game_id, false, Some(&profile(&game)))
+            .expect_err("存在残留");
         assert!(error.to_string().contains("residue preserved"), "{error}");
         assert!(plan.journal_path.is_file());
         assert_eq!(std::fs::read(&proxy).unwrap(), b"third-party");
 
         std::fs::remove_file(&proxy).unwrap();
-        restore_existing(&root, &plan.game_id, false).expect("处理冲突后可重试");
+        restore_existing(&root, &plan.game_id, false, Some(&profile(&game)))
+            .expect("处理冲突后可重试");
         assert!(!plan.journal_path.exists());
     }
 
@@ -1465,6 +1518,7 @@ mod tests {
         let deployment =
             Deployment::new(&root, &plan.render_directory, ProxyChoice::default_choice());
         let original = || Error::invalid("测试启动失败");
+        let processes = profile_processes(&profile(&game)).unwrap();
         let open = || {
             DeploymentSession::open(
                 &launcher_win::WinMutexOps,
@@ -1475,14 +1529,14 @@ mod tests {
             .unwrap()
         };
 
-        let rolled_back = rollback_error(open(), &deployment, "启动游戏", original());
+        let rolled_back = rollback_error(open(), &deployment, &processes, "启动游戏", original());
         assert!(rolled_back.to_string().contains("测试启动失败"));
         assert!(rolled_back.to_string().contains("残留检查通过"));
         assert!(!plan.journal_path.exists());
 
         let state = open();
         std::fs::write(plan.render_directory.join("dlssg_sm86.ini"), b"replacement").unwrap();
-        let failed = rollback_error(state, &deployment, "启动游戏", original());
+        let failed = rollback_error(state, &deployment, &processes, "启动游戏", original());
         let report = failed.to_string();
         assert!(report.contains("测试启动失败"), "{report}");
         assert!(report.contains("部署回滚失败"), "{report}");
@@ -1613,23 +1667,7 @@ mod tests {
         );
         epic.launcher_process_name = Some("EpicGamesLauncher.exe".to_owned());
 
-        let filter = game_processes(&epic);
-        assert!(
-            filter
-                .executables
-                .iter()
-                .all(|path| !path.to_string_lossy().to_lowercase().contains("epicgames")),
-            "不能把 Epic 启动器当作目标：{:?}",
-            filter.executables
-        );
-        assert!(
-            filter
-                .names
-                .iter()
-                .all(|name| !name.to_lowercase().contains("epic")),
-            "也不能按名字匹配 Epic 启动器：{:?}",
-            filter.names
-        );
+        assert!(profile_processes(&epic).unwrap().launchers.is_empty());
     }
 
     #[test]
@@ -1697,43 +1735,7 @@ mod tests {
         steam.render_executable = Some(r"platform\steam\PBZ.exe".to_owned());
         steam.launch_executable = Some(r"C:\Program Files (x86)\Steam\Steam.exe".to_owned());
         steam.launcher_process_name = Some("steam.exe".to_owned());
-        let filter = game_processes(&steam);
-        assert!(
-            filter
-                .executables
-                .iter()
-                .all(|path| !path.to_string_lossy().to_lowercase().ends_with("steam.exe")),
-            "不能把 steam.exe 当作目标：{:?}",
-            filter.executables
-        );
-        assert!(
-            filter.names.is_empty(),
-            "也不能按名字 steam 匹配：{:?}",
-            filter.names
-        );
-        assert!(
-            filter
-                .executables
-                .iter()
-                .any(|path| path.to_string_lossy().ends_with(r"platform\steam\PBZ.exe")),
-            "渲染 EXE 仍要在列表里"
-        );
-
-        // 二游：官方启动器与它真正的进程名都要算进去。
-        let mut nte = GameProfile::new("nte", "异环", PathBuf::from(r"C:\Games\NTE"));
-        nte.launch_mode = "Direct".to_owned();
-        nte.render_executable =
-            Some(r"Client\WindowsNoEditor\HT\Binaries\Win64\HTGame.exe".to_owned());
-        nte.launch_executable = Some(r"C:\Games\NTE\NTELauncher.exe".to_owned());
-        nte.launcher_process_name = Some("NTEGame.exe".to_owned());
-        let filter = game_processes(&nte);
-        assert_eq!(filter.names, vec!["NTEGame".to_owned()]);
-        assert!(
-            filter
-                .executables
-                .iter()
-                .any(|path| path.to_string_lossy().ends_with("NTELauncher.exe"))
-        );
+        assert!(profile_processes(&steam).unwrap().launchers.is_empty());
     }
 
     #[test]

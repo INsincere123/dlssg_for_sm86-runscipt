@@ -311,6 +311,10 @@ fn run() -> Result<u8, Failure> {
         }
         "check" if parsed.elevate => check_elevated(&parsed),
         "check" => {
+            // 隔离会话测试用本程序模拟有一定寿命的渲染进程。
+            if parsed.sleep_ms != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(parsed.sleep_ms));
+            }
             let report = format!(
                 concat!(
                     "{{\n",
@@ -343,7 +347,11 @@ fn run() -> Result<u8, Failure> {
                     .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
                     .unwrap_or_default()
             });
-            let message = engine::restore_existing(&root, &game, parsed.dry_run)
+            let preferences = engine_preferences(&parsed, &root).ok();
+            let profile = preferences
+                .as_ref()
+                .and_then(|preferences| preferences.find(&game));
+            let message = engine::restore_existing(&root, &game, parsed.dry_run, profile)
                 .map_err(|error| Failure::Usage(format!("恢复失败：{error}")))?;
             let report = serde_json::json!({
                 "code": "restored",
@@ -393,26 +401,32 @@ fn engine_stop(parsed: &Arguments) -> Result<u8, Failure> {
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_default()
     });
-    // 偏好跟着"启动器安装位置"走，不跟 `--root`（与 engine_run 一致）。
+    let preferences = engine_preferences(parsed, &root)
+        .map_err(|error| Failure::Usage(format!("读不到偏好：{error}")))?;
+    let profile = preferences
+        .find(&game)
+        .ok_or_else(|| Failure::Usage(format!("偏好里没有这个游戏：{game}")))?;
+
+    let summary = engine::stop(&root, profile, std::time::Duration::from_secs(8))
+        .map_err(|error| Failure::Usage(format!("结束并恢复失败：{error}")))?;
+    write_report(parsed.report.as_deref(), &summary.to_json());
+    Ok(EXIT_OK)
+}
+
+fn engine_preferences(
+    parsed: &Arguments,
+    root: &std::path::Path,
+) -> Result<launcher_core::preferences::Preferences, String> {
+    // 偏好跟随启动器安装位置。
     let install_base = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_else(|| root.clone());
+        .unwrap_or_else(|| root.to_path_buf());
     let preferences_file = parsed
         .preferences
         .clone()
         .or_else(|| launcher_core::prefs::preferences_path(&install_base).ok());
-    let preferences = load_preferences(preferences_file.as_deref())
-        .map_err(|error| Failure::Usage(format!("读不到偏好：{error}")))?;
-    let profile = preferences
-        .find(&game)
-        .cloned()
-        .ok_or_else(|| Failure::Usage(format!("偏好里没有这个游戏：{game}")))?;
-
-    let summary = engine::stop(&root, &profile, std::time::Duration::from_secs(8))
-        .map_err(|error| Failure::Usage(format!("结束并恢复失败：{error}")))?;
-    write_report(parsed.report.as_deref(), &summary.to_json());
-    Ok(EXIT_OK)
+    load_preferences(preferences_file.as_deref())
 }
 
 /// 读偏好：文件不存在算空，读到了但解析失败要**报出来**。
@@ -626,17 +640,26 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
             // 每一行的状态只看本行事实：本行的游戏进程在跑就是"运行中"，
             // 别的游戏在跑不能写进这一行（真机反馈过这个 bug）。
             view.session_taken = launcher_win::session_active();
+            use launcher_core::ops::ProcessProbe;
+            let processes = launcher_win::WinProcessProbe.list().unwrap_or_default();
             for game in &preferences.games {
-                let pending = launcher_core::journal_store::load_for_game(&root, &game.id)
+                let pending = launcher_core::journal_store::load_for_game(&run_root, &game.id)
                     .ok()
-                    .flatten()
-                    .is_some();
-                let running = engine::is_game_running(game);
+                    .flatten();
+                let running = engine::is_game_running(
+                    Some(game),
+                    pending.as_ref().map(|(_, journal)| journal),
+                    &processes,
+                );
                 view.upsert(view_model::GameEntry {
                     id: game.id.clone(),
                     name: game.name.clone(),
                     directory: game.directory.clone(),
-                    status: view_model::derive_status(game.directory.is_dir(), pending, running),
+                    status: view_model::derive_status(
+                        game.directory.is_dir(),
+                        pending.is_some(),
+                        running,
+                    ),
                     engine_host: game.engine_host.clone(),
                     running,
                 });

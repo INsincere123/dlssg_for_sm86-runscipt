@@ -87,6 +87,26 @@ fn engine_fixture(name: &str) -> (PathBuf, PathBuf) {
     (root, preferences)
 }
 
+fn process_fixture_journal(root: &std::path::Path, render: PathBuf, session: &str) -> PathBuf {
+    use launcher_core::journal::{DeploymentProcesses, Journal};
+    use launcher_core::journal_store;
+
+    let path = root.join(journal_store::state_relative_path("fixture"));
+    let mut journal =
+        Journal::from_json(&launcher_core::fixtures::read_text("journal/01-new.json")).unwrap();
+    journal.session = session.to_owned();
+    journal.render = render.parent().unwrap().display().to_string();
+    journal.engine = String::new();
+    journal.runtime = String::new();
+    journal.backup = String::new();
+    journal.processes = Some(DeploymentProcesses {
+        render,
+        launchers: vec![],
+    });
+    journal_store::save_atomic(&path, &journal).unwrap();
+    path
+}
+
 #[test]
 fn engine_check_writes_a_report_without_a_console_window() {
     let directory = scratch("check");
@@ -106,6 +126,123 @@ fn engine_check_writes_a_report_without_a_console_window() {
     );
     assert!(text.contains("\"elevated\": "), "{text}");
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn manual_restore_checks_render_path_and_stop_only_ends_the_target() {
+    let (root, preferences) = engine_fixture("verified-processes");
+    let render = root.join("game/Project/Binaries/Win64/Game-Win64-Shipping.exe");
+    let other_dir = root.join("other");
+    std::fs::create_dir(&other_dir).unwrap();
+    let same_name = other_dir.join(render.file_name().unwrap());
+    let helper = render.with_file_name("Updater.exe");
+    for path in [&render, &same_name, &helper] {
+        std::fs::copy(binary(), path).unwrap();
+    }
+    let mut children: Vec<_> = [&render, &same_name, &helper]
+        .into_iter()
+        .map(|path| {
+            Command::new(path)
+                .args(["--engine", "check", "--sleep-ms", "15000"])
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+
+    let session = format!("a{:031x}", std::process::id());
+    let journal_path = process_fixture_journal(&root, render, &session);
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let report = root.join("report.json");
+    let invoke = |action| {
+        let status = run(&[
+            "--engine",
+            action,
+            "--game",
+            "fixture",
+            "--root",
+            root.to_str().unwrap(),
+            "--preferences",
+            preferences.to_str().unwrap(),
+            "--report",
+            report.to_str().unwrap(),
+        ]);
+        let result =
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&report).unwrap()).unwrap();
+        (status, result)
+    };
+    let (blocked_status, blocked) = invoke("restore");
+    let retained = std::fs::read(&journal_path).unwrap();
+    let (stopped_status, stopped) = invoke("stop");
+    let exited: Vec<_> = children
+        .iter_mut()
+        .map(|child| child.try_wait().unwrap().is_some())
+        .collect();
+    for child in &mut children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    assert_eq!(blocked_status.code(), Some(2));
+    assert!(
+        blocked["error"]
+            .as_str()
+            .unwrap()
+            .contains("目标进程仍在运行"),
+        "{blocked}"
+    );
+    assert_eq!(before, retained);
+    assert!(stopped_status.success(), "{stopped}");
+    assert_eq!(stopped["killed"], 1);
+    assert_eq!(exited, vec![true, false, false]);
+    assert!(!journal_path.exists());
+}
+
+#[test]
+fn stop_signals_a_waiting_session_before_reporting_recovery() {
+    use launcher_win::activate::SessionCancellation;
+
+    let (root, preferences) = engine_fixture("cancel-waiting");
+    let session = format!("b{:031x}", std::process::id());
+    let render = root.join("game/Project/Binaries/Win64/Game-Win64-Shipping.exe");
+    let journal = process_fixture_journal(&root, render, &session);
+    let cancellation = SessionCancellation::create(&session).unwrap();
+    let engine_root = root.clone();
+    let receiver = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancellation.requested() {
+            assert!(Instant::now() < deadline, "等待会话未收到中止信号");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        run(&[
+            "--engine",
+            "restore",
+            "--game",
+            "fixture",
+            "--root",
+            engine_root.to_str().unwrap(),
+        ])
+    });
+    let report = root.join("stop.json");
+    let stopped = run(&[
+        "--engine",
+        "stop",
+        "--game",
+        "fixture",
+        "--root",
+        root.to_str().unwrap(),
+        "--preferences",
+        preferences.to_str().unwrap(),
+        "--report",
+        report.to_str().unwrap(),
+    ]);
+    assert!(receiver.join().unwrap().success());
+    assert!(stopped.success());
+    let result: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    assert_eq!(result["killed"], 0);
+    assert_eq!(result["restored"], true);
+    assert!(!journal.exists());
 }
 
 #[test]
@@ -303,7 +440,7 @@ fn launch_wait_and_restore_a_fake_game() {
         .unwrap_or_else(|error| error.into_inner());
     wait_for_free_session();
     let (root, preferences) = engine_fixture("launch");
-    // 用自身扮演游戏进程：--sleep-ms 让它活 1200ms 再退出。
+    // 用自身扮演游戏进程：check 的 --sleep-ms 让它活 1200ms 再退出。
     let self_exe = binary();
     let fake_render = root.join("game/Project/Binaries/Win64/Game-Win64-Shipping.exe");
     std::fs::copy(&self_exe, &fake_render).expect("复制自身作为假游戏");
@@ -311,7 +448,7 @@ fn launch_wait_and_restore_a_fake_game() {
     let preferences_text = std::fs::read_to_string(&preferences).expect("偏好");
     let preferences_text = preferences_text.replace(
         "\"id\":\"fixture\"",
-        "\"id\":\"nte\",\"launch_arguments\":[\"--sleep-ms\",\"1200\"]",
+        "\"id\":\"nte\",\"launch_arguments\":[\"--engine\",\"check\",\"--sleep-ms\",\"1200\"]",
     );
     std::fs::write(&preferences, preferences_text).expect("改偏好");
     std::fs::create_dir_all(root.join("配置/nte")).expect("配置源目录");

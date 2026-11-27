@@ -167,7 +167,8 @@ fn observe_is_pure_and_uses_the_spec_names() {
     let spec = SessionSpec::new(SessionPolicy::FirstExit)
         .with_game("game")
         .with_launcher("l");
-    let set = launcher_core::session::observe(&[process(1, "game"), process(2, "other")], &spec);
+    let set =
+        launcher_core::session::observe(&[process(1, "game"), process(2, "other")], &spec).unwrap();
     assert_eq!(
         set,
         RunningSet {
@@ -175,6 +176,45 @@ fn observe_is_pure_and_uses_the_spec_names() {
             launcher_running: false
         }
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn full_render_path_excludes_updates_and_other_installs() {
+    let spec = SessionSpec::new(SessionPolicy::WaitAllTargets)
+        .with_game_executable(std::path::Path::new(r"C:\Games\A\Game.exe"))
+        .unwrap();
+    let mut game = process(1, "game");
+    game.executable = Some(PathBuf::from(r"\\?\c:\games\a\GAME.EXE"));
+    let mut other = process(2, "game");
+    other.executable = Some(PathBuf::from(r"C:\Games\B\Game.exe"));
+    let mut updater = process(3, "updater");
+    updater.executable = Some(PathBuf::from(r"C:\Games\A\updater.exe"));
+    let set = launcher_core::session::observe(&[game, other, updater], &spec).unwrap();
+    assert_eq!(set.game_count, 1);
+    assert!(launcher_core::session::observe(&[process(4, "game")], &spec).is_err());
+}
+
+#[test]
+fn cancellation_waits_until_the_game_is_stopped() {
+    let spec = SessionSpec::new(SessionPolicy::WaitAllTargets).with_game("game");
+    let clock = StepClock {
+        current: RefCell::new(UNIX_EPOCH),
+        step: Duration::from_secs(1),
+    };
+    let probe = ScriptedProbe::new(vec![vec![process(1, "game")], vec![]]);
+    let mut machine = SessionMachine::new(spec.clone(), clock.now());
+    let outcome = launcher_core::session::run_session_until(
+        &mut machine,
+        &spec,
+        &probe,
+        &clock,
+        &no_sleep,
+        &|| Ok(true),
+    )
+    .unwrap();
+    assert_eq!(outcome, SessionOutcome::Cancelled);
+    assert_eq!(*probe.index.borrow(), 2);
 }
 
 #[test]

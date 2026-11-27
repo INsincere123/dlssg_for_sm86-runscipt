@@ -10,10 +10,101 @@
 //! 状态机是纯函数式的：调用方提供"当前有哪些进程在跑"，它给出下一步或最终结果。
 //! 这样测试不需要真的等 10 分钟，也不会碰真实进程。
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Error, Result};
 use crate::ops::{ProcessEntry, ProcessProbe};
+use crate::path::PathContext;
+
+/// 可验证的进程目标。进程名仅用于标记路径不可读的候选。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutableTargets {
+    paths: Vec<String>,
+    names: Vec<String>,
+}
+
+impl ExecutableTargets {
+    pub fn new(paths: &[PathBuf]) -> Result<Self> {
+        let context = PathContext::current()?;
+        let mut targets = Self {
+            paths: Vec::new(),
+            names: Vec::new(),
+        };
+        for path in paths {
+            if !path.is_absolute() {
+                return Err(Error::invalid(format!(
+                    "进程目标必须是绝对路径：{}",
+                    path.display()
+                )));
+            }
+            let name = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| Error::invalid(format!("无法定位进程文件名：{}", path.display())))?;
+            targets.names.push(name.to_owned());
+            targets.paths.push(normalize_process_path(&context, path)?);
+            if let Ok(canonical) = path.canonicalize() {
+                targets
+                    .paths
+                    .push(normalize_process_path(&context, &canonical)?);
+            }
+        }
+        Ok(targets)
+    }
+
+    /// 返回已核验进程；任一同名进程无法核验时，调用方应保留现场。
+    pub fn matching<'a>(&self, entries: &'a [ProcessEntry]) -> Result<Vec<&'a ProcessEntry>> {
+        let context = PathContext::current()?;
+        let mut matching = Vec::new();
+        for entry in entries
+            .iter()
+            .filter(|entry| matches_name(&self.names, &entry.name))
+        {
+            let executable = entry.executable.as_ref().ok_or_else(|| {
+                Error::unavailable(format!(
+                    "无法核验进程 {}（PID {}）的完整路径",
+                    entry.name, entry.pid
+                ))
+            })?;
+            if self.matches(&context, executable)? {
+                matching.push(entry);
+            }
+        }
+        Ok(matching)
+    }
+
+    pub fn matches(&self, context: &PathContext, executable: &Path) -> Result<bool> {
+        if !executable.is_absolute() {
+            return Err(Error::invalid(format!(
+                "无法核验进程路径：{}",
+                executable.display()
+            )));
+        }
+        let normalized = normalize_process_path(context, executable)?;
+        if self.paths.contains(&normalized) {
+            return Ok(true);
+        }
+        if let Ok(canonical) = executable.canonicalize() {
+            return Ok(self
+                .paths
+                .contains(&normalize_process_path(context, &canonical)?));
+        }
+        Ok(false)
+    }
+}
+
+fn normalize_process_path(context: &PathContext, path: &Path) -> Result<String> {
+    let normalized = context.normalize_path(path)?;
+    Ok(if let Some(unc) = normalized.strip_prefix(r"\\?\unc\") {
+        format!(r"\\{unc}")
+    } else {
+        normalized
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&normalized)
+            .to_owned()
+    })
+}
 
 /// 退出策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +169,8 @@ pub struct SessionSpec {
     pub launcher_processes: Vec<String>,
     /// 启动器的完整 EXE 路径（可选）。给了就要求进程路径一致才认（N-2）。
     pub launcher_executable: Option<String>,
+    /// 产品会话用完整路径识别渲染进程。
+    pub game_targets: Option<ExecutableTargets>,
     pub policy: SessionPolicy,
     pub tuning: StartupTuning,
     pub poll_interval: Duration,
@@ -89,6 +182,7 @@ impl SessionSpec {
             game_processes: Vec::new(),
             launcher_processes: Vec::new(),
             launcher_executable: None,
+            game_targets: None,
             policy,
             tuning: StartupTuning::default(),
             poll_interval: Duration::from_secs(1),
@@ -98,6 +192,11 @@ impl SessionSpec {
     pub fn with_game(mut self, name: impl Into<String>) -> Self {
         self.game_processes.push(name.into());
         self
+    }
+
+    pub fn with_game_executable(mut self, path: &Path) -> Result<Self> {
+        self.game_targets = Some(ExecutableTargets::new(&[path.to_path_buf()])?);
+        Ok(self)
     }
 
     pub fn with_launcher(mut self, name: impl Into<String>) -> Self {
@@ -128,6 +227,8 @@ pub enum SessionOutcome {
     LauncherClosedBeforeGame,
     /// 超过启动超时。
     StartupTimedOut,
+    /// 用户取消，已确认没有正在运行的渲染进程。
+    Cancelled,
 }
 
 /// 状态机内部状态。
@@ -271,9 +372,25 @@ pub fn run_session(
     clock: &dyn crate::ops::Clock,
     sleep: &dyn Fn(Duration),
 ) -> Result<SessionOutcome> {
+    run_session_until(machine, spec, probe, clock, sleep, &|| Ok(false))
+}
+
+/// 会话轮询可接收取消信号。只有已核验游戏未运行时才响应取消。
+pub fn run_session_until(
+    machine: &mut SessionMachine,
+    spec: &SessionSpec,
+    probe: &dyn ProcessProbe,
+    clock: &dyn crate::ops::Clock,
+    sleep: &dyn Fn(Duration),
+    cancelled: &dyn Fn() -> Result<bool>,
+) -> Result<SessionOutcome> {
     loop {
         let processes = probe.list()?;
-        let running = observe(&processes, spec);
+        let running = observe(&processes, spec)?;
+        if running.game_count == 0 && cancelled()? {
+            machine.finished = Some(SessionOutcome::Cancelled);
+            return Ok(SessionOutcome::Cancelled);
+        }
         let now = clock.now();
         if let Some(outcome) = machine.update(running, now) {
             return Ok(outcome);
@@ -286,18 +403,22 @@ pub fn run_session(
 }
 
 /// 按配置把进程列表折算成运行集合。
-pub fn observe(processes: &[ProcessEntry], spec: &SessionSpec) -> RunningSet {
-    let game_count = processes
-        .iter()
-        .filter(|entry| matches_name(&spec.game_processes, &entry.name))
-        .count();
+pub fn observe(processes: &[ProcessEntry], spec: &SessionSpec) -> Result<RunningSet> {
+    let game_count = if let Some(targets) = &spec.game_targets {
+        targets.matching(processes)?.len()
+    } else {
+        processes
+            .iter()
+            .filter(|entry| matches_name(&spec.game_processes, &entry.name))
+            .count()
+    };
     let launcher_running = processes
         .iter()
         .any(|entry| matches_name(&spec.launcher_processes, &entry.name));
-    RunningSet {
+    Ok(RunningSet {
         game_count,
         launcher_running,
-    }
+    })
 }
 
 /// 官方启动器是否已经在运行（N-2：复用已运行的启动器，不再拉起）。
@@ -476,7 +597,7 @@ mod tests {
                 started_at: None,
             },
         ];
-        let set = observe(&processes, &spec);
+        let set = observe(&processes, &spec).unwrap();
         assert_eq!(set.game_count, 1);
         assert!(set.launcher_running);
     }
