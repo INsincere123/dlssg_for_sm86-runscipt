@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use crate::handoff::{self, Command, Event, Outcome, Pending, Request};
 use crate::settings_form::{SettingsForm, SettingsView};
+use crate::tray::{ExitAction, GuiCommand, GuiExit, GuiMessage};
 use crate::view_model::{GameStatus, LauncherView};
 
 /// 自检参数。
@@ -109,14 +110,14 @@ pub struct LauncherApp {
     activation: Option<launcher_win::activate::ActivationEvent>,
     /// 激活等待线程是否已经起来（需要 `egui::Context`，第一帧才有）。
     activation_started: bool,
-    /// 等待线程收到过激活信号（在 `ui()` 里消费）。
+    /// 等待线程收到过激活信号（在 `logic()` 里消费）。
     activate_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// 托盘图标（常驻，窗口隐藏后仍可操作）。
-    tray: Option<crate::tray::Tray>,
+    /// 原生托盘宿主与它送来的界面命令。
+    tray_host: Option<u32>,
+    tray_commands: Option<std::sync::mpsc::Receiver<GuiMessage>>,
+    tray_handled: u64,
     /// 待确认移除的游戏 id。
     remove_pending: Option<String>,
-    /// 交接后隐藏窗口（不退出进程）。
-    hide_after_handoff: bool,
     /// 正在等结果的动作（启动/恢复/结束并恢复）。
     pending: Vec<Pending>,
     handoff_popups: std::collections::VecDeque<Popup>,
@@ -155,6 +156,11 @@ pub struct LauncherApp {
 }
 
 impl LauncherApp {
+    pub fn with_tray_host(mut self, pid: Option<u32>) -> Self {
+        self.tray_host = pid;
+        self
+    }
+
     pub fn with_preferences(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.preferences_path = path;
         self
@@ -218,9 +224,10 @@ impl LauncherApp {
             activation_started: false,
             activate_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 
-            tray: None,
+            tray_host: None,
+            tray_commands: None,
+            tray_handled: 0,
             remove_pending: None,
-            hide_after_handoff: false,
             pending: Vec::new(),
             handoff_popups: std::collections::VecDeque::new(),
             popup: None,
@@ -351,13 +358,15 @@ impl LauncherApp {
                 "{{\n",
                 "  \"ui\": \"ok\",\n",
                 "  \"pixels_per_point\": {ppp},\n",
-                "  \"games\": {games},",
+                "  \"games\": {games},\n",
+                "  \"first_frame_ms\": {first_frame},\n",
                 "  \"tray\": {tray}",
                 "}}\n"
             ),
             ppp = pixels_per_point,
             games = self.view.games.len(),
-            tray = self.tray.is_some()
+            first_frame = self.first_frame_ms.unwrap_or_default(),
+            tray = self.tray_host.is_some()
         );
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -1701,7 +1710,8 @@ impl LauncherApp {
             .map_or(game, |entry| &entry.name)
     }
 
-    fn poll_pending(&mut self, ctx: &egui::Context) {
+    fn poll_pending(&mut self) -> bool {
+        let mut auto_park = false;
         let mut events = Vec::new();
         self.pending.retain_mut(|pending| {
             let Some(event) = pending.poll() else {
@@ -1720,9 +1730,7 @@ impl LauncherApp {
                 }
                 Event::Accepted { auto_hide } => {
                     self.view.notice = format!("引擎已接管「{game}」。");
-                    if auto_hide && self.tray.is_some() {
-                        self.hide_after_handoff = true;
-                    }
+                    auto_park |= auto_hide;
                 }
                 Event::Overdue => {
                     let waiting_for = if request.command == Command::Run {
@@ -1762,15 +1770,13 @@ impl LauncherApp {
                             detail,
                         });
                     }
-                    if !ok && request.command == Command::Run && self.hide_after_handoff {
-                        self.show_main_window(ctx);
-                    }
                 }
             }
         }
         if self.popup.is_none() {
             self.popup = self.handoff_popups.pop_front();
         }
+        auto_park
     }
     /// 添加游戏对话框（M4-05）。
     fn draw_add_game(&mut self, root: &mut egui::Ui) {
@@ -2409,7 +2415,7 @@ impl LauncherApp {
 }
 
 impl LauncherApp {
-    /// 第一帧才起等待线程：线程里要 `egui::Context` 来唤醒重绘。
+    /// 首次进入事件循环时启动等待线程，由系统事件唤醒界面。
     fn start_activation_waiter(&mut self, ctx: &egui::Context) {
         if self.activation_started {
             return;
@@ -2422,113 +2428,153 @@ impl LauncherApp {
         let ctx = ctx.clone();
         launcher_win::activate::spawn_waiter(event, move || {
             pending.store(true, std::sync::atomic::Ordering::SeqCst);
-            // 窗口隐藏时 Windows 不发 RedrawRequested；eframe 会给不可见窗口直接跑帧，
-            // 这里主动要一帧，让 `Visible(true)` 尽快生效。
             ctx.request_repaint();
         });
     }
 
-    /// 把窗口叫回前台（托盘「显示窗口」与"再次运行程序"共用这一条路径）。
-    ///
-    /// 三件事缺一不可：清掉"交接后隐藏"（否则下一帧又会把自己藏回去）、`Visible(true)`
-    /// （从托盘恢复）、`Minimized(false)` + `Focus`（最小化或压在别的窗口后面时回到最前）。
     fn show_main_window(&mut self, ctx: &egui::Context) {
-        self.hide_after_handoff = false;
+        self.last_refresh = None;
         for request in &mut self.pending {
             request.keep_visible();
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    fn park_blocker(&self) -> Option<&'static str> {
+        match self.pending.as_slice() {
+            [] => {}
+            [request] if self.tray_host.is_some() && request.can_detach() => {}
+            _ => return Some("请等待当前引擎操作完成。"),
+        }
+        if self.scan_job.is_some()
+            || self.detect_job.is_some()
+            || self.gpu.as_ref().is_some_and(|panel| panel.busy)
+        {
+            return Some("请等待正在进行的扫描、识别或显卡操作。");
+        }
+        if self.settings.as_ref().is_some_and(|form| form.dirty)
+            || self.add_game.is_some()
+            || self.rename.is_some()
+        {
+            return Some("请先保存或取消正在编辑的内容。");
+        }
+        if self.scan_report.is_some() || self.popup.is_some() || !self.handoff_popups.is_empty() {
+            return Some("请先关闭当前结果窗口。");
+        }
+        None
+    }
+
+    fn exit_to_tray(&mut self, host: u32, quit: bool) {
+        let mut output = std::io::stdout().lock();
+        let write = |action, output: &mut _| {
+            let event = GuiExit {
+                handled: self.tray_handled,
+                action,
+            };
+            crate::tray::write_message(output, &event).map_err(launcher_core::Error::io_plain)
+        };
+        let result = if quit {
+            write(ExitAction::Quit, &mut output)
+        } else if let Some(request) = self.pending.first() {
+            request.detach_to(host, |engine| {
+                write(
+                    ExitAction::HandOff {
+                        engine,
+                        game_name: self.game_name(&request.request.game).to_owned(),
+                    },
+                    &mut output,
+                )
+            })
+        } else {
+            write(ExitAction::Park, &mut output)
+        };
+        match result {
+            // 退出图形进程即释放其窗口、OpenGL 上下文与字体缓存。
+            Ok(()) => std::process::exit(0),
+            Err(error) => self.view.notice = format!("无法切换到托盘：{error}"),
+        }
     }
 }
 
 impl eframe::App for LauncherApp {
-    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.tray.is_none() {
-            self.tray = crate::tray::Tray::new(WINDOW_TITLE);
-        }
-        // 再次运行程序：等待线程已经收到信号 → 走和托盘「显示窗口」同一条路径。
-        self.start_activation_waiter(root.ctx());
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.start_activation_waiter(ctx);
         if self
             .activate_pending
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            self.show_main_window(root.ctx());
+            self.show_main_window(ctx);
         }
-        if let Some(action) = self.tray.as_ref().and_then(|tray| tray.poll()) {
-            match action {
-                crate::tray::Action::Show => self.show_main_window(root.ctx()),
-                crate::tray::Action::Logs => {
-                    let logs = crate::about::logs_directory(&self.root);
-                    let _ = std::fs::create_dir_all(&logs);
-                    let _ = launcher_win::open_path(&logs);
+        if self.tray_host.is_some() && self.tray_commands.is_none() {
+            let ctx = ctx.clone();
+            self.tray_commands = Some(crate::tray::gui_commands(move || ctx.request_repaint()));
+        }
+        let mut quit = false;
+        while let Some(commands) = self.tray_commands.as_ref() {
+            let message = match commands.try_recv() {
+                Ok(message) => message,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.tray_host = None;
+                    self.tray_commands = None;
+                    break;
                 }
-                crate::tray::Action::Quit => {
-                    // 直接结束进程。eframe 0.37 的 `ViewportCommand::Close` 只是往 viewport
-                    // 里塞一个 `ViewportEvent::Close`，没有任何人处理它——窗口不会关、
-                    // 进程也不会退（真机 2026-11-23：托盘"退出"点了没反应）。
-                    // 界面没有未落盘的状态（偏好改完即写），直接退出最省事也最可靠。
-                    std::process::exit(0);
+            };
+            self.tray_handled = message.sequence;
+            match message.command {
+                GuiCommand::Show => self.show_main_window(ctx),
+                GuiCommand::Quit => quit = true,
+                GuiCommand::Failure { title, detail } => {
+                    self.handoff_popups.push_back(Popup {
+                        ok: false,
+                        title,
+                        detail,
+                    });
+                    self.show_main_window(ctx);
                 }
             }
         }
-        // 关闭按钮 = 收进托盘（进程继续活着，托盘左键能再打开）；真退出走托盘「退出」。
-        if self.tray.is_some() && root.ctx().input(|input| input.viewport().close_requested()) {
-            root.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            root.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.hide_after_handoff = true;
-        }
-        // 背景扫描：跑着就持续重绘，结束后把能确定的直接加进来。
+
         self.poll_scan();
-        if self.scan_job.is_some() {
-            root.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
-        }
-        // 显卡名称切换：等提权子进程的报告。
         self.poll_gpu();
-        if self.gpu.as_ref().map(|panel| panel.busy).unwrap_or(false) {
-            root.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
-        }
-        self.draw_scan_report(root);
-        // 后台识别引擎主版本：跑着就持续要重绘，结束后写回偏好。
         self.poll_detection();
-        if self.detect_job.is_some() {
-            root.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
+        if self.scan_job.is_some()
+            || self.detect_job.is_some()
+            || self.gpu.as_ref().is_some_and(|panel| panel.busy)
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
-        // 行状态与"游戏是否在跑"定期重算：引擎部署、游戏启动/退出都不需要重开界面。
-        self.refresh_rows();
-        root.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(REFRESH_INTERVAL_MS));
-        // 正在等结果的动作（启动/恢复/结束并恢复）。
-        self.poll_pending(root.ctx());
+        let auto_park = self.poll_pending();
         if !self.pending.is_empty() {
-            root.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(300));
+            ctx.request_repaint_after(std::time::Duration::from_millis(300));
         }
-        if let Some(entry) = self.view.selected_game() {
-            if let Some(tray) = self.tray.as_ref() {
-                tray.set_tooltip(&format!(
-                    "DLSSG 启动器 · {} · {}",
-                    entry.name,
-                    entry.status.text()
-                ));
+        let close = ctx.input(|input| input.viewport().close_requested());
+        if quit || close {
+            if let Some(reason) = self.park_blocker() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.view.notice = reason.to_owned();
+                self.show_main_window(ctx);
+            } else if let Some(host) = self.tray_host {
+                // 写入失败时仍保留界面和原进程句柄。
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.exit_to_tray(host, quit);
             }
+        } else if let Some(host) = self.tray_host
+            && auto_park
+            && self.park_blocker().is_none()
+        {
+            self.exit_to_tray(host, false);
         }
-        if self.hide_after_handoff {
-            // 交接后隐藏窗口，进程留在托盘里；状态用悬停提示表达。
-            root.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            if let Some(tray) = self.tray.as_ref() {
-                tray.set_tooltip(&format!("{} · 单击托盘图标打开窗口", self.view.headline()));
-            }
-            root.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(500));
+
+        if !ctx.input(|input| input.viewport().minimized == Some(true)) {
+            self.refresh_rows();
+            ctx.request_repaint_after(std::time::Duration::from_millis(REFRESH_INTERVAL_MS));
         }
+    }
+
+    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw_scan_report(root);
         self.draw_remove_confirm(root);
         self.draw_popup(root);
 
@@ -2537,18 +2583,14 @@ impl eframe::App for LauncherApp {
         }
         self.draw(root);
         if self.self_test.is_some() {
-            // 自检必须保证还会被再次调度：窗口被遮挡或失焦时 egui 可能停止重绘，
-            // 那样 close_at 永远不会被执行（2026-11-22 实测挂过一次）。
+            // 即使窗口被遮挡或失焦，自检也需要再次调度。
             root.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
-            let pixels_per_point = root.ctx().pixels_per_point();
-            self.write_report(pixels_per_point);
+            self.write_report(root.ctx().pixels_per_point());
             if self
                 .close_at
-                .map(|deadline| Instant::now() >= deadline)
-                .unwrap_or(false)
+                .is_some_and(|deadline| Instant::now() >= deadline)
             {
-                // 与托盘"退出"同理：程序化关窗在 eframe 0.37 里不生效，直接结束进程。
                 std::process::exit(0);
             }
         }

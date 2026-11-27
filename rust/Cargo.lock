@@ -1706,6 +1706,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tray-icon",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

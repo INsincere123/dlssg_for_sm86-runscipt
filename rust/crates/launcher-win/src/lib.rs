@@ -142,6 +142,16 @@ unsafe extern "system" {
     ) -> i32;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentProcess() -> Handle;
+    fn DuplicateHandle(
+        source_process: Handle,
+        source: Handle,
+        target_process: Handle,
+        target: *mut Handle,
+        access: u32,
+        inherit: i32,
+        options: u32,
+    ) -> i32;
+    fn GetProcessId(process: Handle) -> u32;
     fn GetConsoleWindow() -> Handle;
     fn CreateProcessW(
         application: *const u16,
@@ -235,6 +245,75 @@ pub struct Spawned {
 }
 
 impl Spawned {
+    /// 将等待句柄交给同一 EXE 的另一个进程。交接失败时收回复制的句柄。
+    pub fn transfer_to(&self, pid: u32, publish: impl FnOnce(isize) -> Result<()>) -> Result<()> {
+        const PROCESS_DUP_HANDLE: u32 = 0x40;
+        const DUPLICATE_CLOSE_SOURCE: u32 = 0x1;
+        const DUPLICATE_SAME_ACCESS: u32 = 0x2;
+        let own = std::env::current_exe().map_err(Error::io_plain)?;
+        let target = unsafe {
+            OpenProcess(
+                PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if target == 0 {
+            return Err(last_error());
+        }
+        let result = (|| {
+            if !executable_path_of(target).is_some_and(|path| {
+                path.to_string_lossy()
+                    .eq_ignore_ascii_case(&own.to_string_lossy())
+            }) {
+                return Err(Error::invalid("无法核对托盘进程的程序路径。"));
+            }
+            let current = unsafe { GetCurrentProcess() };
+            let mut remote = 0;
+            if unsafe {
+                DuplicateHandle(
+                    current,
+                    self.handle,
+                    target,
+                    &mut remote,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            } == 0
+            {
+                return Err(last_error());
+            }
+            let result = publish(remote);
+            if result.is_err() {
+                // DUPLICATE_CLOSE_SOURCE 即使复制失败也会关闭源句柄。
+                unsafe {
+                    DuplicateHandle(
+                        target,
+                        remote,
+                        0,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        DUPLICATE_CLOSE_SOURCE,
+                    )
+                };
+            }
+            result
+        })();
+        unsafe { CloseHandle(target) };
+        result
+    }
+
+    /// # Safety
+    /// `handle` 必须是已转交给本进程且尚未被接管的进程句柄。
+    pub unsafe fn from_transferred_handle(handle: isize) -> Self {
+        Self {
+            pid: unsafe { GetProcessId(handle) },
+            handle,
+        }
+    }
+
     /// 等它结束并取退出码（`None` 表示超时）。
     pub fn wait(&self, timeout: std::time::Duration) -> Option<u32> {
         const WAIT_OBJECT_0: u32 = 0;

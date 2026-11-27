@@ -222,6 +222,39 @@ pub struct Pending {
     auto_hide: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Detached {
+    request: Request,
+    report: PathBuf,
+    pid: u32,
+    handle: isize,
+}
+
+impl Detached {
+    /// 从本进程创建的 GUI 子进程接收一次交接后，继续用同一个进程对象等待最终结果。
+    ///
+    /// # Safety
+    /// 本对象必须来自本进程启动的 GUI，且其中的句柄已经复制到本进程。
+    pub unsafe fn wait(self) -> Outcome {
+        // 句柄来自父进程为此 GUI 建立的专用输出管道。
+        let child = unsafe { Spawned::from_transferred_handle(self.handle) };
+        if child.pid != self.pid {
+            return Outcome::Failed {
+                message: "托盘无法核对接管后的引擎进程。".into(),
+            };
+        }
+        let Some(code) = child.wait(Duration::MAX) else {
+            return Outcome::Failed {
+                message: "托盘无法等到引擎退出。请检查会话日志。".into(),
+            };
+        };
+        match read_finished(&self.request, &self.report, child.pid, code) {
+            Event::Finished(outcome) => outcome,
+            _ => unreachable!("最终报告只能产生最终结果"),
+        }
+    }
+}
+
 impl Pending {
     pub fn start(request: Request, root: &Path, logs: &Path) -> Result<Self> {
         let executable = std::env::current_exe().map_err(Error::io_plain)?;
@@ -254,6 +287,28 @@ impl Pending {
 
     pub fn keep_visible(&mut self) {
         self.auto_hide = false;
+    }
+
+    pub fn can_detach(&self) -> bool {
+        self.request.command == Command::Run
+            && matches!(&self.state, State::Running { progress, .. } if progress.accepted)
+    }
+
+    pub fn detach_to(&self, pid: u32, publish: impl FnOnce(Detached) -> Result<()>) -> Result<()> {
+        let State::Running { child, .. } = &self.state else {
+            return Err(Error::invalid("引擎尚未接管。"));
+        };
+        if !self.can_detach() {
+            return Err(Error::invalid("当前引擎操作需要在界面中等待结果。"));
+        }
+        child.transfer_to(pid, |handle| {
+            publish(Detached {
+                request: self.request.clone(),
+                report: self.report.clone(),
+                pid: child.pid,
+                handle,
+            })
+        })
     }
 
     pub fn poll(&mut self) -> Option<Event> {

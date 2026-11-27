@@ -14,8 +14,9 @@ path = "src/main.rs"
 # GUI：与 M0 spike 一致，只启用 glow，不引入 wgpu。
 # 系统文件夹选择框（添加游戏用）
 rfd = "0.15"
-# 托盘图标（交接后常驻，显示状态/菜单）
+# 托盘图标及原生消息循环
 tray-icon = "0.19"
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

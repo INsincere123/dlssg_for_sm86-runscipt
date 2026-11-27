@@ -115,7 +115,11 @@ pub struct ActivationEvent {
 impl ActivationEvent {
     /// 创建（或打开同名的）激活事件。创建失败只影响"再次运行程序"这一条路，不算致命。
     pub fn create() -> Result<Self> {
-        let name = wide(ACTIVATION_EVENT);
+        Self::create_named(ACTIVATION_EVENT)
+    }
+
+    pub fn create_named(name: &str) -> Result<Self> {
+        let name = wide(name);
         let handle = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, name.as_ptr()) };
         if handle == 0 {
             return Err(Error::unavailable(format!(
@@ -151,18 +155,26 @@ pub fn spawn_waiter(event: ActivationEvent, on_signal: impl Fn() + Send + 'stati
 /// 第二次启动：通知已有界面把窗口叫到最前面。返回是否发出了信号或找到了窗口。
 pub fn request_activation(title: &str) -> bool {
     // 后来者是"用户刚点开的进程"：把这次前台机会让给已有界面，否则它的 Focus 会被系统拒绝。
-    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
-
-    let mut signaled = false;
-    let name = wide(ACTIVATION_EVENT);
-    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
-    if handle != 0 {
-        signaled = unsafe { SetEvent(handle) } != 0;
-        unsafe { CloseHandle(handle) };
-    }
+    allow_activation();
+    let signaled = signal_named(ACTIVATION_EVENT);
     // 界面收到信号会自己显示并聚焦；这里再直接叫一次窗口，避免它此刻没在处理帧。
     let shown = activate_window(title);
     signaled || shown
+}
+
+pub fn allow_activation() {
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+}
+
+pub fn signal_named(name: &str) -> bool {
+    let name = wide(name);
+    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+    if handle == 0 {
+        return false;
+    }
+    let signaled = unsafe { SetEvent(handle) } != 0;
+    unsafe { CloseHandle(handle) };
+    signaled
 }
 
 /// 按标题找本程序的顶层窗口：最小化就还原、隐藏就显示，然后请求前台。

@@ -311,12 +311,22 @@ fn parse(arguments: &[String]) -> Result<Arguments, Failure> {
 
 fn run() -> Result<u8, Failure> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    match arguments.as_slice() {
+        [] => return tray::run(),
+        [mode, pid] if mode == "--tray-gui" => {
+            let pid = pid
+                .parse::<u32>()
+                .map_err(|_| Failure::Usage("无法识别托盘进程 ID。".into()))?;
+            return run_gui(&[], Some(pid));
+        }
+        _ => {}
+    }
     // 图形入口自己解析参数，绝不落到引擎/显卡的参数校验里。
     if !arguments
         .iter()
         .any(|value| value == "--engine" || value == "--version" || value == "--gpu")
     {
-        return run_gui(&arguments);
+        return run_gui(&arguments, None);
     }
     let parsed = parse(&arguments)?;
     if let Some(action) = parsed.gpu.clone() {
@@ -628,7 +638,7 @@ fn engine_run(parsed: &Arguments) -> Result<u8, Failure> {
 }
 
 /// 图形入口（M4）：单实例 + 主窗口；`--ui-selftest <ms> <report>` 用于验收。
-fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
+fn run_gui(arguments: &[String], host_pid: Option<u32>) -> Result<u8, Failure> {
     let mut self_test = ui::SelfTest::default();
     let mut preview: Option<Preview> = None;
     let mut index = 0;
@@ -662,8 +672,7 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
             .map_err(|error| Failure::Usage(format!("界面单实例不可用：{error}")))?;
     let Some(_single) = single else {
         // 已经有界面在跑：常规做法是把它的窗口叫到最前面，然后本进程安静退出。
-        // 命名事件让运行中的界面走"托盘里点显示窗口"的同一套恢复路径（隐藏到托盘、
-        // 交接后隐藏、最小化都能还原），直接找窗口只是兜底。
+        // 托盘打开新窗口前已有界面时，激活旧界面即可。
         launcher_win::activate::request_activation(ui::WINDOW_TITLE);
         return Ok(EXIT_OK);
     };
@@ -736,7 +745,8 @@ fn run_gui(arguments: &[String]) -> Result<u8, Failure> {
     let mut app = ui::LauncherApp::new(view, (self_test.hold_ms > 0).then_some(self_test))
         .with_preferences(launcher_core::prefs::preferences_path(&root).ok())
         .with_root(run_root.clone())
-        .with_activation(activation);
+        .with_activation(activation)
+        .with_tray_host(host_pid);
     if let Some(preview) = preview {
         app = app.with_preview(preview);
     }
