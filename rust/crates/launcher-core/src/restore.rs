@@ -34,7 +34,6 @@ pub struct RestoreOutcome {
     pub archived: Vec<(PathBuf, PathBuf)>,
     pub conflicts: Vec<String>,
     pub plan: Vec<String>,
-    pub journal_removed: bool,
 }
 
 impl RestoreOutcome {
@@ -46,7 +45,7 @@ impl RestoreOutcome {
 /// 进程检查：`automatic` 表示正常退出的自动恢复（宽松），否则要求游戏与启动器都已退出。
 pub type ProcessGate<'a> = dyn Fn(bool) -> Result<()> + 'a;
 
-/// 恢复记录里的部署。
+/// 恢复记录里的部署操作。调用方在持锁状态下完成残留检查后调用 `finish` 删除记录。
 ///
 /// `allowed_links` 用于校验旧记录里的 `Reused` 链接（PS 的 `Assert-DeploymentLinkSpec`）：
 /// 只有落在这些规格里的链接才会被纳入恢复。传空切片表示跳过 `Reused` 导入。
@@ -113,10 +112,6 @@ pub fn restore(
             "Recovery incomplete; journal retained: {}",
             outcome.conflicts.join("; ")
         )));
-    }
-    if !options.preview && !options.engine_only {
-        session.remove_journal()?;
-        outcome.journal_removed = true;
     }
     Ok(outcome)
 }

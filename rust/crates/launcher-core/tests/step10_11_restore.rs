@@ -234,8 +234,7 @@ fn full_restore_tears_everything_down_and_removes_the_journal() {
     .expect("恢复应成功");
 
     assert!(outcome.is_complete(), "冲突：{:?}", outcome.conflicts);
-    assert!(outcome.journal_removed);
-    assert!(!journal_path(&scenario.state).exists(), "记录应删除");
+    assert!(journal_path(&scenario.state).exists(), "验证前保留记录");
     // 原件按字节恢复，副本与临时文件全部消失
     assert_eq!(
         std::fs::read_to_string(scenario.render_file("Engine.ini")).expect("原件"),
@@ -255,6 +254,7 @@ fn full_restore_tears_everything_down_and_removes_the_journal() {
     assert_eq!(scenario.ops.removed().len(), 2, "引擎链接 + 资源链接");
     assert!(!scenario.render.join("dlssg_sm86").exists());
     session.finish().expect("收尾");
+    assert!(!journal_path(&scenario.state).exists(), "收尾后删除记录");
 }
 
 #[test]
@@ -417,7 +417,6 @@ fn preview_lists_a_plan_without_touching_anything() {
 
     assert_eq!(outcome.plan.len(), 7, "7 条操作都应出现在计划里");
     assert!(outcome.restored.is_empty());
-    assert!(!outcome.journal_removed);
     assert!(journal_path(&scenario.state).exists(), "预览不能删记录");
     assert_eq!(
         std::fs::read_to_string(scenario.render_file("Engine.backup.ini")).expect("备份"),
@@ -449,7 +448,10 @@ fn engine_only_leaves_resource_operations_alone() {
     .expect("只恢复画面配置");
 
     assert!(outcome.is_complete());
-    assert!(!outcome.journal_removed, "还有资源操作未恢复，记录必须保留");
+    assert!(
+        journal_path(&scenario.state).exists(),
+        "还有资源操作未恢复，记录必须保留"
+    );
     assert_eq!(
         std::fs::read_to_string(scenario.render_file("Engine.ini")).expect("原件"),
         ORIGINAL
@@ -680,8 +682,7 @@ fn deploy_then_interrupt_then_restore_round_trip() {
     // 2) 重开会话（从磁盘记录恢复上下文），再完整恢复
     let mutex = FakeMutexOps::new();
     let mut session =
-        DeploymentSession::open(&mutex, &scenario.state, &scenario.render, interrupted)
-            .expect("重新打开会话");
+        DeploymentSession::resume(&mutex, record.clone(), interrupted).expect("重新打开会话");
     let outcome = restore(
         &mut session,
         &scenario.ops,
@@ -692,13 +693,13 @@ fn deploy_then_interrupt_then_restore_round_trip() {
     .expect("恢复应成功");
 
     assert!(outcome.is_complete(), "{:?}", outcome.conflicts);
-    assert!(outcome.journal_removed);
-    assert!(!record.exists(), "恢复完成后记录必须删除");
+    assert!(record.exists(), "验证前保留原记录");
     assert_eq!(scenario.ops.removed().len(), 5, "5 个资源链接都应拆除");
     assert!(!scenario.render.join("dlssg_sm86").exists(), "资源根应删除");
     // 收尾残留检查：本启动器部署的东西都不能留下
     assert_resources_removed(&deployment, None, None, &scenario.ops).expect("不应有残留");
     session.finish().expect("收尾");
+    assert!(!record.exists(), "验证并收尾后删除记录");
 }
 
 #[test]

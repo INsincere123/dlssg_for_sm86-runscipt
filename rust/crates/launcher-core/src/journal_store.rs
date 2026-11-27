@@ -5,8 +5,8 @@
 //!   避免把记录写进链接目录。
 //! - `Save-DeploymentJournal`（:28-49）：先写同目录临时文件，再原子替换；临时文件必删。
 //! - 互斥（:72-79、:96-102）：`Global\DLSSG-Deployment-<identity>` 与
-//!   `Global\DLSSG-Config-<identity>`，`identity = UPPERHEX(SHA256(UTF8(normalized(render))))`，
-//!   `WaitOne(0)` 抢不到立即失败。
+//!   `Global\DLSSG-Config-<identity>` 分别按渲染目录和 Engine.ini 路径归一化后取 SHA256，
+//!   使用大写十六进制。`WaitOne(0)` 抢不到立即失败。
 //!
 //! 与现有实现的差异：原子替换用 `fs::rename`（Windows 上即 `MoveFileEx` +
 //! `MOVEFILE_REPLACE_EXISTING`），不复刻 `File.Replace` 的备用流处理（PARITY 未要求）。
@@ -52,12 +52,7 @@ pub fn assert_ordinary_parents(path: &Path) -> Result<()> {
 
 /// 原子写入一条记录。
 pub fn save_atomic(path: &Path, journal: &Journal) -> Result<()> {
-    assert_ordinary_parents(path)?;
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(Error::invalid("Journal path is not an ordinary file."));
-        }
-    }
+    assert_ordinary_file(path)?;
     let directory = path
         .parent()
         .ok_or_else(|| Error::invalid(format!("记录路径没有父目录：{}", path.display())))?;
@@ -74,8 +69,21 @@ pub fn save_atomic(path: &Path, journal: &Journal) -> Result<()> {
     outcome
 }
 
+fn assert_ordinary_file(path: &Path) -> Result<()> {
+    assert_ordinary_parents(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            Err(Error::invalid("Journal path is not an ordinary file."))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::io(path, error)),
+    }
+}
+
 /// 读一条记录；不存在返回 `Ok(None)`。
 pub fn load(path: &Path) -> Result<Option<Journal>> {
+    assert_ordinary_file(path)?;
     match std::fs::read(path) {
         Ok(bytes) => {
             let text = String::from_utf8(bytes)
@@ -89,6 +97,7 @@ pub fn load(path: &Path) -> Result<Option<Journal>> {
 
 /// 删除记录（恢复完成后的最后一步）。
 pub fn remove(path: &Path) -> Result<()> {
+    assert_ordinary_file(path)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -101,17 +110,14 @@ pub fn deployment_mutex_name(render: &Path) -> Result<String> {
     Ok(format!("Global\\DLSSG-Deployment-{}", identity(render)?))
 }
 
-/// 配置互斥名：`Global\DLSSG-Config-<identity>`（同一 identity）。
-pub fn configuration_mutex_name(render: &Path) -> Result<String> {
-    Ok(format!("Global\\DLSSG-Config-{}", identity(render)?))
+/// 配置互斥名：按实际 Engine.ini 路径计算，与 PowerShell 共用。
+pub fn configuration_mutex_name(engine: &Path) -> Result<String> {
+    Ok(format!("Global\\DLSSG-Config-{}", identity(engine)?))
 }
 
-/// 部署 identity：渲染目录归一化后的 SHA256 大写十六进制。
-pub fn identity(render: &Path) -> Result<String> {
-    let text = render
-        .to_str()
-        .ok_or_else(|| Error::invalid(format!("渲染目录不是合法 UTF-8：{}", render.display())))?;
-    let normalized = PathContext::current()?.normalize(text)?;
+/// 路径归一化后的 SHA256 大写十六进制。
+pub fn identity(path: &Path) -> Result<String> {
+    let normalized = PathContext::current()?.normalize_path(path)?;
     Ok(crate::path::sha256_upper(normalized.as_bytes()))
 }
 
@@ -162,26 +168,62 @@ fn unique_token() -> String {
     format!("{nanos:x}{:x}", std::process::id())
 }
 
-/// 一次部署/恢复的会话：持有记录、两个互斥、以及落盘路径。
+/// 一次部署/恢复的会话：持有记录、部署互斥和可选的配置互斥。
 pub struct DeploymentSession<'a> {
-    ops: &'a dyn MutexOps,
     path: PathBuf,
     journal: Journal,
     deployment_lease: MutexLease<'a>,
-    configuration_lease: MutexLease<'a>,
+    configuration_lease: Option<MutexLease<'a>>,
 }
 
 impl<'a> DeploymentSession<'a> {
-    /// 打开会话：先抢部署互斥，再抢配置互斥（都是 `WaitOne(0)`）。
+    /// 创建新记录。恢复旧记录应使用 `resume`。
     pub fn open(
         ops: &'a dyn MutexOps,
         state_root: &Path,
         render: &Path,
         journal: Journal,
     ) -> Result<Self> {
+        Self::begin(ops, state_root, render, journal, |_| Ok(()))
+    }
+
+    /// 持锁核对旧记录并读取部署前的磁盘状态，再落盘新记录。
+    pub fn begin(
+        ops: &'a dyn MutexOps,
+        state_root: &Path,
+        render: &Path,
+        journal: Journal,
+        prepare: impl FnOnce(&mut Journal) -> Result<()>,
+    ) -> Result<Self> {
+        let path = state_root.join(state_relative_path(&journal.game_id));
+        let mut session = Self::lock(ops, path, render, journal)?;
+        if let Some((existing, _)) = load_for_game(state_root, &session.journal.game_id)? {
+            return Err(Error::invalid(format!(
+                "已有部署记录，请先恢复：{}",
+                existing.display()
+            )));
+        }
+        prepare(&mut session.journal)?;
+        session.persist()?;
+        Ok(session)
+    }
+
+    /// 使用实际命中的记录路径。锁到手后重新核对读取时的快照。
+    pub fn resume(ops: &'a dyn MutexOps, path: PathBuf, journal: Journal) -> Result<Self> {
+        let render = PathBuf::from(&journal.render);
+        let session = Self::lock(ops, path, &render, journal)?;
+        if load(&session.path)?.as_ref() != Some(&session.journal) {
+            return Err(Error::invalid(format!(
+                "部署记录已变化，请重新读取后再恢复：{}",
+                session.path.display()
+            )));
+        }
+        Ok(session)
+    }
+
+    fn lock(ops: &'a dyn MutexOps, path: PathBuf, render: &Path, journal: Journal) -> Result<Self> {
         journal.validate()?;
         let deployment_name = deployment_mutex_name(render)?;
-        let configuration_name = configuration_mutex_name(render)?;
         let deployment_lease = MutexLease::acquire(ops, &deployment_name, Duration::from_millis(0))
             .map_err(|error| match error {
                 Error::MutexTimeout { .. } => Error::invalid(
@@ -190,18 +232,18 @@ impl<'a> DeploymentSession<'a> {
                 ),
                 other => other,
             })?;
-        let configuration_lease =
-            MutexLease::acquire(ops, &configuration_name, Duration::from_millis(0))?;
-        let path = state_root.join(state_relative_path(&journal.game_id));
-        let session = Self {
-            ops,
+        let configuration_lease = if journal.is_dlssg_only() || journal.engine.trim().is_empty() {
+            None
+        } else {
+            let name = configuration_mutex_name(Path::new(&journal.engine))?;
+            Some(MutexLease::acquire(ops, &name, Duration::ZERO)?)
+        };
+        Ok(Self {
             path,
             journal,
             deployment_lease,
             configuration_lease,
-        };
-        session.persist()?;
-        Ok(session)
+        })
     }
 
     pub fn journal(&self) -> &Journal {
@@ -212,10 +254,10 @@ impl<'a> DeploymentSession<'a> {
         &self.path
     }
 
-    pub fn mutex_names(&self) -> (&str, &str) {
+    pub fn mutex_names(&self) -> (&str, Option<&str>) {
         (
             self.deployment_lease.name(),
-            self.configuration_lease.name(),
+            self.configuration_lease.as_ref().map(MutexLease::name),
         )
     }
 
@@ -285,16 +327,13 @@ impl<'a> DeploymentSession<'a> {
     /// 正常收尾：删除记录并释放互斥。记录删除失败时保留互斥直到 drop。
     pub fn finish(self) -> Result<()> {
         remove(&self.path)?;
-        let release = self.configuration_lease.release();
+        let release = self
+            .configuration_lease
+            .map(MutexLease::release)
+            .transpose();
         let release_deployment = self.deployment_lease.release();
-        let _ = self.ops;
         release?;
         release_deployment
-    }
-
-    /// 只删除记录文件（恢复成功后调用），互斥仍由会话持有到 `finish`。
-    pub fn remove_journal(&mut self) -> Result<()> {
-        remove(&self.path)
     }
 }
 
@@ -310,7 +349,7 @@ impl std::fmt::Debug for DeploymentSession<'_> {
     }
 }
 
-/// 旧实现的状态基目录名（其下是 `启动脚本\.state`），只读兜底。
+/// 旧实现的状态基目录名（其下是 `启动脚本\.state`）。
 pub const LEGACY_STATE_DIRECTORY: &str = "启动脚本";
 
 /// 状态**基目录**：`DeploymentSession` 会把 `.state/<gameId>/active.json` 拼在它下面。
@@ -341,12 +380,17 @@ pub fn resolve_state_root(root: &Path) -> PathBuf {
 
 /// 按双根顺序读取某个游戏的记录，返回命中的路径与内容。
 ///
-/// 新根优先：新程序写入后不会被旧根里的过期记录盖掉；旧根只读兜底，
-/// 迁移到新根由调用方决定（M6-01 只负责读得到）。
+/// 新根优先，旧根兜底。恢复按返回的路径更新原记录。
 pub fn load_for_game(root: &Path, game_id: &str) -> Result<Option<(PathBuf, Journal)>> {
     for state_root in state_roots(root) {
         let path = state_root.join(state_relative_path(game_id));
         if let Some(journal) = load(&path)? {
+            if journal.game_id != game_id {
+                return Err(Error::invalid(format!(
+                    "部署记录的游戏 ID 不符：{}",
+                    path.display()
+                )));
+            }
             return Ok(Some((path, journal)));
         }
     }

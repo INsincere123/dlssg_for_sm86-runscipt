@@ -365,6 +365,24 @@ pub fn install_proxy_link(
     dry_run: bool,
 ) -> Result<LinkOutcome> {
     let spec = deployment.proxy_spec();
+    let outcome = check_proxy_link(deployment, ops)?;
+    if dry_run {
+        return Ok(outcome);
+    }
+    if outcome == LinkOutcome::Reused {
+        register_reused_link(session, &spec)?;
+    } else {
+        let index = session.start_operation(OperationKind::Link, path_text(&spec.path)?)?;
+        session.set_operation_target(index, path_text(&spec.target)?)?;
+        ops.create(&spec.path, &spec.target, false)?;
+        session.complete_operation(index)?;
+    }
+    Ok(outcome)
+}
+
+/// 检查选定代理位置，可在尚未写入部署记录时调用。
+pub fn check_proxy_link(deployment: &Deployment<'_>, ops: &dyn SymlinkOps) -> Result<LinkOutcome> {
+    let spec = deployment.proxy_spec();
     if let Some(info) = ops.inspect(&spec.path)? {
         let matches = info.kind == crate::ops::LinkKind::SymbolicLink
             && same_path(&info.target, &spec.target)?;
@@ -373,9 +391,6 @@ pub fn install_proxy_link(
                 "代理位置已被占用且不是本次的链接：{}",
                 spec.path.display()
             )));
-        }
-        if !dry_run {
-            register_reused_link(session, &spec)?;
         }
         return Ok(LinkOutcome::Reused);
     }
@@ -388,13 +403,6 @@ pub fn install_proxy_link(
             free_proxy_hint(spec.path.parent())
         )));
     }
-    if dry_run {
-        return Ok(LinkOutcome::Created);
-    }
-    let index = session.start_operation(OperationKind::Link, path_text(&spec.path)?)?;
-    session.set_operation_target(index, path_text(&spec.target)?)?;
-    ops.create(&spec.path, &spec.target, false)?;
-    session.complete_operation(index)?;
     Ok(LinkOutcome::Created)
 }
 
@@ -514,16 +522,23 @@ pub fn assert_resources_removed(
     engine_backup: Option<&Path>,
     ops: &dyn SymlinkOps,
 ) -> Result<()> {
-    for spec in deployment.all_specs() {
-        if exists_as_link_or_file(ops, &spec.path)? {
+    let resource_root = deployment.resource_root();
+    let paths = [
+        deployment.proxy_path(),
+        deployment.render_dir.join("dlssg_sm86.ini"),
+    ]
+    .into_iter()
+    .chain(RESOURCE_DIRS.iter().map(|name| resource_root.join(name)));
+    for path in paths {
+        if exists_as_link_or_file(ops, &path)? {
             return Err(Error::invalid(format!(
                 "Deployment residue preserved; recovery incomplete: {}",
-                spec.path.display()
+                path.display()
             )));
         }
     }
     for path in [engine_runtime, engine_backup].into_iter().flatten() {
-        if path_exists(path) {
+        if exists_as_link_or_file(ops, path)? {
             return Err(Error::invalid(format!(
                 "Deployment residue preserved; recovery incomplete: {}",
                 path.display()
@@ -547,10 +562,13 @@ fn path_exists(path: &Path) -> bool {
 /// 链接能力里登记过、或磁盘上真实存在，都算"已存在"。
 /// 这样测试可以只用假链接实现，不必真的建链接。
 fn exists_as_link_or_file(ops: &dyn SymlinkOps, path: &Path) -> Result<bool> {
-    if path_exists(path) {
-        return Ok(true);
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(ops.inspect(path)?.is_some())
+        }
+        Err(error) => Err(Error::io(path, error)),
     }
-    Ok(ops.inspect(path)?.is_some())
 }
 
 /// `_storage_\<proxy>` 的归属。

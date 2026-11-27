@@ -209,6 +209,7 @@ fn restore_removes_temp_file_and_link() {
         ops.inspect(&spec.link_path()).expect("查询").is_none(),
         "链接应拆除"
     );
+    session.finish().expect("收尾");
     assert!(
         load(
             &fixture
@@ -220,7 +221,6 @@ fn restore_removes_temp_file_and_link() {
         .expect("读记录")
         .is_none()
     );
-    session.finish().expect("收尾");
 }
 
 #[test]

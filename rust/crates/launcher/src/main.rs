@@ -345,13 +345,14 @@ fn run() -> Result<u8, Failure> {
             });
             let message = engine::restore_existing(&root, &game, parsed.dry_run)
                 .map_err(|error| Failure::Usage(format!("恢复失败：{error}")))?;
-            write_report(
-                parsed.report.as_deref(),
-                &format!(
-                    "{{\n  \"code\": \"restored\",\n  \"game\": \"{game}\",\n  \"message\": \"{}\"\n}}\n",
-                    message.replace('"', "'")
-                ),
-            );
+            let report = serde_json::json!({
+                "code": "restored",
+                "game": game,
+                "message": message,
+            });
+            let report = serde_json::to_string_pretty(&report)
+                .map_err(|error| Failure::Usage(format!("生成恢复报告失败：{error}")))?;
+            write_report(parsed.report.as_deref(), &report);
             Ok(EXIT_OK)
         }
         other => Err(Failure::Usage(format!("未知子命令：--engine {other}"))),

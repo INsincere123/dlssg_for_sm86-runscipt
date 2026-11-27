@@ -35,7 +35,7 @@ pub struct RunPlan {
     pub launch_executable: PathBuf,
     /// 官方启动器的进程名（用于等待它出现）；直接启动渲染程序时为 `None`。
     pub launcher_process_name: Option<String>,
-    /// 已经有未完成的部署记录：接管现场，不再重复部署。
+    /// 发现尚未恢复的部署记录。
     pub adopted: bool,
     /// 渲染目录（资源与代理链接都落在这里）。
     pub render_directory: PathBuf,
@@ -89,25 +89,36 @@ pub fn resource_root_of(launcher_root: &Path) -> PathBuf {
     }
 }
 
-/// 从部署记录反推负载根：用记下来的代理名（`version.dll` 或 `alternatives\winmm.dll`）
-/// 去剥代理链接目标的尾巴。换过布局的用户恢复旧记录时，这样仍然指向当初那份资源。
-fn journal_resource_root(journal: &launcher_core::journal::Journal) -> Option<PathBuf> {
-    let proxy = journal.proxy_name.as_deref()?;
-    let suffix = proxy.replace('/', "\\").to_lowercase();
-    // 记录里的「路径」是链接落点（游戏目录下的 `winmm.dll`），
-    // 而代理名可能是 `alternatives\winmm.dll`：按文件名比对，按代理名层数剥目标。
-    let file_name = suffix.rsplit('\\').next()?;
-    for operation in &journal.operations {
-        if !operation.path.to_lowercase().ends_with(file_name) {
-            continue;
-        }
-        let mut root = PathBuf::from(&operation.target);
-        for _ in 0..suffix.split('\\').count() {
-            root = root.parent()?.to_path_buf();
-        }
-        return Some(root);
-    }
-    None
+/// 按记录中代理链接的目标反推原负载根，兼容只保存代理文件名的旧记录。
+fn journal_resource_root(
+    journal: &launcher_core::journal::Journal,
+    proxy: ProxyChoice,
+) -> Option<PathBuf> {
+    use launcher_core::journal::OperationKind;
+
+    let relative = proxy.relative();
+    let links = journal
+        .operations
+        .iter()
+        .filter(|operation| operation.kind == OperationKind::Link)
+        .map(|operation| (&operation.path, &operation.target))
+        .chain(journal.reused.iter().map(|link| (&link.path, &link.target)));
+    links
+        .filter_map(|(path, target)| {
+            let name = Path::new(path).file_name()?.to_str()?;
+            if !name.eq_ignore_ascii_case(proxy.name()) {
+                return None;
+            }
+            let target = Path::new(target);
+            let root = target.ancestors().nth(relative.components().count())?;
+            let expected = root.join(&relative);
+            expected
+                .to_str()?
+                .replace('/', "\\")
+                .eq_ignore_ascii_case(&target.to_str()?.replace('/', "\\"))
+                .then(|| root.to_path_buf())
+        })
+        .next()
 }
 
 /// 由偏好条目算出运行计划；任何前置条件不满足就报错，不做猜测。
@@ -298,12 +309,28 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         )));
     }
 
-    let plan = RunPlan {
+    let journal_relative = launcher_core::journal_store::state_relative_path(&profile.id);
+    let mut journal_path = paths.launcher_root.join(&journal_relative);
+    let mut adopted = false;
+    for root in launcher_core::journal_store::state_roots(&paths.launcher_root) {
+        let candidate = root.join(&journal_relative);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                journal_path = candidate;
+                adopted = true;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io(&candidate, error)),
+        }
+    }
+
+    Ok(RunPlan {
         game_id: profile.id.clone(),
         game_name: profile.name.clone(),
         game_directory: profile.directory.clone(),
         resource_root: resource_root.clone(),
-        adopted: false,
+        adopted,
         launcher_process_name: if launch_executable == render_executable {
             None
         } else {
@@ -328,11 +355,7 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         runtime_path: paths.temp_directory.join(format!("{stem}.ini")),
         engine_runtime_path: paths.temp_directory.join(format!("{stem}-engine.ini")),
         backup_path: paths.temp_directory.join(format!("{stem}.bak.ini")),
-        journal_path: paths
-            .launcher_root
-            .join(".state")
-            .join(&profile.id)
-            .join("active.json"),
+        journal_path,
         proxy_index: profile.proxy_index,
         proxy_relative: proxy.relative().to_string_lossy().into_owned(),
         launch_mode: profile.launch_mode.clone(),
@@ -341,12 +364,6 @@ pub fn plan(profile: &GameProfile, paths: &PlatformPaths) -> Result<RunPlan> {
         launch_arguments,
         launch_uri,
         session_policy: profile.session_policy.clone(),
-    };
-
-    // 已有未完成的部署：接管而不是拒绝，交给上层展示"已部署"并继续监控。
-    Ok(RunPlan {
-        adopted: plan.journal_path.exists(),
-        ..plan
     })
 }
 
@@ -670,7 +687,7 @@ fn wait_for_journal_removed(
 ///
 /// 要求游戏已退出（与 PowerShell 版一致）；记录不存在时直接报错而不是静默成功。
 pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> Result<String> {
-    use launcher_core::{journal_store, restore};
+    use launcher_core::journal_store;
 
     let (path, journal) = journal_store::load_for_game(launcher_root, game_id)?
         .ok_or_else(|| Error::invalid(format!("没有找到部署记录：{game_id}（无需恢复）")))?;
@@ -692,35 +709,82 @@ pub fn restore_existing(launcher_root: &Path, game_id: &str, dry_run: bool) -> R
         ProxyChoice::from_name(&recorded_proxy).unwrap_or_else(|_| ProxyChoice::default_choice());
     // 负载根优先按记录反推（换过布局也能找到当初那份资源），推不出来再用约定规则。
     let resource_root =
-        journal_resource_root(&journal).unwrap_or_else(|| resource_root_of(launcher_root));
-    let mut state = journal_store::DeploymentSession::open(
+        journal_resource_root(&journal, proxy).unwrap_or_else(|| resource_root_of(launcher_root));
+    let state = journal_store::DeploymentSession::resume(
         &launcher_win::WinMutexOps,
-        launcher_root,
-        &render,
+        path.clone(),
         journal,
     )?;
-    let outcome = restore::restore(
-        &mut state,
-        &launcher_win::WinSymlinkOps,
-        &restore::RestoreOptions {
-            automatic: true,
-            ..restore::RestoreOptions::default()
-        },
-        &|_stopped| Ok(()),
-        &[],
-    )?;
     let deployment = Deployment::new(&resource_root, &render, proxy);
-    launcher_core::resources::assert_resources_removed(
-        &deployment,
-        None,
-        None,
-        &launcher_win::WinSymlinkOps,
-    )?;
+    let outcome = restore_deployment(state, &deployment, true)?;
     Ok(format!(
         "恢复完成：{} 步，记录已删除（{}）",
         outcome.restored.len(),
         path.display()
     ))
+}
+
+/// 恢复已记录操作，持锁核对残留，最后删除实际记录。
+fn restore_deployment(
+    mut state: launcher_core::journal_store::DeploymentSession<'_>,
+    deployment: &Deployment<'_>,
+    automatic: bool,
+) -> Result<launcher_core::restore::RestoreOutcome> {
+    use launcher_core::{resources, restore};
+
+    let ops = launcher_win::WinSymlinkOps;
+    let mut allowed_links: Vec<_> = deployment
+        .all_specs()
+        .into_iter()
+        .map(|spec| (spec.path, spec.target))
+        .collect();
+    allowed_links.extend(
+        state
+            .journal()
+            .operations_of(launcher_core::journal::OperationKind::Diagnostic)
+            .into_iter()
+            .map(|operation| {
+                (
+                    deployment.render_dir.join("dlssg_sm86.ini"),
+                    PathBuf::from(&operation.path),
+                )
+            }),
+    );
+    let outcome = restore::restore(
+        &mut state,
+        &ops,
+        &restore::RestoreOptions {
+            automatic,
+            ..restore::RestoreOptions::default()
+        },
+        &|_| Ok(()),
+        &allowed_links,
+    )?;
+    let journal = state.journal();
+    resources::assert_resources_removed(
+        deployment,
+        (!journal.runtime.is_empty()).then(|| Path::new(&journal.runtime)),
+        (!journal.backup.is_empty()).then(|| Path::new(&journal.backup)),
+        &ops,
+    )?;
+    state.finish()?;
+    Ok(outcome)
+}
+
+fn rollback_error(
+    state: launcher_core::journal_store::DeploymentSession<'_>,
+    deployment: &Deployment<'_>,
+    stage: &str,
+    error: Error,
+) -> Error {
+    let record = state.path().to_path_buf();
+    match restore_deployment(state, deployment, true) {
+        Ok(_) => Error::invalid(format!("{stage}失败：{error}\n部署已回滚，残留检查通过。")),
+        Err(rollback) => Error::invalid(format!(
+            "{stage}失败：{error}\n部署回滚失败：{rollback}\n请保留部署记录并重试恢复：{}",
+            record.display()
+        )),
+    }
 }
 /// 默认明文配置源：`<根>\配置\<id>\Engine.ini`，没有就试 `<根>\配置\<游戏名>\Engine.ini`
 /// （便携包里配置目录按中文名放，与 `启动脚本\配置\异环` 同名）。都不存在时返回按 id 的路径，
@@ -883,7 +947,7 @@ impl RunSummary {
 
 /// 按计划执行（`dry_run` 只模拟，不落盘），随后恢复。
 pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Result<RunSummary> {
-    use launcher_core::{diagnostic, engine_config, journal, journal_store, resources, restore};
+    use launcher_core::{diagnostic, engine_config, journal, journal_store, resources};
 
     let mut summary = RunSummary {
         game_id: plan.game_id.clone(),
@@ -913,6 +977,26 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     let mutex = launcher_win::WinMutexOps;
     let proxy = ProxyChoice::from_index(&plan.proxy_index.to_string())?;
     let deployment = resources::Deployment::new(&plan.resource_root, &plan.render_directory, proxy);
+    let existing = journal_store::load_for_game(launcher_root, &plan.game_id)?;
+    if let (true, Some((path, record))) = (options.dry_run, existing.as_ref()) {
+        use launcher_core::journal::OperationState;
+        record.validate()?;
+        summary
+            .steps
+            .push(format!("restore-required:{}", path.display()));
+        for index in record.restore_order_indices() {
+            let operation = &record.operations[index];
+            if operation.state != OperationState::Restored {
+                summary.steps.push(format!(
+                    "Recovery: {} {}",
+                    operation.kind.as_str(),
+                    operation.path,
+                ));
+            }
+        }
+        summary.steps.push("dry-run:stop".to_owned());
+        return Ok(summary);
+    }
 
     // 起始记录：会话号 32 位小写十六进制，脚本启动时间用 PS 的 7 位小数格式。
     let seed = format!(
@@ -924,8 +1008,6 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
     let session = launcher_core::path::sha256_upper(seed.as_bytes()).to_lowercase();
     let session = session[..32].to_owned();
     let now = std::time::SystemTime::now();
-    let original_existed = plan.engine_path.is_file();
-    let original_hash = launcher_core::path::file_hash_or_none(&plan.engine_path)?;
     let record = journal::Journal::initialize(
         &plan.game_id,
         &session,
@@ -935,17 +1017,14 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         &plan.engine_path,
         &plan.engine_runtime_path,
         &plan.backup_path,
-        original_existed,
-        original_hash,
-        deployment.storage_dll().exists(),
+        false,
+        None,
+        false,
         None,
         &plan.proxy_relative,
     );
     // dry-run 不写记录：只按计划模拟每一步。
     if options.dry_run {
-        if plan.adopted {
-            summary.steps.push("adopted".to_owned());
-        }
         summary.steps.push("session:simulated".to_owned());
         summary.steps.push(format!("proxy:{}", plan.proxy_relative));
         summary.resources = deployment.resource_specs().len();
@@ -959,37 +1038,31 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         summary.steps.push("dry-run:stop".to_owned());
         return Ok(summary);
     }
-    // 接手上一轮的记录是危险的：上一轮引擎可能被强杀，记录里可能是"部署到一半"的状态，
-    // 而"接管"会整段跳过部署——那样游戏会在没有注入的情况下跑起来，用户只会看到"没生效"。
-    // 所以先把遗留记录恢复掉，再按全新一轮部署（部署本身很快，可预测性更重要）。
-    let mut adopted = plan.adopted;
-    if adopted {
+    // 先恢复上一轮，再按新配置记录磁盘初始状态。
+    if existing.is_some() {
         restore_existing(launcher_root, &plan.game_id, false).map_err(|error| {
             Error::invalid(format!(
                 "发现上一轮的遗留部署，先恢复它时失败：{error}\n\
                  请先点该行的「恢复原状」处理完再来启动。"
             ))
         })?;
-        adopted = false;
     }
 
-    let mut state = if adopted {
-        let (_, existing) = journal_store::load_for_game(launcher_root, &plan.game_id)?
-            .ok_or_else(|| Error::invalid("接管失败：找不到部署记录".to_owned()))?;
-        journal_store::DeploymentSession::open(
-            &mutex,
-            launcher_root,
-            &plan.render_directory,
-            existing,
-        )?
-    } else {
-        journal_store::DeploymentSession::open(
-            &mutex,
-            launcher_root,
-            &plan.render_directory,
-            record,
-        )?
-    };
+    let mut state = journal_store::DeploymentSession::begin(
+        &mutex,
+        launcher_root,
+        &plan.render_directory,
+        record,
+        |record| {
+            resources::check_proxy_link(&deployment, &ops)?;
+            if !plan.engine_path.as_os_str().is_empty() {
+                record.original_hash = launcher_core::path::file_hash_or_none(&plan.engine_path)?;
+                record.original_existed = record.original_hash.is_some();
+            }
+            record.storage_existed = deployment.storage_dll().exists();
+            Ok(())
+        },
+    )?;
     summary.steps.push("session:open".to_owned());
 
     // 日志：与现有实现同目录（`<根>\logs`）；写失败不影响主流程。
@@ -1033,12 +1106,15 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         && !options.dry_run
         && !options.skip_launch
     {
-        let child = launcher_win::spawn_process(
+        let child = match launcher_win::spawn_process(
             &plan.launch_executable,
             &plan.launch_arguments,
             Some(&plan.game_directory),
             false,
-        )?;
+        ) {
+            Ok(child) => child,
+            Err(error) => return Err(rollback_error(state, &deployment, "启动官方启动器", error)),
+        };
         child.forget();
         summary.launched = true;
         let name = plan.launcher_process_name.clone().unwrap_or_default();
@@ -1082,16 +1158,14 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         }
     }
     // 部署四步：任何一步失败都要尽力回滚，避免把游戏留在半部署状态。
-    // 接管已有部署时跳过，避免重复部署覆盖现场。
+    let mut deployment_stage = "部署代理链接";
     let deployed: Result<()> = (|| {
-        if adopted {
-            return Ok(());
-        }
         // 1) 代理链接
         resources::install_proxy_link(&mut state, &ops, &deployment, options.dry_run)?;
         summary.steps.push(format!("proxy:{}", plan.proxy_relative));
 
         // 2) 资源目录链接
+        deployment_stage = "部署资源目录";
         let installed =
             resources::install_resources(&mut state, &ops, &deployment, options.dry_run)?;
         summary.resources = installed.created.len();
@@ -1100,6 +1174,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             .push(format!("resources:{}", installed.created.len()));
 
         // 3) 诊断 INI（`dlssg_sm86.ini` 链接到 %TEMP% 副本）
+        deployment_stage = "部署诊断 INI";
         let identity = journal_store::identity(&plan.render_directory)?;
         let text = plan.settings.render(&identity)?;
         let diagnostic_spec = diagnostic::DiagnosticSpec {
@@ -1120,6 +1195,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         summary.steps.push("diagnostic".to_owned());
 
         // 4) Engine.ini 只读副本 + 备份 + 链接
+        deployment_stage = "部署 Engine.ini";
         let marker = if plan.game_id == "wuthering" {
             launcher_core::engine_config::RuntimeMarker::Wuthering
         } else if plan.game_id == "nte" {
@@ -1171,22 +1247,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
         Ok(())
     })();
     if let Err(error) = deployed {
-        let step = summary
-            .steps
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "start".to_owned());
-        let _ = restore::restore(
-            &mut state,
-            &ops,
-            &restore::RestoreOptions {
-                automatic: true,
-                ..restore::RestoreOptions::default()
-            },
-            &|_stopped| Ok(()),
-            &[],
-        );
-        return Err(Error::invalid(format!("部署步骤 {step} 失败：{error}")));
+        return Err(rollback_error(state, &deployment, deployment_stage, error));
     }
 
     // 5) 启动 + 会话等待
@@ -1220,19 +1281,7 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             Ok(())
         })();
         if let Err(error) = launched {
-            let _ = restore::restore(
-                &mut state,
-                &ops,
-                &restore::RestoreOptions {
-                    automatic: true,
-                    ..restore::RestoreOptions::default()
-                },
-                &|_stopped| Ok(()),
-                &[],
-            );
-            return Err(Error::invalid(format!(
-                "启动游戏失败（部署已回滚）：{error}"
-            )));
+            return Err(rollback_error(state, &deployment, "启动游戏", error));
         }
 
         let spec = session_spec(plan);
@@ -1244,35 +1293,28 @@ pub fn execute(plan: &RunPlan, launcher_root: &Path, options: &RunOptions) -> Re
             &launcher_win::WinProcessProbe,
             &launcher_win::SystemClock,
             &|duration| std::thread::sleep(duration),
-        )?;
+        )
+        .map_err(|error| {
+            Error::invalid(format!(
+                "会话监控失败：{error}\n无法确认游戏已退出，部署记录仍在：{}",
+                state.path().display(),
+            ))
+        })?;
         note(&mut log, &format!("会话结束：{outcome:?}"));
         summary.steps.push(format!("session:{outcome:?}"));
     }
 
     // 6) 恢复 + 残留检查
-    let outcome = restore::restore(
-        &mut state,
-        &ops,
-        &restore::RestoreOptions::default(),
-        &|_stopped| Ok(()),
-        &[],
-    )?;
+    let outcome = restore_deployment(state, &deployment, false)?;
     summary.restored = outcome.is_complete();
     summary
         .steps
         .push(format!("restore:{}", outcome.restored.len()));
-    resources::assert_resources_removed(
-        &deployment,
-        Some(&plan.engine_runtime_path),
-        Some(&plan.backup_path),
-        &ops,
-    )?;
     summary.steps.push("verify:clean".to_owned());
     note(&mut log, "恢复完成，残留检查通过");
     if let Some(log) = log.as_ref() {
         summary.steps.push(format!("log:{}", log.path().display()));
     }
-    state.finish()?;
     Ok(summary)
 }
 #[cfg(test)]
@@ -1338,6 +1380,114 @@ mod tests {
         profile.render_executable =
             Some(r"Project\Binaries\Win64\Game-Win64-Shipping.exe".to_owned());
         profile
+    }
+
+    fn recovery_record(plan: &RunPlan) -> launcher_core::journal::Journal {
+        launcher_core::journal::Journal::initialize(
+            &plan.game_id,
+            "0123456789abcdef0123456789abcdef",
+            0,
+            String::new(),
+            &plan.render_directory,
+            &plan.engine_path,
+            &plan.engine_runtime_path,
+            &plan.backup_path,
+            false,
+            None,
+            false,
+            None,
+            &plan.proxy_relative,
+        )
+    }
+
+    #[test]
+    fn restore_finishes_at_the_legacy_record_path() {
+        use launcher_core::journal_store;
+
+        let (_sandbox, game, root, paths) = fixture("recover-legacy");
+        let initial = plan(&profile(&game), &paths).unwrap();
+        std::fs::create_dir(root.join(".state")).unwrap();
+        let legacy_record = journal_store::legacy_state_root(&root)
+            .join(journal_store::state_relative_path(&initial.game_id));
+        journal_store::save_atomic(&legacy_record, &recovery_record(&initial)).unwrap();
+
+        let current = plan(&profile(&game), &paths).unwrap();
+        assert!(current.adopted);
+        assert_eq!(current.journal_path, legacy_record);
+        let saved = std::fs::read(&legacy_record).unwrap();
+        let preview = execute(
+            &current,
+            &root,
+            &RunOptions {
+                dry_run: true,
+                ..RunOptions::default()
+            },
+        )
+        .expect("预览旧根记录");
+        assert!(
+            preview
+                .steps
+                .iter()
+                .any(|step| step.starts_with("restore-required:"))
+        );
+        assert_eq!(std::fs::read(&legacy_record).unwrap(), saved);
+        restore_existing(&root, &initial.game_id, false).expect("恢复旧根");
+        assert!(!legacy_record.exists());
+        assert!(!initial.journal_path.exists());
+    }
+
+    #[test]
+    fn residual_conflict_keeps_record_and_allows_retry() {
+        use launcher_core::journal_store;
+
+        let (_sandbox, game, root, paths) = fixture("recover-residue");
+        let plan = plan(&profile(&game), &paths).unwrap();
+        journal_store::save_atomic(&plan.journal_path, &recovery_record(&plan)).unwrap();
+        let proxy = plan.render_directory.join("version.dll");
+        std::fs::write(&proxy, b"third-party").unwrap();
+
+        let error = restore_existing(&root, &plan.game_id, false).expect_err("存在残留");
+        assert!(error.to_string().contains("residue preserved"), "{error}");
+        assert!(plan.journal_path.is_file());
+        assert_eq!(std::fs::read(&proxy).unwrap(), b"third-party");
+
+        std::fs::remove_file(&proxy).unwrap();
+        restore_existing(&root, &plan.game_id, false).expect("处理冲突后可重试");
+        assert!(!plan.journal_path.exists());
+    }
+
+    #[test]
+    fn rollback_reports_original_failure_and_verification_result() {
+        use launcher_core::journal_store::DeploymentSession;
+
+        let (_sandbox, game, root, paths) = fixture("rollback-report");
+        let plan = plan(&profile(&game), &paths).unwrap();
+        let deployment =
+            Deployment::new(&root, &plan.render_directory, ProxyChoice::default_choice());
+        let original = || Error::invalid("测试启动失败");
+        let open = || {
+            DeploymentSession::open(
+                &launcher_win::WinMutexOps,
+                &root,
+                &plan.render_directory,
+                recovery_record(&plan),
+            )
+            .unwrap()
+        };
+
+        let rolled_back = rollback_error(open(), &deployment, "启动游戏", original());
+        assert!(rolled_back.to_string().contains("测试启动失败"));
+        assert!(rolled_back.to_string().contains("残留检查通过"));
+        assert!(!plan.journal_path.exists());
+
+        let state = open();
+        std::fs::write(plan.render_directory.join("dlssg_sm86.ini"), b"replacement").unwrap();
+        let failed = rollback_error(state, &deployment, "启动游戏", original());
+        let report = failed.to_string();
+        assert!(report.contains("测试启动失败"), "{report}");
+        assert!(report.contains("部署回滚失败"), "{report}");
+        assert!(report.contains("dlssg_sm86.ini"), "{report}");
+        assert!(plan.journal_path.is_file());
     }
 
     #[test]
@@ -1510,10 +1660,17 @@ mod tests {
         );
         operation.target = r"D:\launcher\bin\alternatives\winmm.dll".to_owned();
         journal.operations.push(operation);
+        let winmm = ProxyChoice::from_name("winmm.dll").unwrap();
         assert_eq!(
-            journal_resource_root(&journal),
+            journal_resource_root(&journal, winmm),
             Some(PathBuf::from(r"D:\launcher\bin")),
             "两层代理名要退两层"
+        );
+        journal.proxy_name = Some("winmm.dll".to_owned());
+        assert_eq!(
+            journal_resource_root(&journal, winmm),
+            Some(PathBuf::from(r"D:\launcher\bin")),
+            "旧记录只存文件名时仍使用原负载根"
         );
 
         // 旧布局（version.dll 在根）也要能推对
@@ -1527,7 +1684,7 @@ mod tests {
         operation.target = r"D:\launcher\version.dll".to_owned();
         journal.operations.push(operation);
         assert_eq!(
-            journal_resource_root(&journal),
+            journal_resource_root(&journal, ProxyChoice::default_choice()),
             Some(PathBuf::from(r"D:\launcher"))
         );
     }

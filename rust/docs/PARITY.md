@@ -51,7 +51,7 @@
 | 互斥 | 名称 | identity 算法 | 等待 |
 |---|---|---|---|
 | 部署/恢复 | `Global\DLSSG-Deployment-<identity>` | `UPPERHEX(SHA256(UTF8(GetFullPath(renderDir).TrimEnd('\').ToLowerInvariant())))` | `WaitOne(0)`，抢不到立即报错 |
-| 配置写入 | `Global\DLSSG-Config-<identity>` | 同上（同一 identity） | `WaitOne(0)` |
+| 配置写入 | `Global\DLSSG-Config-<identity>` | 同样的归一化和哈希算法，输入为实际 `Engine.ini` 路径 | `WaitOne(0)` |
 | `启动配置.ini` 写回 | `Local\DLSSG-LauncherConfig-<id>` | `UPPERHEX(SHA256(UTF8(GetFullPath(iniPath).ToLowerInvariant())))`，**不 TrimEnd** | `WaitOne(5000)`，超时报错 |
 
 - `AbandonedMutexException` 一律视为"已获得"。
@@ -253,7 +253,7 @@ Rust 侧：按 `gameId` 声明"临时文件名前缀 + 接受的旧文本集合"
 | D-6 | 单会话（`Global\DlssgSession`） | 见 `rust开发.md` 2.3 | 同时开两款游戏的用法失效，需明确提示 |
 | D-7 | 便携包不再含 `.ps1`/`.bat`，`PackageType` 语义改为基础包/配件 | 入口合并为一个 EXE | 旧包脚本不可用；说明需重写 |
 | D-8 | 恢复时旧 PS 记录里的 0.4.2 诊断 INI **按旧模板识别**，新生成用 12 键 | 旧链接必须能回收 | 识别集合必须包含 `templates/**` 全部 8 份模板
-| D-9 | 恢复收尾的残留检查由 core 的 `resources::assert_resources_removed` 提供，PS 在删记录前内联调用 | 调用方必须显式执行，否则可能带着残留删记录 | `tests/step10_11_restore.rs` 往返用例断言 |
+| D-9 | Rust 引擎在持锁状态下调用 `resources::assert_resources_removed`，通过后才删除实际命中的记录 | 手动恢复、自动恢复与回滚共用收尾流程，失败保留记录 | `step10_11_restore.rs` 与引擎恢复回归用例 |
 | D-10 | `package-manifest.json` 每个条目多一个 `Package`（base / sr）字段，其余字段与 PS 完全一致 | 便携包按"基础包 + sr 配件"拆发；旧工具只用 `Path/Length/SHA256`，不会误解 | `export::tests` 校验键名与往返 |（C7） |
 
 ## 5. Golden 样本

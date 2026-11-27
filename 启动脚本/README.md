@@ -4,6 +4,10 @@
 
 ## 入口与模块
 
+Rust 启动器的实现见 [Rust README](../rust/README.md)。两个实现的配置互斥均使用实际
+`Engine.ini` 路径计算。Rust 若读到旧的 `启动脚本/.state` 记录，会在命中路径上恢复，
+并在残留检查通过后删除记录。
+
 ### 独立 DLSSG 通用启动器
 
 `通用启动器.bat` 打开 `scripts/ui/Show-DlssgLauncher.ps1`。界面与游戏列表独立，首次为空；本机偏好和运行请求保存在 `%LOCALAPPDATA%\DlssgOnlyLauncher\<目录路径哈希>`。模型及请求在 `scripts/common/DlssgOnlyLauncher.ps1`，安装发现和渲染候选在 `scripts/common/GameDiscovery.ps1`。

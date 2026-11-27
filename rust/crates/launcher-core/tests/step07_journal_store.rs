@@ -116,7 +116,8 @@ fn session_persists_every_transition() {
             .0
             .starts_with("Global\\DLSSG-Deployment-")
     );
-    assert!(session.mutex_names().1.starts_with("Global\\DLSSG-Config-"));
+    let config_name = configuration_mutex_name(Path::new(&session.journal().engine)).unwrap();
+    assert_eq!(session.mutex_names().1, Some(config_name.as_str()));
 
     session.set_phase(Phase::Recovering).expect("改阶段");
     let reloaded = journal_store::load(&path).expect("读").expect("存在");
@@ -167,6 +168,93 @@ fn second_session_for_the_same_game_is_refused() {
 }
 
 #[test]
+fn shared_engine_ini_blocks_a_second_render_directory() {
+    let directory = scratch("shared-engine");
+    let ops = FakeMutexOps::new();
+    let mut first = fixture_journal("journal/01-new.json");
+    first.session = "0123456789abcdef0123456789abcdef".to_owned();
+    first.engine = r"C:\Saves\Game\Engine.ini".to_owned();
+    let mut second = first.clone();
+    second.game_id = "other".to_owned();
+    second.engine = r"c:\saves\game\Saved\..\ENGINE.ini".to_owned();
+    let first = journal_store::DeploymentSession::open(
+        &ops,
+        &directory,
+        Path::new(r"D:\Games\First"),
+        first,
+    )
+    .expect("第一个会话");
+    let error = journal_store::DeploymentSession::open(
+        &ops,
+        &directory,
+        Path::new(r"D:\Games\Second"),
+        second,
+    )
+    .expect_err("同一 Engine.ini 已被占用");
+    let name = configuration_mutex_name(Path::new(r"c:\saves\game\engine.ini")).unwrap();
+    assert!(matches!(error, Error::MutexTimeout { name: actual, .. } if actual == name));
+    assert!(
+        !directory
+            .join(journal_store::state_relative_path("other"))
+            .exists()
+    );
+    first.finish().expect("收尾");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn resume_refuses_to_replace_a_changed_record() {
+    let directory = scratch("changed-record");
+    let ops = FakeMutexOps::new();
+    let mut before = fixture_journal("journal/01-new.json");
+    before.session = "0123456789abcdef0123456789abcdef".to_owned();
+    let path = directory.join(journal_store::state_relative_path(&before.game_id));
+    let mut after = before.clone();
+    after.phase = Phase::Recovering;
+    journal_store::save_atomic(&path, &after).unwrap();
+
+    let error = journal_store::DeploymentSession::resume(&ops, path.clone(), before)
+        .expect_err("记录快照已过期");
+    assert!(error.to_string().contains("记录已变化"), "{error}");
+    assert_eq!(journal_store::load(&path).unwrap(), Some(after));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[cfg(windows)]
+#[test]
+fn delete_failure_keeps_the_record_available_for_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let directory = scratch("delete-failure");
+    let mut journal = fixture_journal("journal/01-new.json");
+    journal.session = "0123456789abcdef0123456789abcdef".to_owned();
+    let ops = FakeMutexOps::new();
+    let session = journal_store::DeploymentSession::open(
+        &ops,
+        &directory,
+        Path::new(&journal.render),
+        journal.clone(),
+    )
+    .unwrap();
+    let path = session.path().to_path_buf();
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x3)
+        .open(&path)
+        .unwrap();
+    session.finish().expect_err("占用句柄未允许删除");
+    assert_eq!(journal_store::load(&path).unwrap(), Some(journal.clone()));
+
+    drop(handle);
+    journal_store::DeploymentSession::resume(&ops, path.clone(), journal)
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert!(!path.exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn dlssg_only_session_refuses_engine_operations() {
     let directory = scratch("dlssgonly");
     let ops = FakeMutexOps::new();
@@ -180,6 +268,7 @@ fn dlssg_only_session_refuses_engine_operations() {
         journal,
     )
     .expect("打开会话");
+    assert_eq!(session.mutex_names().1, None);
 
     for kind in [
         OperationKind::EngineLink,
